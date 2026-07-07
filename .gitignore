@@ -1,0 +1,9 @@
+# Trae skills
+.trae/skills/doc-reader/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Temporary scripts
+switch_to_py3.ps1
