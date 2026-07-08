@@ -9,15 +9,14 @@
 
 from PyQt5.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsLineItem,
-    QGraphicsSimpleTextItem, QGraphicsEllipseItem,
-    QWidget, QVBoxLayout, QLabel, QGraphicsItem, QGraphicsObject,
+    QGraphicsSimpleTextItem, QWidget, QVBoxLayout, QLabel,
 )
 from PyQt5.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt5.QtGui import QColor, QPen, QBrush, QFont, QPainter, QFontMetrics
 from typing import Optional
 
-from src.track.db_loader import DBLoader
 from src.track.data import TrackData, Segment
+from src.track.db_loader import DBLoader
 
 
 # 颜色常量
@@ -32,10 +31,10 @@ COLOR_SPEED_LOW = QColor(220, 120, 120)
 COLOR_BG = QColor(245, 245, 245)
 COLOR_RULER = QColor(150, 150, 150)
 
-SCALE = 0.15          # 米 → 像素
-BRANCH_OFFSET = 24    # 分支偏移高度 (px)
-LINE_WIDTH = 6
-HOVER_WIDTH = 10
+SCALE = 0.22          # 米 → 像素
+BRANCH_OFFSET = 42    # 分支偏移高度 (px)
+LINE_WIDTH = 9
+HOVER_WIDTH = 14
 
 
 class SegmentItem(QGraphicsLineItem):
@@ -116,6 +115,8 @@ class TrackView(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setBackgroundBrush(COLOR_BG)
         self.setMouseTracking(True)
+        self.setMinimumHeight(560)
+        self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
 
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
@@ -130,9 +131,9 @@ class TrackView(QGraphicsView):
 
         total_w = self._x(self.td.total_length())
         if total_w > 0:
-            self.fitInView(0, -10, total_w / 3,
-                           self.scene.sceneRect().height() + 40,
-                           Qt.KeepAspectRatio)
+            # 不自动压缩全线，按可读比例显示局部，剩余线路通过滚动条查看。
+            self.resetTransform()
+            self.centerOn(min(total_w, 900), 120)
 
     def _x(self, pos_m: float) -> float:
         return pos_m * SCALE
@@ -209,7 +210,7 @@ class TrackView(QGraphicsView):
 
         self._compute_branch_levels()
         max_level = max(self._branch_levels.values()) if self._branch_levels else 0
-        base_y = 40  # 主线 Y 坐标
+        base_y = 90  # 主线 Y 坐标
 
         # ---- 2. 绘制区段线段（可悬停） ----
         for seg in td.segments:
@@ -230,7 +231,7 @@ class TrackView(QGraphicsView):
             if not seg:
                 continue
             level = self._get_level(sl.seg_id)
-            y = level * BRANCH_OFFSET + base_y + 8
+            y = level * BRANCH_OFFSET + base_y + 13
 
             speed = sl.speed_limit
             if speed >= 18:
@@ -242,7 +243,7 @@ class TrackView(QGraphicsView):
             c.setAlpha(160)
 
             w = max(x2 - x1, 1)
-            rect = self.scene.addRect(QRectF(x1, y, w, 4),
+            rect = self.scene.addRect(QRectF(x1, y, w, 7),
                                       QPen(Qt.NoPen), QBrush(c))
             rect.setZValue(0)
             self._speed_rects.append(rect)
@@ -254,18 +255,18 @@ class TrackView(QGraphicsView):
             if pos <= 0:
                 continue
             x = self._x(pos)
-            y = -10
+            y = 26
 
             # 圆点
-            dot = self.scene.addEllipse(x - 4, y - 4, 8, 8,
+            dot = self.scene.addEllipse(x - 6, y - 6, 12, 12,
                                         QPen(COLOR_STATION, 2), QBrush(Qt.white))
             dot.setZValue(2)
             self._signal_items.append(dot)
 
             # 名称
             text = QGraphicsSimpleTextItem(st.name)
-            text.setPos(x - 15, y - 35)
-            text.setFont(QFont("Microsoft YaHei", 7, QFont.Bold))
+            text.setPos(x - 22, y - 46)
+            text.setFont(QFont("Microsoft YaHei", 9, QFont.Bold))
             text.setBrush(COLOR_STATION)
             text.setZValue(2)
             self.scene.addItem(text)
@@ -278,22 +279,22 @@ class TrackView(QGraphicsView):
             x = self._x(sig.position)
             y = base_y
 
-            dot = self.scene.addEllipse(x - 2, y - 8, 4, 4,
-                                        QPen(QColor(180, 180, 180), 1),
-                                        QBrush(QColor(200, 200, 200, 100)))
+            dot = self.scene.addEllipse(x - 4, y - 14, 8, 8,
+                                        QPen(COLOR_SIGNAL, 1),
+                                        QBrush(QColor(255, 180, 0, 170)))
             dot.setToolTip(f"信号 {sig.signal_id}  dir={sig.direction}")
             dot.setCursor(Qt.WhatsThisCursor)
             dot.setZValue(1)
             self._signal_items.append(dot)
 
         # ---- 6. 公里标 ----
-        ruler_y = (max_level + 1) * BRANCH_OFFSET + 60
+        ruler_y = base_y + (max_level + 1) * BRANCH_OFFSET + 70
         for km in range(0, int(total_len) + 500, 500):
             x = self._x(km)
             self.scene.addLine(x, ruler_y, x, ruler_y + 8, QPen(COLOR_RULER))
             label = QGraphicsSimpleTextItem(f"{km//1000}.{km%1000:03d}km")
             label.setPos(x - 15, ruler_y + 10)
-            label.setFont(QFont("Consolas", 6))
+            label.setFont(QFont("Consolas", 8))
             label.setBrush(COLOR_RULER)
             self.scene.addItem(label)
 
@@ -316,29 +317,33 @@ class TrackView(QGraphicsView):
             self.scene.addRect(legend_x, ly, 10, 6, QPen(Qt.NoPen), QBrush(c))
             lbl = QGraphicsSimpleTextItem(name)
             lbl.setPos(legend_x + 13, ly - 3)
-            lbl.setFont(QFont("Consolas", 6))
+            lbl.setFont(QFont("Consolas", 8))
             self.scene.addItem(lbl)
 
-        self.scene.setSceneRect(0, -10, scene_w, ruler_y + 40)
+        self.scene.setSceneRect(0, -60, scene_w, ruler_y + 70)
 
 
 class TrackViewWidget(QWidget):
     """包装 TrackView 的容器组件，包含统计信息"""
 
-    def __init__(self, parent=None):
+    def __init__(self, track_data: Optional[TrackData] = None, parent=None):
         super().__init__(parent)
+        self.setObjectName("trackViewWidget")
         self.track_data: Optional[TrackData] = None
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
         self.setLayout(layout)
 
         self.status_bar = QLabel("加载中...")
-        self.status_bar.setStyleSheet(
-            "padding: 4px 8px; background: #e8e8e8; font-size: 12px;")
+        self.status_bar.setObjectName("trackStatusBar")
         layout.addWidget(self.status_bar)
 
         self.view: Optional[TrackView] = None
-        self._load_data()
+        if track_data is None:
+            self._load_data()
+        else:
+            self.set_track_data(track_data)
 
     def _load_data(self):
         try:
@@ -366,5 +371,32 @@ class TrackViewWidget(QWidget):
         )
         self.status_bar.setText(stats)
 
+    def set_track_data(self, track_data: TrackData, source_name: str = ""):
+        """使用外部线路数据重建视图，支持主界面数据源切换"""
+        self.track_data = track_data
+        layout = self.layout()
+        if self.view:
+            layout.removeWidget(self.view)
+            self.view.deleteLater()
+
+        self.view = TrackView(track_data, self)
+        layout.addWidget(self.view)
+        self.status_bar.setText(self._format_stats(track_data, source_name))
+
+    def _format_stats(self, td: TrackData, source_name: str = "") -> str:
+        """生成线路统计文本"""
+        prefix = f"{source_name} | " if source_name else ""
+        return (
+            f"{prefix}线路总长: {td.total_length():.0f}m | "
+            f"区段: {len(td.segments)} | "
+            f"车站: {len(td.stations)} | "
+            f"限速: {len(td.speed_limits)} | "
+            f"信号: {len(td.signals)}"
+        )
+
     def refresh(self):
-        self._load_data()
+        """刷新当前线路视图；没有外部数据时回退到数据库加载"""
+        if self.track_data is None:
+            self._load_data()
+        else:
+            self.set_track_data(self.track_data)

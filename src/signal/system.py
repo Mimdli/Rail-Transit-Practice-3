@@ -54,6 +54,10 @@ class SignalSystem:
         """批量设置信号机显示状态"""
         self._aspects.update(aspects)
 
+    def clear_signal_aspects(self):
+        """清空已缓存的信号显示状态"""
+        self._aspects.clear()
+
     def update_aspects_by_occupancy(
         self, signals: list, train_positions: list[float], direction: str = "up"
     ):

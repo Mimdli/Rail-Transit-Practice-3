@@ -37,6 +37,7 @@ class DoorInterlock:
         """判断列车是否在站台范围内"""
         pos = self.vehicle.position
         for p in self.track.platforms:
-            if abs(pos - p.position) < p.length / 2:
+            platform_length = getattr(p, "length", 120.0)
+            if abs(pos - p.position) < platform_length / 2:
                 return True
         return False

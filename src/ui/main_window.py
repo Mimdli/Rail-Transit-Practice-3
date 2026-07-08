@@ -1,12 +1,17 @@
 """主窗口 — 应用程序主界面"""
 
-from PyQt5.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGroupBox, QTextEdit
-from PyQt5.QtCore import QTimer
+from PyQt5.QtWidgets import (
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGroupBox, QTextEdit,
+    QLabel, QComboBox, QTabWidget, QSplitter
+)
+from PyQt5.QtCore import QTimer, Qt
 
 from src.ui.dashboard import Dashboard
 from src.ui.controls import ControlPanel
+from src.ui.track_view import TrackViewWidget
 from src.vehicle.model import VehicleModel, RunningMode
 from src.vehicle.controller import ManualController, AutoController
+from src.track.db_loader import DBLoader
 from src.track.loader import TrackLoader
 from src.signal.system import SignalSystem, SignalAspect
 from src.power.supply import PowerSupply, PowerStatus
@@ -21,7 +26,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("轨道交通模拟系统")
-        self.setMinimumSize(1280, 760)
+        self.setMinimumSize(1400, 860)
 
         # 初始化核心模块
         self._init_modules()
@@ -41,8 +46,8 @@ class MainWindow(QMainWindow):
         self.manual_ctrl = ManualController(self.vehicle)
         self.auto_ctrl = AutoController(self.vehicle)
 
-        loader = TrackLoader()
-        self.track = loader.load_demo_data()
+        self.data_mode = "demo"
+        self.track = self._load_track_data(self.data_mode)
 
         self.signal_system = SignalSystem()
         self.power_supply = PowerSupply()
@@ -55,7 +60,7 @@ class MainWindow(QMainWindow):
         self._last_status_log_time: float = -1.0
         self._displayed_event_count: int = 0
         self.sim_time: float = 0.0
-        self.recorder.record("系统", "系统启动，演示前车位置: 300 m")
+        self.recorder.record("系统", "系统启动，当前数据源: 演示数据")
 
     def _init_ui(self):
         """初始化界面"""
@@ -65,19 +70,131 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        top_layout = QHBoxLayout()
-        top_layout.setContentsMargins(0, 0, 0, 0)
-        top_layout.setSpacing(0)
+        layout.addWidget(self._create_data_source_bar())
+
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("mainTabs")
+        layout.addWidget(self.tabs, stretch=1)
+
+        sim_page = QWidget()
+        sim_layout = QVBoxLayout(sim_page)
+        sim_layout.setContentsMargins(0, 0, 0, 0)
+        sim_layout.setSpacing(0)
+
+        sim_splitter = QSplitter(Qt.Vertical)
+        sim_splitter.setObjectName("simSplitter")
 
         self.dashboard = Dashboard(self.vehicle, self.track, self.signal_system, self.power_supply)
         self.control_panel = ControlPanel(
             self.manual_ctrl, self.auto_ctrl, self.interlock, self.recorder, show_log=False
         )
 
-        top_layout.addWidget(self.dashboard, stretch=4)
+        top_content = QWidget()
+        top_layout = QHBoxLayout(top_content)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(0)
+        top_layout.addWidget(self.dashboard, stretch=5)
         top_layout.addWidget(self.control_panel, stretch=2)
-        layout.addLayout(top_layout, stretch=5)
-        layout.addWidget(self._create_log_panel(), stretch=2)
+
+        sim_splitter.addWidget(top_content)
+        sim_splitter.addWidget(self._create_log_panel())
+        sim_splitter.setSizes([580, 240])
+        sim_splitter.setCollapsible(0, False)
+        sim_splitter.setCollapsible(1, True)
+        sim_layout.addWidget(sim_splitter)
+
+        self.track_view = TrackViewWidget(self.track)
+
+        self.tabs.addTab(sim_page, "运行仿真")
+        self.tabs.addTab(self.track_view, "线路可视化")
+
+    def _create_data_source_bar(self) -> QWidget:
+        """创建数据源切换条"""
+        bar = QWidget()
+        bar.setObjectName("dataSourceBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(10)
+
+        title = QLabel("线路数据源")
+        title.setObjectName("dataSourceTitle")
+        self.data_source_combo = QComboBox()
+        self.data_source_combo.setObjectName("dataSourceCombo")
+        self.data_source_combo.addItem("演示数据", "demo")
+        self.data_source_combo.addItem("数据库线路", "database")
+        self.data_source_combo.currentIndexChanged.connect(self._on_data_source_changed)
+
+        self.data_source_status = QLabel(self._data_source_summary())
+        self.data_source_status.setObjectName("dataSourceStatus")
+
+        layout.addWidget(title)
+        layout.addWidget(self.data_source_combo)
+        layout.addWidget(self.data_source_status, stretch=1)
+        return bar
+
+    def _load_track_data(self, mode: str):
+        """按模式加载线路数据"""
+        if mode == "database":
+            return DBLoader().load_from_db()
+        return TrackLoader().load_demo_data()
+
+    def _on_data_source_changed(self):
+        """响应 UI 数据源切换"""
+        mode = self.data_source_combo.currentData()
+        if mode == self.data_mode:
+            return
+
+        try:
+            new_track = self._load_track_data(mode)
+        except Exception as exc:
+            self.recorder.record("系统", f"切换数据源失败: {exc}", self.vehicle.position, self.vehicle.speed)
+            self.data_source_combo.blockSignals(True)
+            self.data_source_combo.setCurrentIndex(self.data_source_combo.findData(self.data_mode))
+            self.data_source_combo.blockSignals(False)
+            return
+
+        self.data_mode = mode
+        self._replace_track(new_track)
+
+    def _replace_track(self, track):
+        """替换当前线路数据，并同步所有依赖该数据的模块"""
+        self.track = track
+        self.vehicle.reset()
+        self.vehicle.running_mode = RunningMode.MANUAL
+        self.signal_system.clear_signal_aspects()
+        self.interlock.track = track
+        self.dashboard.track = track
+        self.track_view.set_track_data(track, self._data_source_label())
+
+        self.front_train_positions = self._default_front_train_positions()
+        self._last_signal_aspects.clear()
+        self._last_status_log_time = -1.0
+        self.data_source_status.setText(self._data_source_summary())
+        self.recorder.record("系统", f"切换数据源: {self._data_source_label()}")
+        self.dashboard.refresh()
+
+    def _default_front_train_positions(self) -> list[float]:
+        """根据线路长度放置一个演示前车，供闭塞逻辑展示"""
+        total = self.track.total_length()
+        if total <= 0:
+            return []
+        return [min(300.0, total * 0.25)]
+
+    def _data_source_label(self) -> str:
+        """当前数据源展示名称"""
+        return "数据库线路" if self.data_mode == "database" else "演示数据"
+
+    def _data_source_summary(self) -> str:
+        """当前数据源摘要"""
+        if not hasattr(self, "track"):
+            return ""
+        return (
+            f"{self._data_source_label()} | "
+            f"区段 {len(self.track.segments)} | "
+            f"车站 {len(self.track.stations)} | "
+            f"信号 {len(self.track.signals)} | "
+            f"总长 {self.track.total_length():.0f} m"
+        )
 
     def _update(self):
         """定时更新"""
@@ -152,6 +269,65 @@ class MainWindow(QMainWindow):
                 background: #ffffff;
                 border: 1px solid #d8dee8;
                 border-radius: 8px;
+            }
+            #dataSourceBar {
+                background: #ffffff;
+                border-bottom: 1px solid #d8dee8;
+            }
+            #dataSourceTitle {
+                color: #1d2939;
+                font-size: 16px;
+                font-weight: 800;
+            }
+            #dataSourceStatus {
+                color: #475467;
+                font-size: 14px;
+                font-weight: 650;
+            }
+            QComboBox#dataSourceCombo {
+                min-width: 150px;
+                min-height: 34px;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                padding: 4px 10px;
+                background: #f8fafc;
+                color: #172033;
+                font-size: 15px;
+                font-weight: 700;
+            }
+            QTabWidget::pane {
+                border: 0;
+                background: #eef2f6;
+            }
+            QTabBar::tab {
+                background: #e5eaf2;
+                color: #475467;
+                padding: 11px 22px;
+                margin-right: 2px;
+                font-size: 15px;
+                font-weight: 700;
+            }
+            QTabBar::tab:selected {
+                background: #ffffff;
+                color: #172033;
+            }
+            QSplitter::handle {
+                background: #d8dee8;
+            }
+            QSplitter::handle:vertical {
+                height: 5px;
+            }
+            #trackViewWidget {
+                background: #f8fafc;
+            }
+            #trackStatusBar {
+                background: #ffffff;
+                border: 1px solid #d8dee8;
+                border-radius: 7px;
+                color: #334155;
+                font-size: 15px;
+                font-weight: 700;
+                padding: 10px 12px;
             }
             #statusIndicator {
                 min-height: 122px;
@@ -264,7 +440,7 @@ class MainWindow(QMainWindow):
                 border-bottom: 0;
                 border-radius: 0;
                 margin: 0;
-                padding: 18px 16px 14px 16px;
+                padding: 14px 16px 10px 16px;
                 font-size: 17px;
                 font-weight: 800;
                 color: #1d2939;
@@ -275,14 +451,16 @@ class MainWindow(QMainWindow):
         """创建横跨底部的运行日志区域"""
         log_group = QGroupBox("运行日志")
         log_group.setObjectName("bottomLogGroup")
+        log_group.setMinimumHeight(230)
+        log_group.setMaximumHeight(320)
         log_layout = QVBoxLayout(log_group)
-        log_layout.setContentsMargins(16, 16, 16, 14)
+        log_layout.setContentsMargins(16, 14, 16, 12)
         log_layout.setSpacing(8)
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setObjectName("logText")
-        self.log_text.setMinimumHeight(220)
+        self.log_text.setMinimumHeight(180)
         log_layout.addWidget(self.log_text)
         return log_group
 
