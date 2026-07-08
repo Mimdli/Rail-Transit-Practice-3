@@ -246,6 +246,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """关闭窗口"""
         self.timer.stop()
+        self.recorder.close()
         event.accept()
 
     def _apply_style(self):
@@ -517,7 +518,7 @@ class MainWindow(QMainWindow):
             return
 
         nearest_signal = self.signal_system.get_nearest_signal_ahead(
-            self.vehicle.position, self.track.signals
+            self.vehicle.position, self.track.signals, look_ahead=float("inf")
         )
         if nearest_signal:
             aspect = self.signal_system.get_signal_aspect(nearest_signal)

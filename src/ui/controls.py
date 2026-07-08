@@ -180,6 +180,7 @@ class ControlPanel(QWidget):
 
     def _on_manual_mode(self):
         self.manual_ctrl.vehicle.running_mode = RunningMode.MANUAL
+        self._record_operation("切换为手动模式")
         self.status_label.setText("切换为手动模式")
 
     def _on_auto_mode(self):
@@ -189,8 +190,10 @@ class ControlPanel(QWidget):
         next_station = self.interlock.track.get_nearest_station_ahead(pos)
         if next_station:
             self.auto_ctrl.set_target(next_station.position)
+            self._record_operation(f"切换为自动模式，目标: {next_station.name}")
             self.status_label.setText(f"自动驾驶中，目标: {next_station.name}")
         else:
+            self._record_operation("切换为自动模式，无目标车站")
             self.status_label.setText("无目标车站")
 
     def update_log(self, recorder: Recorder):
@@ -205,6 +208,7 @@ class ControlPanel(QWidget):
     def _record_operation(self, description: str, event_type: str = "操作"):
         """记录带车辆状态的操作事件"""
         vehicle = self.manual_ctrl.vehicle
+        self.recorder.start()
         self.recorder.record(event_type, description, vehicle.position, vehicle.speed)
 
     def _format_log_event(self, event) -> str:

@@ -165,8 +165,10 @@ class Dashboard(QWidget):
         mode = "自动" if v.running_mode == RunningMode.AUTOMATIC else "手动"
         self.mode_label.setText(f"模式: {mode}")
 
-        # 信号：优先显示列车前方最近信号机，便于观察闭塞防护变化。
-        next_signal = self.signal_system.get_nearest_signal_ahead(pos, self.track.signals)
+        # 信号显示看全线最近前方信号，防护限速仍由信号系统的默认范围控制。
+        next_signal = self.signal_system.get_nearest_signal_ahead(
+            pos, self.track.signals, look_ahead=float("inf")
+        )
         if next_signal:
             aspect = self.signal_system.get_signal_aspect(next_signal)
             distance = next_signal.position - pos
@@ -210,10 +212,10 @@ class Dashboard(QWidget):
 
     def _refresh_signal_overview(self, position: float):
         """刷新前方若干信号机的红黄绿状态摘要"""
-        ahead = [
-            sig for sig in self.track.signals
-            if sig.position >= position
-        ][:5]
+        ahead = sorted(
+            (sig for sig in self.track.signals if sig.position >= position),
+            key=lambda sig: sig.position,
+        )[:5]
         if not ahead:
             self.signal_overview_label.setText("无前方信号")
             return
