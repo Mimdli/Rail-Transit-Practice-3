@@ -68,6 +68,16 @@ class Gradient:
     abs_end: float = 0.0
 
 
+@dataclass
+class Signal:
+    """信号机"""
+    signal_id: str
+    position: float = 0.0         # 绝对位置 (m)，由 build_coordinates 计算
+    direction: str = ""
+    seg_id: int = 0               # 所在区段
+    offset: float = 0.0           # 区段内偏移 (m)
+
+
 class TrackData:
     """线路数据集合"""
 
@@ -77,6 +87,7 @@ class TrackData:
         self.segments: List[Segment] = []
         self.speed_limits: List[SpeedLimit] = []
         self.gradients: List[Gradient] = []
+        self.signals: List[Signal] = []
 
         # 索引
         self._seg_map: Dict[int, Segment] = {}
@@ -141,7 +152,7 @@ class TrackData:
                 self._seg_map[nid].abs_start = child_pos
                 q.append(nid)
 
-        # 映射限速和坡度到绝对位置
+        # 映射限速、坡度和信号到绝对位置
         for sl in self.speed_limits:
             seg = self._seg_map.get(sl.seg_id)
             if seg:
@@ -153,6 +164,11 @@ class TrackData:
             if seg:
                 g.abs_start = seg.abs_start + g.start_offset
                 g.abs_end = seg.abs_start + g.end_offset
+
+        for sig in self.signals:
+            seg = self._seg_map.get(sig.seg_id)
+            if seg:
+                sig.position = seg.abs_start + sig.offset
 
         self._station_map = {s.name: s for s in self.stations}
 
