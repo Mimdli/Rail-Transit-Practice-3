@@ -19,7 +19,7 @@ def test_coupler_config_defaults():
     assert c.stiffness == 1e7
     assert c.damping == 1e5
     assert c.slack == 0.02
-    assert c.max_force == 2e6
+    assert c.max_force == 4e5
 
 
 def test_coupler_config_custom():
