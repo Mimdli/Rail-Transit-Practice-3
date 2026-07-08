@@ -63,9 +63,13 @@ class CarConfig:
         tunnel_resistance_factor: 隧道附加阻力系数。
     """
     name: str = ""
-    mass: float = 60000.0                # kg (AW2)
+    mass: float = 60000.0                # kg (当前有效质量，运行时可变)
     length: float = 19.5                 # m (B型地铁标准车长)
     is_motor: bool = True
+
+    # 回转质量系数：考虑旋转部件（轮对、电机转子）转动惯量
+    # 等效质量 = 静质量 × rotary_mass_factor，典型范围 1.06~1.12
+    rotary_mass_factor: float = 1.08
 
     # Davis 基本阻力参数: R = A + B*v + C*v²
     davis_A: float = 1200.0              # N
@@ -84,6 +88,15 @@ class CarConfig:
     # 隧道附加阻力系数（隧道内基本阻力增加的比例）
     tunnel_resistance_factor: float = 1.3
 
+    # ── 载荷等级质量 ─────────────────────────────────────────
+    # base_mass 为 AW2（定员）设计基准质量，用于制动负荷补偿。
+    # aw0~aw3 为各载荷等级对应的车辆总质量 (kg)。
+    base_mass: float = 60000.0           # kg (AW2 基准质量)
+    aw0_mass: float = 38800.0            # kg (AW0 空载, B型地铁约 38.8t)
+    aw1_mass: float = 47200.0            # kg (AW1 满座, +8.4t 乘客)
+    aw2_mass: float = 60000.0            # kg (AW2 定员, +14.4t 乘客)
+    aw3_mass: float = 67200.0            # kg (AW3 超载, +21.6t 乘客)
+
 
 # ═══════════════════════════════════════════════════════════════
 # 预设
@@ -94,6 +107,7 @@ MOTOR_CAR_CONFIG = CarConfig(
     mass=60000.0,         # 60t (AW2, 动车较重)
     length=19.5,
     is_motor=True,
+    rotary_mass_factor=1.08,
     davis_A=1200.0,
     davis_B=30.0,
     davis_C=3.0,
@@ -103,6 +117,11 @@ MOTOR_CAR_CONFIG = CarConfig(
     max_service_brake_force=80000.0,
     max_emergency_brake_force=100000.0,
     tunnel_resistance_factor=1.3,
+    base_mass=60000.0,
+    aw0_mass=38800.0,
+    aw1_mass=47200.0,
+    aw2_mass=60000.0,
+    aw3_mass=67200.0,
 )
 
 TRAILER_CAR_CONFIG = CarConfig(
@@ -110,6 +129,7 @@ TRAILER_CAR_CONFIG = CarConfig(
     mass=46000.0,         # 46t (AW2, 拖车较轻)
     length=19.5,
     is_motor=False,
+    rotary_mass_factor=1.06,  # 拖车无电机转子，回转质量系数较低
     davis_A=900.0,
     davis_B=25.0,
     davis_C=2.5,
@@ -119,4 +139,9 @@ TRAILER_CAR_CONFIG = CarConfig(
     max_service_brake_force=65000.0,
     max_emergency_brake_force=80000.0,
     tunnel_resistance_factor=1.3,
+    base_mass=46000.0,
+    aw0_mass=30000.0,
+    aw1_mass=36400.0,
+    aw2_mass=46000.0,
+    aw3_mass=51600.0,
 )

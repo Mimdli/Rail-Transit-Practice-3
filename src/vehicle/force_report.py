@@ -24,8 +24,15 @@ class CarForceReport:
     davis_resistance: float = 0.0             # Davis 基本阻力
     grade_resistance: float = 0.0             # 坡道阻力
     tunnel_resistance: float = 0.0            # 隧道附加阻力
+    curve_resistance: float = 0.0             # 曲线附加阻力
     tractive_force: float = 0.0               # 牵引力
-    brake_force: float = 0.0                  # 制动力
+    brake_force: float = 0.0                  # 总制动力（电气+空气）
+    electric_brake_force: float = 0.0         # 电气制动（再生制动）
+    friction_brake_force: float = 0.0         # 空气制动（摩擦制动）
+
+    # 黏着状态
+    traction_limited: bool = False            # 牵引力是否被黏着限制截断（空转风险）
+    brake_limited: bool = False               # 制动力是否被黏着限制截断（滑行风险）
 
     # 车钩力
     coupler_force_front: float = 0.0          # 前车钩力（与前方车的车钩力，正值=拉伸）

@@ -10,22 +10,12 @@
     IEnvironmentQuery — 车辆模块对环境数据的依赖（定义在此以保持内聚）。
 """
 
-from abc import ABC, abstractmethod
 import math
+from typing import Optional
 from src.common.car_config import CarConfig
 
-
-# ═══════════════════════════════════════════════════════════════
-# 环境接口
-# ═══════════════════════════════════════════════════════════════
-
-class IEnvironmentQuery(ABC):
-    """车辆模块对环境数据的唯一依赖。"""
-
-    @abstractmethod
-    def get_adhesion_coefficient(self) -> float:
-        """返回当前粘着系数 (干燥=0.18, 雨=0.10, 雪=0.06)。"""
-        ...
+# 环境接口从 environment.py 导入，在此 re-export 以保持向后兼容
+from src.vehicle.environment import IEnvironmentQuery  # noqa: F401
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -98,25 +88,51 @@ def calc_tunnel_resistance(car: CarConfig, velocity: float, is_tunnel: bool) -> 
 
 
 def calc_total_resistance(car: CarConfig, velocity: float,
-                          gradient: float, is_tunnel: bool) -> float:
-    """计算总阻力 (N) = Davis基本阻力 + 坡道阻力 + 隧道附加阻力。
+                          gradient: float, is_tunnel: bool,
+                          curve_radius: Optional[float] = None) -> float:
+    """计算总阻力 (N) = Davis基本阻力 + 坡道阻力 + 隧道附加阻力 + 曲线附加阻力。
 
     Args:
         car: 车辆配置。
         velocity: 当前速度 (m/s)。
         gradient: 坡度 (‰)。
         is_tunnel: 是否在隧道内。
+        curve_radius: 曲线半径 (m)，None 表示直线。
 
     Returns:
         总阻力 (N)，通常为负值（阻碍运动）。
     """
     return (calc_davis_resistance(car, velocity) +
             calc_grade_resistance(car, gradient) +
-            calc_tunnel_resistance(car, velocity, is_tunnel))
+            calc_tunnel_resistance(car, velocity, is_tunnel) +
+            calc_curve_resistance(car, curve_radius))
+
+
+def calc_curve_resistance(car: CarConfig, radius: Optional[float]) -> float:
+    """计算曲线附加阻力 (N)。
+
+    经验公式: R_curve ≈ 700 / R × m × g
+    其中 R 为曲线半径 (m)。
+
+    阻力始终与运动方向相反（返回非正值）。
+
+    Args:
+        car: 车辆配置。
+        radius: 曲线半径 (m)，None 或 ≤ 0 表示直线（返回 0）。
+
+    Returns:
+        曲线附加阻力 (N)，≤ 0。
+    """
+    if radius is None or radius <= 0:
+        return 0.0
+    g = 9.81
+    magnitude = 700.0 / radius * car.mass * g
+    return -magnitude
 
 
 def calc_tractive_force(car: CarConfig, velocity: float,
-                        throttle: float, adhesion_coefficient: float = 0.18) -> float:
+                        throttle: float, adhesion_coefficient: float = 0.18
+                        ) -> tuple:
     """计算牵引力 (N)，含黏着限制。
 
     牵引特性曲线:
@@ -134,10 +150,10 @@ def calc_tractive_force(car: CarConfig, velocity: float,
         adhesion_coefficient: 轮轨黏着系数。
 
     Returns:
-        牵引力 (N)，≥ 0。
+        (force, traction_limited) — 牵引力 (N, ≥ 0) 和是否被黏着限制截断。
     """
     if not car.is_motor or throttle <= 0.0:
-        return 0.0
+        return 0.0, False
 
     v = abs(velocity)
 
@@ -154,17 +170,134 @@ def calc_tractive_force(car: CarConfig, velocity: float,
 
     # 黏着限制
     adhesion_limit = adhesion_coefficient * car.mass * 9.81
-    if force > adhesion_limit:
+    traction_limited = force > adhesion_limit
+    if traction_limited:
         force = adhesion_limit
 
-    return force
+    return force, traction_limited
+
+
+def _calc_raw_brake_magnitude(car: CarConfig, brake_level: float) -> float:
+    """计算制动需求幅值（不含方向、黏着限制），供电空拆分复用。
+
+    包含: 常用→紧急插值 + 载荷补偿。
+    """
+    max_brake = (car.max_service_brake_force +
+                 (car.max_emergency_brake_force - car.max_service_brake_force) * brake_level)
+    magnitude = max_brake
+    # 载荷补偿：重载列车需要更大的制动力
+    if hasattr(car, 'base_mass') and car.base_mass > 0:
+        load_compensation = car.mass / car.base_mass
+        magnitude *= load_compensation
+    return magnitude
+
+
+def calc_electric_brake_magnitude(car: CarConfig, velocity: float,
+                                    brake_level: float) -> float:
+    """计算电气制动（再生制动）需求幅值 (N, ≥ 0)。
+
+    动车在高速时承担 70% 总制动需求，低速 (< 5 km/h) 线性衰减至零。
+    拖车无电气制动能力。
+
+    注意: 此函数返回原始需求值，不含黏着限制。
+    黏着限制应由调用方对总制动力（电气+空气）统一施加。
+
+    Args:
+        car: 车辆配置。
+        velocity: 当前速度 (m/s)，取绝对值。
+        brake_level: 制动级别 (0.0 ~ 1.0)。
+
+    Returns:
+        电气制动需求幅值 (N, ≥ 0)。
+    """
+    if not car.is_motor or brake_level <= 0.0:
+        return 0.0
+
+    total_magnitude = _calc_raw_brake_magnitude(car, brake_level)
+    electric_magnitude = total_magnitude * 0.7
+
+    # 低速衰减: v < 5 km/h (≈ 1.39 m/s) 时线性衰减至零
+    v_kmh = abs(velocity) * 3.6
+    if v_kmh < 5.0:
+        fade_ratio = v_kmh / 5.0  # 5→0 km/h 时 1→0
+    else:
+        fade_ratio = 1.0
+
+    return electric_magnitude * fade_ratio
+
+
+def calc_friction_brake_magnitude(car: CarConfig, brake_level: float,
+                                    electric_magnitude: float) -> float:
+    """计算空气制动（摩擦制动）需求幅值 (N, ≥ 0)。
+
+    自动补偿电气制动的低速衰减，维持总制动力 = 需求值。
+    electric_magnitude 为 calc_electric_brake_magnitude 的返回值。
+
+    Args:
+        car: 车辆配置。
+        brake_level: 制动级别 (0.0 ~ 1.0)。
+        electric_magnitude: 电气制动需求幅值 (N)。
+
+    Returns:
+        空气制动需求幅值 (N, ≥ 0)。
+    """
+    if brake_level <= 0.0:
+        return 0.0
+
+    total_magnitude = _calc_raw_brake_magnitude(car, brake_level)
+    return max(0.0, total_magnitude - electric_magnitude)
+
+
+def calc_electric_brake_force(car: CarConfig, velocity: float,
+                               brake_level: float) -> float:
+    """计算电气制动（再生制动）力 (N)，含符号。
+
+    正值 = 前进方向。速度方向决定符号（制动力与运动方向相反）。
+
+    Args:
+        car: 车辆配置。
+        velocity: 当前速度 (m/s)。
+        brake_level: 制动级别 (0.0 ~ 1.0)。
+
+    Returns:
+        电气制动力 (N)，与运动方向相反的带符号力。
+    """
+    mag = calc_electric_brake_magnitude(car, velocity, brake_level)
+    if velocity >= 0:
+        return -mag
+    else:
+        return mag
+
+
+def calc_friction_brake_force(car: CarConfig, velocity: float,
+                               brake_level: float,
+                               electric_magnitude: float) -> float:
+    """计算空气制动（摩擦制动）力 (N)，含符号。
+
+    正值 = 前进方向。自动补偿电气制动的低速衰减。
+
+    Args:
+        car: 车辆配置。
+        velocity: 当前速度 (m/s)。
+        brake_level: 制动级别 (0.0 ~ 1.0)。
+        electric_magnitude: 电气制动需求幅值 (N)，用于补偿计算。
+
+    Returns:
+        空气制动力 (N)，与运动方向相反的带符号力。
+    """
+    mag = calc_friction_brake_magnitude(car, brake_level, electric_magnitude)
+    if velocity >= 0:
+        return -mag
+    else:
+        return mag
 
 
 def calc_brake_force(car: CarConfig, velocity: float,
-                     brake_level: float, adhesion_coefficient: float = 0.18) -> float:
-    """计算制动力 (N)，含黏着限制。
+                     brake_level: float, adhesion_coefficient: float = 0.18) -> tuple:
+    """计算总制动力 (N) = 电气制动 + 空气制动，含黏着限制和载荷补偿。
 
-    制动力与运动方向相反（返回非正值）。
+    电气制动低速衰减时，空气制动自动补偿差额，维持总需求不变。
+    黏着限制对总制动力统一施加（单轴黏着不能区分电/空）。
 
     Args:
         car: 车辆配置。
@@ -173,24 +306,24 @@ def calc_brake_force(car: CarConfig, velocity: float,
         adhesion_coefficient: 轮轨黏着系数。
 
     Returns:
-        制动力 (N)，≤ 0。
+        (total_force, brake_limited) — 总制动力 (N, ≤ 0) 和是否被黏着限制截断。
     """
     if brake_level <= 0.0 or abs(velocity) < 1e-9:
-        return 0.0
+        return 0.0, False
 
-    # 线性插值: brake_level 0→1 映射到 常用制动 → 紧急制动
-    max_brake = (car.max_service_brake_force +
-                 (car.max_emergency_brake_force - car.max_service_brake_force) * brake_level)
+    # 电空需求拆分
+    electric_mag = calc_electric_brake_magnitude(car, velocity, brake_level)
+    friction_mag = calc_friction_brake_magnitude(car, brake_level, electric_mag)
+    total_magnitude = electric_mag + friction_mag
 
-    magnitude = max_brake * brake_level
-
-    # 黏着限制
+    # 黏着限制（对总制动力统一施加）
     adhesion_limit = adhesion_coefficient * car.mass * 9.81
-    if magnitude > adhesion_limit:
-        magnitude = adhesion_limit
+    brake_limited = total_magnitude > adhesion_limit
+    if brake_limited:
+        total_magnitude = adhesion_limit
 
     # 制动力方向与速度相反
     if velocity >= 0:
-        return -magnitude
+        return -total_magnitude, brake_limited
     else:
-        return magnitude
+        return total_magnitude, brake_limited

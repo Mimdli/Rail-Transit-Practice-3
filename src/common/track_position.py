@@ -5,6 +5,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -41,10 +42,35 @@ class ITrackQuery(ABC):
         ...
 
     @abstractmethod
+    def get_curve_radius(self, pos: TrackPosition) -> Optional[float]:
+        """返回当前位置的曲线半径 (m)。
+
+        None 表示直线（无曲线附加阻力）。
+        """
+        ...
+
+    @abstractmethod
     def advance_position(self, pos: TrackPosition, distance: float) -> TrackPosition:
         """沿线路推进指定距离，返回新位置。
 
         距离可为负值（后退），但偏移量不会越过区段起点。
+        """
+        ...
+
+    @abstractmethod
+    def to_absolute(self, pos: TrackPosition) -> float:
+        """将 TrackPosition 转换为线路绝对里程 (m)。
+
+        绝对里程从线路起点（Segment 1 offset=0）起算，
+        用于跨区段距离计算和车钩力运算。
+        """
+        ...
+
+    @abstractmethod
+    def from_absolute(self, abs_pos: float) -> TrackPosition:
+        """从线路绝对里程转换回 TrackPosition。
+
+        用于微步积分后将绝对位置还原为区段坐标。
         """
         ...
 
@@ -55,17 +81,18 @@ class ITrackQuery(ABC):
 class MockSeg:
     """测试用区段定义。"""
     id: int
-    length: float       # m
-    limit: float        # m/s
-    gradient: float     # ‰
+    length: float              # m
+    limit: float               # m/s
+    gradient: float            # ‰
     tunnel: bool
+    curve_radius: Optional[float] = None  # m, None = 直线
 
 
 # 测试用简化线路（约 3km，3 段，覆盖所有动力学场景）
 MOCK_SEGMENTS = [
-    MockSeg(id=1, length=1000.0, limit=22.22, gradient=0.0,   tunnel=False),  # 80 km/h, 露天
-    MockSeg(id=2, length=1000.0, limit=16.67, gradient=30.0,  tunnel=True),   # 60 km/h, 隧道上坡
-    MockSeg(id=3, length=1000.0, limit=22.22, gradient=-15.0, tunnel=False),  # 80 km/h, 下坡
+    MockSeg(id=1, length=1000.0, limit=22.22, gradient=0.0,   tunnel=False),                        # 80 km/h, 露天直线
+    MockSeg(id=2, length=1000.0, limit=16.67, gradient=30.0,  tunnel=True,  curve_radius=400.0),     # 60 km/h, 隧道上坡+曲线 R=400m
+    MockSeg(id=3, length=1000.0, limit=22.22, gradient=-15.0, tunnel=False),                        # 80 km/h, 下坡直线
 ]
 
 
@@ -91,6 +118,9 @@ class MockTrackQuery(ITrackQuery):
     def get_is_tunnel(self, pos: TrackPosition) -> bool:
         return self._get_seg(pos.segment_id).tunnel
 
+    def get_curve_radius(self, pos: TrackPosition) -> Optional[float]:
+        return self._get_seg(pos.segment_id).curve_radius
+
     def advance_position(self, pos: TrackPosition, distance: float) -> TrackPosition:
         """直线推进：offset 线性累加，跨段自动切换。
 
@@ -102,7 +132,7 @@ class MockTrackQuery(ITrackQuery):
         min_seg_id = min(s.id for s in self.segments)
 
         # 将当前位置转换为线路绝对里程
-        abs_pos = self._to_absolute(pos)
+        abs_pos = self.to_absolute(pos)
         new_abs = abs_pos + distance
 
         # 边界裁剪
@@ -111,9 +141,9 @@ class MockTrackQuery(ITrackQuery):
         if new_abs > total_length:
             new_abs = total_length
 
-        return self._from_absolute(new_abs)
+        return self.from_absolute(new_abs)
 
-    def _to_absolute(self, pos: TrackPosition) -> float:
+    def to_absolute(self, pos: TrackPosition) -> float:
         """将 TrackPosition 转换为线路绝对里程（从 Seg 1 起点起算）。"""
         offset = 0.0
         for seg in self.segments:
@@ -124,7 +154,7 @@ class MockTrackQuery(ITrackQuery):
                 break
         return offset
 
-    def _from_absolute(self, abs_pos: float) -> TrackPosition:
+    def from_absolute(self, abs_pos: float) -> TrackPosition:
         """从线路绝对里程转换为 TrackPosition。"""
         remaining = abs_pos
         for seg in self.segments:

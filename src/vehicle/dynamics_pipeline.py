@@ -14,9 +14,10 @@ from typing import List, Tuple, Optional
 from src.common.car_config import CarConfig, CouplerConfig, DEFAULT_COUPLER_CONFIG
 from src.common.car_state import CarState
 from src.common.consist import TrainConsist
-from src.common.track_position import TrackPosition, ITrackQuery
+from src.common.track_position import ITrackQuery
 from src.vehicle.forces import (
     calc_total_resistance, calc_tractive_force, calc_brake_force,
+    calc_electric_brake_magnitude, calc_friction_brake_magnitude,
     IEnvironmentQuery,
 )
 from src.vehicle.coupler import _calc_coupler_force_raw
@@ -41,13 +42,22 @@ class PerCarDynamicsPipeline:
 
     DT_PHY_MAX = 0.001  # 微步长上限（秒），硬约束，不可调大
 
-    def __init__(self, coupler_config: CouplerConfig = None):
+    def __init__(self, coupler_config: CouplerConfig = None,
+                 tau_traction: float = 0.3, tau_brake: float = 0.5):
         """
         Args:
             coupler_config: 车钩参数配置，默认使用 DEFAULT_COUPLER_CONFIG。
+            tau_traction: 牵引作动时间常数 (s)，模拟电机建磁迟滞，典型值 0.3s。
+            tau_brake: 制动作动时间常数 (s)，模拟气缸充气迟滞，典型值 0.5s。
         """
         self.coupler_config = coupler_config or DEFAULT_COUPLER_CONFIG
         self.step_counter: int = 0
+
+        # PT1 一阶低通滤波器状态（作动迟滞建模）
+        self.filtered_throttle: float = 0.0
+        self.filtered_brake: float = 0.0
+        self.tau_traction: float = tau_traction
+        self.tau_brake: float = tau_brake
 
     def step(self, consist: TrainConsist, states: List[CarState],
              dt: float, track: ITrackQuery, env: IEnvironmentQuery,
@@ -71,14 +81,32 @@ class PerCarDynamicsPipeline:
         if len(states) != n_cars:
             raise ValueError(f"states 数量 ({len(states)}) 与编组 ({n_cars}) 不匹配")
 
-        adhesion = env.get_adhesion_coefficient()
+        adhesion = env.get_adhesion_coefficient(states[0].position)
+
+        # ── PT1 一阶低通滤波（作动迟滞） ─────────────────────
+        # 模拟真实制动气缸充气和电机建磁的时间延迟。
+        # 滤波器在外步层面更新一次，微步循环内使用滤波后的常值。
+        if self.tau_traction > 0:
+            alpha_t = 1.0 - math.exp(-dt / self.tau_traction)
+            self.filtered_throttle += (throttle - self.filtered_throttle) * alpha_t
+        else:
+            self.filtered_throttle = throttle
+
+        if self.tau_brake > 0:
+            alpha_b = 1.0 - math.exp(-dt / self.tau_brake)
+            self.filtered_brake += (brake_level - self.filtered_brake) * alpha_b
+        else:
+            self.filtered_brake = brake_level
+
+        eff_throttle = self.filtered_throttle
+        eff_brake = self.filtered_brake
 
         # ── 微步长切分 ─────────────────────────────────────────
         n_substeps = max(1, math.ceil(dt / self.DT_PHY_MAX))
         dt_phy = dt / n_substeps
 
         # ── 计算绝对位置（用于车钩力计算） ─────────────────────
-        abs_positions = [self._track_to_absolute(s.position, track) for s in states]
+        abs_positions = [track.to_absolute(s.position) for s in states]
 
         # ── 微步长循环 ─────────────────────────────────────────
         for _ in range(n_substeps):
@@ -88,9 +116,10 @@ class PerCarDynamicsPipeline:
             ]
 
             # Step 2 — 计算外部力（每微步重新计算，因速度/位置已变化）
-            external_forces = self._precompute_external_forces(
-                consist, states, track, throttle, brake_level, adhesion
-            )
+            external_forces, t_limited, b_limited, electric_brakes, friction_brakes = \
+                self._precompute_external_forces(
+                    consist, states, track, eff_throttle, eff_brake, adhesion
+                )
 
             # Step 3 — 计算车钩力（每个微步内必须重新计算！）
             coupler_forces = self._calc_all_coupler_forces(
@@ -105,14 +134,16 @@ class PerCarDynamicsPipeline:
             # Step 5 — 积分更新状态（使用微步长 dt_phy）
             for i in range(n_cars):
                 car = states[i]
-                a = net_forces[i] / consist[i].mass
+                # 回转质量系数：等效质量 = 静质量 × rotary_mass_factor
+                effective_mass = consist[i].mass * consist[i].rotary_mass_factor
+                a = net_forces[i] / effective_mass
                 car.velocity += a * dt_phy
                 # 速度不能为负（列车不倒行，除非特殊情况）
                 if car.velocity < 0.0:
                     car.velocity = 0.0
                 # 更新位置
                 abs_positions[i] += car.velocity * dt_phy
-                car.position = self._absolute_to_track(abs_positions[i], track)
+                car.position = track.from_absolute(abs_positions[i])
                 car.acceleration = a
 
             # Step 6 — 限速裁剪
@@ -122,6 +153,10 @@ class PerCarDynamicsPipeline:
                     states[i].velocity = limit
 
         # ── Step 7 — 生成摘要 ──────────────────────────────────
+        # 微步循环中最后一步的车钩力和合力（用于 ForceReport）
+        last_coupler_forces = coupler_forces  # 微步循环最后一次迭代的值
+        last_net_forces = net_forces
+
         self.step_counter += 1
         summary = {
             "step": self.step_counter,
@@ -130,6 +165,14 @@ class PerCarDynamicsPipeline:
             "dt_phy": dt_phy,
             "final_speed": [s.velocity for s in states],
             "final_position": [s.position for s in states],
+            "filtered_throttle": self.filtered_throttle,
+            "coupler_forces": last_coupler_forces,
+            "net_forces": last_net_forces,
+            "filtered_brake": self.filtered_brake,
+            "traction_limited": t_limited,
+            "brake_limited": b_limited,
+            "electric_brake_forces": electric_brakes,
+            "friction_brake_forces": friction_brakes,
         }
         return states, summary
 
@@ -137,21 +180,44 @@ class PerCarDynamicsPipeline:
 
     def _precompute_external_forces(self, consist, states, track,
                                      throttle, brake, adhesion):
-        """预计算外部力（阻力+牵引力+制动力），在微步循环外执行一次。"""
+        """预计算外部力（阻力+牵引力+电空制动）。
+
+        黏着限制对总制动力统一施加（通过 calc_brake_force）。
+        电空拆分仅用于报告（通过 magnitude 函数）。
+
+        Returns:
+            (forces, traction_limited, brake_limited,
+             electric_magnitudes, friction_magnitudes)
+        """
         forces = []
+        traction_limited_list = []
+        brake_limited_list = []
+        electric_mag_list = []
+        friction_mag_list = []
         for i, car_config in enumerate(consist):
             s = states[i]
             gradient = track.get_gradient(s.position)
             is_tunnel = track.get_is_tunnel(s.position)
+            curve_radius = track.get_curve_radius(s.position)
 
             f_resistance = calc_total_resistance(car_config, s.velocity,
-                                                  gradient, is_tunnel)
-            f_traction = calc_tractive_force(car_config, s.velocity,
-                                              throttle, adhesion)
-            f_brake = calc_brake_force(car_config, s.velocity,
-                                        brake, adhesion)
+                                                  gradient, is_tunnel, curve_radius)
+            f_traction, t_limited = calc_tractive_force(car_config, s.velocity,
+                                                         throttle, adhesion)
+            f_brake, b_limited = calc_brake_force(car_config, s.velocity,
+                                                   brake, adhesion)
+
+            # 电空拆分（仅用于报告，不参与合力计算）
+            electric_mag = calc_electric_brake_magnitude(car_config, s.velocity, brake)
+            friction_mag = calc_friction_brake_magnitude(car_config, brake, electric_mag)
+
             forces.append(f_resistance + f_traction + f_brake)
-        return forces
+            traction_limited_list.append(t_limited)
+            brake_limited_list.append(b_limited)
+            electric_mag_list.append(electric_mag)
+            friction_mag_list.append(friction_mag)
+        return (forces, traction_limited_list, brake_limited_list,
+                electric_mag_list, friction_mag_list)
 
     def _calc_all_coupler_forces(self, consist, states, abs_positions):
         """计算所有相邻车对之间的车钩力。
@@ -184,23 +250,3 @@ class PerCarDynamicsPipeline:
                 net[i] -= coupler_forces[i]
         return net
 
-    @staticmethod
-    def _track_to_absolute(pos: TrackPosition, track: ITrackQuery) -> float:
-        """将 TrackPosition 转换为线路绝对里程。
-
-        利用 track 的 Mock 实现内置方法。
-        集成时替换为真实线路的等效转换。
-        """
-        # 使用 MockTrackQuery 的内部转换（通过 duck typing）
-        if hasattr(track, '_to_absolute'):
-            return track._to_absolute(pos)
-        # 回退：假设单一区段
-        return pos.offset
-
-    @staticmethod
-    def _absolute_to_track(abs_pos: float, track: ITrackQuery) -> TrackPosition:
-        """将线路绝对里程转换为 TrackPosition。"""
-        if hasattr(track, '_from_absolute'):
-            return track._from_absolute(abs_pos)
-        # 回退：假设单一区段
-        return TrackPosition(segment_id=1, offset=abs_pos)

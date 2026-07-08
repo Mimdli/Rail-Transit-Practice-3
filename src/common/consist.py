@@ -3,6 +3,7 @@
 阶段 4：定义整列车的编组——哪些位置是动车、哪些是拖车。
 """
 
+import copy
 from typing import List
 from src.common.car_config import CarConfig, MOTOR_CAR_CONFIG, TRAILER_CAR_CONFIG
 
@@ -12,6 +13,9 @@ class TrainConsist:
 
     按从头到尾的顺序存储每节车的 CarConfig。
     支持 len()、索引访问和动车判断。
+
+    注意：构造函数对每节车的 CarConfig 做深拷贝，因此修改编组中某节车的属性
+    （如 mass）不会影响全局预设单例。
 
     Usage:
         consist = TrainConsist([MOTOR_CAR_CONFIG, TRAILER_CAR_CONFIG, MOTOR_CAR_CONFIG])
@@ -23,7 +27,9 @@ class TrainConsist:
     def __init__(self, cars: List[CarConfig]):
         if len(cars) == 0:
             raise ValueError("编组至少需要 1 节车")
-        self._cars = list(cars)
+        # 深拷贝每节车的配置，断开对全局单例的引用，
+        # 防止 set_load_level 等操作污染 MOTOR_CAR_CONFIG / TRAILER_CAR_CONFIG
+        self._cars = [copy.deepcopy(c) for c in cars]
 
     def __len__(self) -> int:
         """返回编组节数。"""

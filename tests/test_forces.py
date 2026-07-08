@@ -209,66 +209,72 @@ def test_total_trailer():
 
 def test_traction_constant_torque():
     """v=5 (< 10 恒力矩), throttle=1.0, dry: F = 80000 N"""
-    f = calc_tractive_force(MOTOR, 5.0, 1.0, 0.18)
+    f, limited = calc_tractive_force(MOTOR, 5.0, 1.0, 0.18)
     assert abs(f - 80000.0) < 1.0
+    assert not limited
 
 
 def test_traction_constant_power():
     """v=15 (恒功率), throttle=1.0: F = 80000*10/15 = 53333.33 N"""
-    f = calc_tractive_force(MOTOR, 15.0, 1.0, 0.18)
+    f, limited = calc_tractive_force(MOTOR, 15.0, 1.0, 0.18)
     expected = 80000 * 10 / 15
     assert abs(f - expected) < expected * 0.01
 
 
 def test_traction_near_construction_speed():
     """v=22.0 (< 22.22 构造速度): F = 80000*10/22.0 ≈ 36363.6 N"""
-    f = calc_tractive_force(MOTOR, 22.0, 1.0, 0.18)
+    f, limited = calc_tractive_force(MOTOR, 22.0, 1.0, 0.18)
     expected = 80000 * 10 / 22.0
     assert abs(f - expected) < expected * 0.01
 
 
 def test_traction_exactly_at_construction_speed():
     """v=22.22 (= 构造速度): F = 0（牵引力自然衰减至零）"""
-    f = calc_tractive_force(MOTOR, 22.22, 1.0, 0.18)
+    f, limited = calc_tractive_force(MOTOR, 22.22, 1.0, 0.18)
     assert f == 0.0
+    assert not limited
 
 
 def test_traction_above_construction_speed():
     """v=25 (> 22.22): F = 0"""
-    f = calc_tractive_force(MOTOR, 25.0, 1.0, 0.18)
+    f, limited = calc_tractive_force(MOTOR, 25.0, 1.0, 0.18)
     assert f == 0.0
 
 
 def test_traction_half_throttle():
     """v=5, throttle=0.5: F = 40000 N"""
-    f = calc_tractive_force(MOTOR, 5.0, 0.5, 0.18)
+    f, limited = calc_tractive_force(MOTOR, 5.0, 0.5, 0.18)
     assert abs(f - 40000.0) < 1.0
 
 
 def test_traction_adhesion_limit_rain():
     """v=5, throttle=1.0, rain(0.10): 黏着限制 58860 N"""
-    f = calc_tractive_force(MOTOR, 5.0, 1.0, 0.10)
+    f, limited = calc_tractive_force(MOTOR, 5.0, 1.0, 0.10)
     adhesion_limit = 0.10 * 60000 * 9.81  # 58860
     assert abs(f - adhesion_limit) < 1.0
+    assert limited  # 被黏着限制截断
 
 
 def test_traction_adhesion_limit_snow():
     """v=5, throttle=1.0, snow(0.06): 黏着限制 35316 N"""
-    f = calc_tractive_force(MOTOR, 5.0, 1.0, 0.06)
+    f, limited = calc_tractive_force(MOTOR, 5.0, 1.0, 0.06)
     adhesion_limit = 0.06 * 60000 * 9.81  # 35316
     assert abs(f - adhesion_limit) < 1.0
+    assert limited
 
 
 def test_traction_trailer_zero():
     """拖车无动力: F = 0"""
-    f = calc_tractive_force(TRAILER, 5.0, 1.0, 0.18)
+    f, limited = calc_tractive_force(TRAILER, 5.0, 1.0, 0.18)
     assert f == 0.0
+    assert not limited
 
 
 def test_traction_zero_throttle():
     """throttle=0: F = 0"""
-    f = calc_tractive_force(MOTOR, 10.0, 0.0, 0.18)
+    f, limited = calc_tractive_force(MOTOR, 10.0, 0.0, 0.18)
     assert f == 0.0
+    assert not limited
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -276,44 +282,180 @@ def test_traction_zero_throttle():
 # ═══════════════════════════════════════════════════════════════
 
 def test_brake_half():
-    """v=20, brake=0.5, dry: max_brake=90000, magnitude=45000 → -45000 N"""
-    f = calc_brake_force(MOTOR, 20.0, 0.5, 0.18)
+    """v=20, brake=0.5, dry: max_brake=80000+(100000-80000)*0.5=90000, mag=90000 → -90000 N
+
+    P0 修复: 去除二次乘法，max_brake 已是插值结果，不再乘 brake_level。
+    """
+    f, limited = calc_brake_force(MOTOR, 20.0, 0.5, 0.18)
     max_brake = 80000 + (100000 - 80000) * 0.5  # 90000
-    magnitude = max_brake * 0.5                    # 45000
-    assert abs(f - (-magnitude)) < 1.0
+    assert abs(f - (-max_brake)) < 1.0, f"Expected {-max_brake}, got {f}"
+    assert not limited
 
 
 def test_brake_full_emergency():
     """v=20, brake=1.0, dry: max=100000, mag=100000 → -100000 N"""
-    f = calc_brake_force(MOTOR, 20.0, 1.0, 0.18)
+    f, limited = calc_brake_force(MOTOR, 20.0, 1.0, 0.18)
     assert abs(f - (-100000.0)) < 1.0
 
 
 def test_brake_stopped():
     """v=0: F = 0"""
-    f = calc_brake_force(MOTOR, 0.0, 1.0, 0.18)
+    f, limited = calc_brake_force(MOTOR, 0.0, 1.0, 0.18)
     assert f == 0.0
 
 
 def test_brake_zero_level():
     """brake=0: F = 0"""
-    f = calc_brake_force(MOTOR, 20.0, 0.0, 0.18)
+    f, limited = calc_brake_force(MOTOR, 20.0, 0.0, 0.18)
     assert f == 0.0
 
 
 def test_brake_adhesion_limit_rain():
     """v=20, brake=1.0, rain(0.10): 黏着限制 58860 → -58860 N"""
-    f = calc_brake_force(MOTOR, 20.0, 1.0, 0.10)
+    f, limited = calc_brake_force(MOTOR, 20.0, 1.0, 0.10)
     adhesion_limit = 0.10 * 60000 * 9.81  # 58860
     assert abs(f - (-adhesion_limit)) < 1.0
+    assert limited  # 被黏着限制截断
 
 
 def test_brake_trailer():
     """拖车制动也能产生制动力。"""
-    f = calc_brake_force(TRAILER, 20.0, 1.0, 0.18)
+    f, limited = calc_brake_force(TRAILER, 20.0, 1.0, 0.18)
     # max=65000+(80000-65000)*1=80000, mag=80000, adhesion_limit=0.18*46000*9.81=81226.8
     # 80000 ≤ 81226.8, so f = -80000
     assert abs(f - (-80000.0)) < 1.0
+
+
+# ═══════════════════════════════════════════════════════════════
+# 曲线附加阻力
+# ═══════════════════════════════════════════════════════════════
+
+from src.vehicle.forces import calc_curve_resistance
+
+
+def test_curve_resistance_straight():
+    """直线 (radius=None): 阻力 = 0"""
+    assert calc_curve_resistance(MOTOR, None) == 0.0
+    assert calc_curve_resistance(MOTOR, 0.0) == 0.0
+
+
+def test_curve_resistance_r400():
+    """R=400m: R_curve = 700/400 × 60000 × 9.81 = 1030050 → -1030050 N"""
+    f = calc_curve_resistance(MOTOR, 400.0)
+    expected = 700.0 / 400.0 * 60000 * 9.81
+    assert abs(f - (-expected)) < expected * 0.01, f"Expected {-expected}, got {f}"
+
+
+def test_curve_resistance_r800():
+    """R=800m (大半径): 阻力较小"""
+    f = calc_curve_resistance(MOTOR, 800.0)
+    expected = 700.0 / 800.0 * 60000 * 9.81
+    assert abs(f - (-expected)) < expected * 0.01
+
+
+def test_curve_resistance_r200():
+    """R=200m (小半径急弯): 阻力较大"""
+    f = calc_curve_resistance(MOTOR, 200.0)
+    expected = 700.0 / 200.0 * 60000 * 9.81
+    assert abs(f - (-expected)) < expected * 0.01
+
+
+def test_curve_resistance_trailer():
+    """拖车曲线阻力与质量成正比。"""
+    f_motor = calc_curve_resistance(MOTOR, 400.0)
+    f_trailer = calc_curve_resistance(TRAILER, 400.0)
+    ratio = abs(f_trailer) / abs(f_motor)
+    expected_ratio = TRAILER.mass / MOTOR.mass
+    assert abs(ratio - expected_ratio) < 0.01
+
+
+def test_total_resistance_includes_curve():
+    """calc_total_resistance 包含曲线阻力。"""
+    from src.vehicle.forces import calc_total_resistance
+    f_flat = calc_total_resistance(MOTOR, 20.0, 0.0, False, None)
+    f_curve = calc_total_resistance(MOTOR, 20.0, 0.0, False, 400.0)
+    # 曲线上的总阻力应该更大（更负）
+    assert f_curve < f_flat, f"曲线阻力应使总阻力更大: flat={f_flat:.1f}, curve={f_curve:.1f}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# 电空混合制动
+# ═══════════════════════════════════════════════════════════════
+
+from src.vehicle.forces import (
+    calc_electric_brake_magnitude,
+    calc_friction_brake_magnitude,
+    _calc_raw_brake_magnitude,
+)
+
+
+def test_electric_brake_motor_only():
+    """只有动车有电气制动。"""
+    e_motor = calc_electric_brake_magnitude(MOTOR, 20.0, 1.0)
+    e_trailer = calc_electric_brake_magnitude(TRAILER, 20.0, 1.0)
+    assert e_motor > 0, "动车应有电气制动"
+    assert e_trailer == 0.0, "拖车无电气制动"
+
+
+def test_electric_brake_fades_at_low_speed():
+    """v < 5 km/h 时电气制动线性衰减。"""
+    # v = 20 m/s = 72 km/h → fade_ratio = 1.0
+    e_high = calc_electric_brake_magnitude(MOTOR, 20.0, 1.0)
+    # v = 0.5 m/s = 1.8 km/h → fade_ratio = 1.8/5.0 = 0.36
+    e_low = calc_electric_brake_magnitude(MOTOR, 0.5, 1.0)
+    assert e_low < e_high, f"低速应衰减: high={e_high:.1f}, low={e_low:.1f}"
+
+
+def test_electric_brake_fade_zero_at_stop():
+    """v=0 时电气制动完全消失。"""
+    e_stop = calc_electric_brake_magnitude(MOTOR, 0.0, 1.0)
+    assert e_stop == 0.0
+
+
+def test_friction_brake_compensates_fade():
+    """电气制动衰减时，空气制动补偿差额。"""
+    brake_level = 1.0
+    raw_total = _calc_raw_brake_magnitude(MOTOR, brake_level)
+
+    # 高速: 电气 ≈ 0.7 * raw_total, 空气 ≈ 0.3 * raw_total
+    e_high = calc_electric_brake_magnitude(MOTOR, 20.0, brake_level)
+    f_high = calc_friction_brake_magnitude(MOTOR, brake_level, e_high)
+    assert abs(e_high + f_high - raw_total) < 1.0, "电空总和应等于总需求"
+
+    # 低速: 电气衰减, 空气增大补偿
+    e_low = calc_electric_brake_magnitude(MOTOR, 0.5, brake_level)
+    f_low = calc_friction_brake_magnitude(MOTOR, brake_level, e_low)
+    assert abs(e_low + f_low - raw_total) < 1.0, "电空总和应始终等于总需求"
+    assert f_low > f_high, "低速时空气制动应补偿电气衰减"
+
+
+def test_total_brake_adhesion_applied_to_sum():
+    """黏着限制对总制动力统一施加（非分别施加）。"""
+    # 雨天: adhesion_limit = 0.10 * 60000 * 9.81 = 58860 N
+    # 紧急制动需求 = 100000 N > 58860 → 应被限幅
+    f_total, limited = calc_brake_force(MOTOR, 20.0, 1.0, 0.10)
+    adhesion_limit = 0.10 * 60000 * 9.81
+    assert abs(f_total - (-adhesion_limit)) < 1.0, (
+        f"总制动力应=黏着限制: expected {-adhesion_limit}, got {f_total}"
+    )
+    assert limited
+
+
+def test_brake_load_compensation_with_ep():
+    """载荷补偿在电空制动中正确生效。"""
+    from src.common.car_config import CarConfig
+
+    car_heavy = CarConfig(
+        name="TestHeavy", mass=67200.0, length=19.5, is_motor=True,
+        max_service_brake_force=80000.0, max_emergency_brake_force=100000.0,
+        base_mass=60000.0,
+    )
+    f_heavy, _ = calc_brake_force(car_heavy, 20.0, 1.0, 0.18)
+    f_normal, _ = calc_brake_force(MOTOR, 20.0, 1.0, 0.18)
+    # 重载制动力 = 基准 × (67200/60000) = 1.12x
+    assert abs(f_heavy) > abs(f_normal), (
+        f"重载制动力应更大: normal={f_normal:.1f}, heavy={f_heavy:.1f}"
+    )
 
 
 if __name__ == "__main__":
@@ -362,4 +504,18 @@ if __name__ == "__main__":
     test_brake_zero_level()
     test_brake_adhesion_limit_rain()
     test_brake_trailer()
+    # Curve resistance
+    test_curve_resistance_straight()
+    test_curve_resistance_r400()
+    test_curve_resistance_r800()
+    test_curve_resistance_r200()
+    test_curve_resistance_trailer()
+    test_total_resistance_includes_curve()
+    # Electro-pneumatic brake
+    test_electric_brake_motor_only()
+    test_electric_brake_fades_at_low_speed()
+    test_electric_brake_fade_zero_at_stop()
+    test_friction_brake_compensates_fade()
+    test_total_brake_adhesion_applied_to_sum()
+    test_brake_load_compensation_with_ep()
     print("All forces tests passed!")
