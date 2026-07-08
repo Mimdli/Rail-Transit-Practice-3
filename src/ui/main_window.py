@@ -1,7 +1,9 @@
-"""主窗口 — TODO: 实现应用程序主界面"""
+"""主窗口 — 轨道交通模拟系统主界面"""
 
-from PyQt5.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QLabel
+from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout
 from PyQt5.QtCore import QTimer
+
+from src.ui.track_view import TrackViewWidget
 
 
 class MainWindow(QMainWindow):
@@ -32,11 +34,14 @@ class MainWindow(QMainWindow):
 
     def _init_ui(self):
         """初始化界面"""
-        # TODO: 创建 Dashboard 和 ControlPanel，添加到布局
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QHBoxLayout(central)
-        layout.addWidget(QLabel("界面待实现"))
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # 线路可视化视图
+        self.track_view = TrackViewWidget(self)
+        layout.addWidget(self.track_view)
 
     def _update(self):
         """定时更新"""
