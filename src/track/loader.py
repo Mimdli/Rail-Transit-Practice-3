@@ -19,7 +19,7 @@ from typing import Optional
 
 from src.track.data import (
     TrackData, Station, Platform, Segment,
-    SpeedLimit, Gradient
+    SpeedLimit, Gradient, Signal
 )
 
 
@@ -177,6 +177,16 @@ class TrackLoader:
             Gradient(3, 200.0, 500.0, 0.0),
             Gradient(4, 0.0, 200.0, 3.0),
             Gradient(4, 200.0, 500.0, 0.0),
+        ]
+
+        # 演示信号机用于本地闭塞和红黄绿三态展示。
+        td.signals = [
+            Signal("S01", direction="up", seg_id=1, offset=200.0),
+            Signal("S02", direction="up", seg_id=1, offset=600.0),
+            Signal("S03", direction="up", seg_id=2, offset=300.0),
+            Signal("S04", direction="up", seg_id=3, offset=250.0),
+            Signal("S05", direction="up", seg_id=4, offset=300.0),
+            Signal("S06", direction="up", seg_id=5, offset=300.0),
         ]
 
         td.build_coordinates()
