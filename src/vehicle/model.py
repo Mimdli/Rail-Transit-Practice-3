@@ -1,36 +1,34 @@
-"""车辆动力学模型 — 列车运动状态模拟"""
+"""车辆动力学模型 — 列车运动状态模拟（旧单质点模型）
 
-from enum import Enum, auto
+⚠ 已废弃: 此模块为旧单质点动力学模型，保留仅为 UI 层兼容。
+   新代码请使用:
+       - VehicleController (src.vehicle.vehicle_controller)
+       - PerCarDynamicsPipeline (src.vehicle.dynamics_pipeline)
+       - AutoDriveController (src.vehicle.auto_drive)
+   枚举请直接从 src.vehicle.enums 导入。
+"""
 
+import warnings
+from enum import auto
 
-class ControlLevel(Enum):
-    """司控器级位"""
-    EMERGENCY_BRAKE = -3
-    FULL_BRAKE = -2
-    SERVICE_BRAKE = -1
-    COAST = 0
-    LOW_TRACTION = 1
-    MEDIUM_TRACTION = 2
-    FULL_TRACTION = 3
-
-
-class DoorSide(Enum):
-    """车门侧"""
-    NONE = 0
-    LEFT = 1
-    RIGHT = 2
-
-
-class RunningMode(Enum):
-    """运行模式"""
-    MANUAL = auto()
-    AUTOMATIC = auto()
+# 枚举统一从 enums.py re-export（保持旧 import 路径兼容）
+from src.vehicle.enums import ControlLevel, DoorSide, RunningMode  # noqa: F401
 
 
 class VehicleModel:
-    """车辆动力学模型"""
+    """车辆动力学模型（旧单质点模型）。
+
+    ⚠ 已废弃: 此类为旧单质点动力学模型的遗留代码，仅由 UI 层
+    (src/ui/*) 临时引用。迁移完成后将被移除。
+
+    新代码请使用 VehicleController + PerCarDynamicsPipeline。
+    """
 
     def __init__(self):
+        warnings.warn(
+            "VehicleModel is deprecated. Use VehicleController instead.",
+            DeprecationWarning, stacklevel=2,
+        )
         # 运动状态
         self.position: float = 0.0          # 当前位置 (m)
         self.speed: float = 0.0             # 当前速度 (m/s)
