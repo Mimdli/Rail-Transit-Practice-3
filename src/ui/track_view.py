@@ -45,7 +45,6 @@ SWITCH_SLANT_PX = 40  # 道岔斜线水平延伸 (px)
 LINE_WIDTH = 9
 HOVER_WIDTH = 14
 TRAIN_HEIGHT = 18     # 列车矩形高度 (px)
-TRAIN_MIN_LENGTH_PX = 16  # 线路图上最小车厢显示宽度，长线路下更易看见移动
 TRAIN_Y_OFFSET = -9   # 列车中心对齐轨道线（TRAIN_HEIGHT/2），实现重叠效果
 
 
@@ -229,7 +228,7 @@ class TrackView(QGraphicsView):
         train_rects = []
         for i in range(n_cars):
             car_config = controller.consist[i]
-            car_length_px = max(car_config.length * SCALE, TRAIN_MIN_LENGTH_PX)
+            car_length_px = car_config.length * SCALE
             car_abs = car_abs_positions[i]
 
             # 车厢矩形：以 car_abs 为前边界（右边界），向左延伸 car_length_px
