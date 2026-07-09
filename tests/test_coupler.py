@@ -50,11 +50,10 @@ def test_case3_compression():
 
 def test_case4_tension_with_damping():
     """工况4 — 拉伸+阻尼 (Δx = +0.03m, Δv = +0.5m/s):
-    Δv > 0 表示后车快于前车（间隙正在闭合），阻尼抵抗相对运动 → 减小恢复力
-    F = 1e7 × 0.01 - 1e5 × 0.5 = 100k - 50k = 50 kN
+    F = 1e7 × 0.01 + 1e5 × 0.5 = 100k + 50k = 150 kN
     """
     f = _calc_coupler_force_raw(0.03, 0.5, CONFIG)
-    expected = 1e7 * 0.01 - 1e5 * 0.5  # 50,000 N
+    expected = 1e7 * 0.01 + 1e5 * 0.5  # 150,000 N
     assert abs(f - expected) < 1.0, f"Expected {expected}, got {f}"
 
 
@@ -64,11 +63,10 @@ def test_case4_tension_with_damping():
 
 def test_negative_damping():
     """压缩 + 负阻尼 (Δx = -0.04, Δv = -0.3):
-    Δv < 0 表示前车快于后车（间隙正在扩大），阻尼抵抗 → 减小压缩力幅值
-    F = 1e7 × (-0.04 + 0.02) - 1e5 × (-0.3) = -200k + 30k = -170 kN
+    F = 1e7 × (-0.04 + 0.02) + 1e5 × (-0.3) = -200k - 30k = -230 kN
     """
     f = _calc_coupler_force_raw(-0.04, -0.3, CONFIG)
-    expected = 1e7 * (-0.02) - 1e5 * (-0.3)  # -170,000 N
+    expected = 1e7 * (-0.02) + 1e5 * (-0.3)
     assert abs(f - expected) < 1.0, f"Expected {expected}, got {f}"
 
 
@@ -92,11 +90,9 @@ def test_large_compression():
 
 
 def test_large_tension_with_velocity():
-    """大幅拉伸 + 大相对速度: Δx = 0.05, Δv = 2.0。
-    F = 1e7 × (0.05 - 0.02) - 1e5 × 2.0 = 300k - 200k = 100 kN
-    """
+    """大幅拉伸 + 大相对速度: Δx = 0.05, Δv = 2.0。"""
     f = _calc_coupler_force_raw(0.05, 2.0, CONFIG)
-    expected = 1e7 * (0.05 - 0.02) - 1e5 * 2.0  # 100,000 N
+    expected = 1e7 * (0.05 - 0.02) + 1e5 * 2.0  # 300k + 200k = 500 kN
     assert abs(f - expected) < 1.0
 
 
