@@ -11,7 +11,7 @@
 from PyQt5.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsLineItem,
     QGraphicsSimpleTextItem, QWidget, QVBoxLayout, QLabel,
-    QGraphicsRectItem,
+    QGraphicsRectItem, QCheckBox,
 )
 from PyQt5.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt5.QtGui import QColor, QPen, QBrush, QFont, QPainter, QFontMetrics
@@ -150,6 +150,7 @@ class TrackView(QGraphicsView):
         # 列车覆盖层（独立管理，方便清除重建）
         self._train_items = []
         self._target_items = []  # 目标标记（独立管理，不随列车刷新清除）
+        self.follow_train = True  # 视角是否跟随列车
 
         # 主线轨道 Y 基准坐标（分支线在此基础上叠加 BRANCH_OFFSET）
         self._base_y = 90
@@ -295,13 +296,14 @@ class TrackView(QGraphicsView):
             self._train_items.append(idx_label)
 
         # 确保头车在视野内
-        if train_rects:
+        if train_rects and self.follow_train:
             self.ensureVisible(train_rects[0], xMargin=80, yMargin=60)
 
     def _clear_train_overlay(self):
         """清除上次绘制的列车图形。"""
         for item in self._train_items:
-            self.scene.removeItem(item)
+            if item.scene() is self.scene:
+                self.scene.removeItem(item)
         self._train_items.clear()
 
     # ── 目标标记 ──────────────────────────────────────────────
@@ -345,7 +347,8 @@ class TrackView(QGraphicsView):
     def _clear_target_marker(self):
         """清除目标标记。"""
         for item in self._target_items:
-            self.scene.removeItem(item)
+            if item.scene() is self.scene:
+                self.scene.removeItem(item)
         self._target_items.clear()
 
     # ── 分支层级计算 ──────────────────────────────────────────
@@ -656,6 +659,12 @@ class TrackViewWidget(QWidget):
         self.status_bar.setObjectName("trackStatusBar")
         layout.addWidget(self.status_bar)
 
+        # 视角跟随开关
+        self._follow_cb = QCheckBox("锁定视角")
+        self._follow_cb.setChecked(True)
+        self._follow_cb.toggled.connect(self._on_follow_toggled)
+        layout.addWidget(self._follow_cb)
+
         self.view: Optional[TrackView] = None
         if track_data is None:
             self._load_data()
@@ -717,6 +726,13 @@ class TrackViewWidget(QWidget):
         """更新列车在线路图上的位置。"""
         if self.view is not None:
             self.view.set_train_position(car_abs_positions, controller)
+
+    def _on_follow_toggled(self, checked: bool):
+        """视角跟随开关"""
+        if self.view:
+            self.view.follow_train = checked
+            if checked and self.view._train_items:
+                self.view.ensureVisible(self.view._train_items[0], xMargin=80, yMargin=60)
 
     def refresh(self):
         """刷新当前线路视图；没有外部数据时回退到数据库加载"""

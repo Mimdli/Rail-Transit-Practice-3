@@ -1,19 +1,18 @@
 """轨道交通模拟系统 — 多系统接口通信模块
 
-提供与外部信号系统、车辆平台、司机台PLC等子系统的网络通信能力。
+提供与外部信号系统、车辆平台、司机台PLC、视景系统等子系统的网络通信能力。
 所有通信在独立线程中运行，不阻塞主UI线程。
 """
 
 from .manager import NetworkManager
 from .constants import (
-    # 车辆UDP
     VEHICLE_UDP_LOCAL_ADDR, VEHICLE_UDP_REMOTE_ADDR,
     VEHICLE_UDP_LOCAL_PORT, VEHICLE_UDP_REMOTE_PORT,
-    # 信号网关UDP
     SIGNAL_GATEWAY_ADDR, SIGNAL_GATEWAY_PORT,
     SIGNAL_LOCAL_PORT,
-    # 司机台PLC
     PLC_SERVER_ADDR, PLC_PORT_1, PLC_PORT_2, PLC_PORT_3,
+    VISION_LOCAL_ADDR, VISION_REMOTE_ADDR, VISION_REMOTE_PORT,
+    CAB_DISPLAY_ADDR, CAB_NETWORK_SCREEN_PORT, CAB_SIGNAL_SCREEN_PORT,
 )
 
 __all__ = [
@@ -23,4 +22,6 @@ __all__ = [
     "SIGNAL_GATEWAY_ADDR", "SIGNAL_GATEWAY_PORT",
     "SIGNAL_LOCAL_PORT",
     "PLC_SERVER_ADDR", "PLC_PORT_1", "PLC_PORT_2", "PLC_PORT_3",
+    "VISION_LOCAL_ADDR", "VISION_REMOTE_ADDR", "VISION_REMOTE_PORT",
+    "CAB_DISPLAY_ADDR", "CAB_NETWORK_SCREEN_PORT", "CAB_SIGNAL_SCREEN_PORT",
 ]
