@@ -132,8 +132,6 @@ class TrackView(QGraphicsView):
         self.setScene(self.scene)
 
         self._branch_levels: dict = {}
-        self._trim_start_px: dict[int, float] = {}
-        self._trim_end_px: dict[int, float] = {}
         self._segment_items: dict[int, SegmentItem] = {}
         self._speed_rects = []
         self._signal_items = []
@@ -351,57 +349,38 @@ class TrackView(QGraphicsView):
         for s in td.segments:
             self._branch_levels.setdefault(s.seg_id, 0)
 
-    def _compute_fork_trims(self, td: TrackData):
-        """侧线在岔点缩进，使斜线与水平轨道能对接。"""
-        self._trim_start_px = {}
-        self._trim_end_px = {}
-        for parent in td.segments:
-            if parent.end_lateral > 0 and parent.end_lateral in td._seg_map:
-                cid = parent.end_lateral
-                self._trim_start_px[cid] = max(
-                    self._trim_start_px.get(cid, 0), float(SWITCH_SLANT_PX))
-            if parent.start_lateral > 0 and parent.start_lateral in td._seg_map:
-                cid = parent.start_lateral
-                self._trim_end_px[cid] = max(
-                    self._trim_end_px.get(cid, 0), float(SWITCH_SLANT_PX))
-
-    def _seg_line_x(self, seg: Segment) -> tuple:
-        x1 = self._x(seg.abs_start) + self._trim_start_px.get(seg.seg_id, 0)
-        x2 = self._x(seg.abs_start + seg.length) - self._trim_end_px.get(seg.seg_id, 0)
-        return x1, x2
-
     def _get_level(self, seg_id: int) -> int:
         return self._branch_levels.get(seg_id, 0)
 
     def _draw_switch_connectors(self, td: TrackData, base_y: float):
-        """斜向道岔线：从主线岔点连到侧线缩进端点，能接则接。"""
+        """岔点斜线示意：固定角度延伸，不强制与侧线端点对接。"""
         if not td._seg_map:
             td._seg_map = {s.seg_id: s for s in td.segments}
 
         pen = QPen(COLOR_BRANCH, LINE_WIDTH)
         pen.setStyle(Qt.SolidLine)
 
+        def _slant(fork_x: float, parent_y: float, child_y: float, at_end: bool):
+            end_x = fork_x + SWITCH_SLANT_PX if at_end else fork_x - SWITCH_SLANT_PX
+            self.scene.addLine(fork_x, parent_y, end_x, child_y, pen).setZValue(0)
+
         for seg in td.segments:
             parent_level = self._get_level(seg.seg_id)
             parent_y = parent_level * BRANCH_OFFSET + base_y
 
             if seg.start_lateral > 0 and seg.start_lateral in td._seg_map:
-                child_id = seg.start_lateral
-                child_level = self._get_level(child_id)
+                child_level = self._get_level(seg.start_lateral)
                 if child_level > parent_level:
                     fork_x = self._x(seg.abs_start)
                     child_y = child_level * BRANCH_OFFSET + base_y
-                    _, child_x = self._seg_line_x(td._seg_map[child_id])
-                    self.scene.addLine(fork_x, parent_y, child_x, child_y, pen).setZValue(0)
+                    _slant(fork_x, parent_y, child_y, at_end=False)
 
             if seg.end_lateral > 0 and seg.end_lateral in td._seg_map:
-                child_id = seg.end_lateral
-                child_level = self._get_level(child_id)
+                child_level = self._get_level(seg.end_lateral)
                 if child_level > parent_level:
                     fork_x = self._x(seg.abs_start + seg.length)
                     child_y = child_level * BRANCH_OFFSET + base_y
-                    child_x, _ = self._seg_line_x(td._seg_map[child_id])
-                    self.scene.addLine(fork_x, parent_y, child_x, child_y, pen).setZValue(0)
+                    _slant(fork_x, parent_y, child_y, at_end=True)
 
     # ── 场景构建 ──────────────────────────────────────────────
 
@@ -415,15 +394,13 @@ class TrackView(QGraphicsView):
         scene_w = self._x(total_len) + 200
 
         self._compute_branch_levels()
-        self._compute_fork_trims(td)
         max_level = max(self._branch_levels.values()) if self._branch_levels else 0
         base_y = self._base_y
 
-        # ── 区段线段 ──────────────────────────────────────────
+        # ── 区段线段（每层一条平行线，全长绘制） ────────────────
         for seg in td.segments:
-            x1, x2 = self._seg_line_x(seg)
-            if x2 <= x1:
-                continue
+            x1 = self._x(seg.abs_start)
+            x2 = self._x(seg.abs_start + seg.length)
             level = self._get_level(seg.seg_id)
             y = level * BRANCH_OFFSET + base_y
 
@@ -431,19 +408,18 @@ class TrackView(QGraphicsView):
             self.scene.addItem(item)
             self._segment_items[seg.seg_id] = item
 
-        # ── 道岔连接线 ──────────────────────────────────────────
+        # ── 道岔斜线（示意，不必与水平线严丝合缝） ──────────────
         self._draw_switch_connectors(td, base_y)
 
         # ── 限速区段 ──────────────────────────────────────────
         for sl in td.speed_limits:
+            x1 = self._x(sl.abs_start)
+            x2 = self._x(sl.abs_end)
             seg = td._seg_map.get(sl.seg_id)
             if not seg:
                 continue
             level = self._get_level(sl.seg_id)
             y = level * BRANCH_OFFSET + base_y + 13
-            trim_s = self._trim_start_px.get(sl.seg_id, 0)
-            x1 = max(self._x(sl.abs_start), self._x(seg.abs_start) + trim_s)
-            x2 = self._x(sl.abs_end)
 
             speed = sl.speed_limit
             if speed >= 18:
