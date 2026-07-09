@@ -11,7 +11,7 @@
 from PyQt5.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsLineItem,
     QGraphicsSimpleTextItem, QWidget, QVBoxLayout, QLabel,
-    QGraphicsRectItem,
+    QGraphicsRectItem, QCheckBox,
 )
 from PyQt5.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt5.QtGui import QColor, QPen, QBrush, QFont, QPainter, QFontMetrics
@@ -142,7 +142,7 @@ class TrackView(QGraphicsView):
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
 
-        self._branch_levels: dict = {}
+        self._seg_layout: dict[int, tuple[int, int]] = {}
         self._segment_items: dict[int, SegmentItem] = {}
         self._speed_rects = []
         self._signal_items = []
@@ -152,6 +152,7 @@ class TrackView(QGraphicsView):
         self._train_items = []
         self._target_items = []  # 目标标记（独立管理，不随列车刷新清除）
         self._last_train_pos_key = None
+        self.follow_train = True  # 视角是否跟随列车
 
         # 主线轨道 Y 基准坐标（分支线在此基础上叠加 BRANCH_OFFSET）
         self._base_y = 90
@@ -223,8 +224,8 @@ class TrackView(QGraphicsView):
         使列车绘制在正确的轨道线上。
         """
         seg_id = self.td.get_seg_id_at(car_abs)
-        level = self._branch_levels.get(seg_id, 0)
-        return self._base_y + TRAIN_Y_OFFSET + level * BRANCH_OFFSET
+        trunk, depth = self._seg_layout.get(seg_id, (0, 0))
+        return self._base_y + TRAIN_Y_OFFSET + (trunk + depth) * BRANCH_OFFSET
 
     def set_train_position(self, car_abs_positions: list, controller: VehicleController = None):
         """更新列车在线路图上的显示位置，并确保列车在视野内。
@@ -261,8 +262,8 @@ class TrackView(QGraphicsView):
 
         # 头车在分支上时，列车整体需要 DIAG_X 偏移以对齐分支轨道线
         head_seg_id = self.td.get_seg_id_at(car_abs_positions[0])
-        head_level = self._branch_levels.get(head_seg_id, 0)
-        x_offset = DIAG_X if head_level > 0 else 0
+        _, head_depth = self._seg_layout.get(head_seg_id, (0, 0))
+        x_offset = DIAG_X if head_depth > 0 else 0
 
         # 从头车到尾车依次绘制
         train_rects = []
@@ -308,7 +309,7 @@ class TrackView(QGraphicsView):
             self._train_items.append(idx_label)
 
         # 确保头车在视野内
-        if train_rects:
+        if train_rects and self.follow_train:
             self.ensureVisible(train_rects[0], xMargin=80, yMargin=60)
 
     def _clear_train_overlay(self):
@@ -331,13 +332,13 @@ class TrackView(QGraphicsView):
         x = self._x(abs_pos)
         # 用 seg_id 确定 y（目标可能在主线或侧线上）
         seg_id = self.td.get_seg_id_at(abs_pos)
-        level = self._branch_levels.get(seg_id, 0)
+        trunk, depth = self._seg_layout.get(seg_id, (0, 0))
         # 侧线目标需要加 DIAG_X 偏移
-        if level > 0:
+        if depth > 0:
             fork_x = self._find_fork_x(seg_id)
             if fork_x is not None:
                 x = fork_x + DIAG_X + self._x(abs_pos - self.td._seg_map[seg_id].abs_start)
-        y = level * BRANCH_OFFSET + self._base_y
+        y = (trunk + depth) * BRANCH_OFFSET + self._base_y
 
         # 红色菱形目标标记
         from PyQt5.QtGui import QPolygonF
@@ -360,76 +361,116 @@ class TrackView(QGraphicsView):
     def _clear_target_marker(self):
         """清除目标标记。"""
         for item in self._target_items:
-            self.scene.removeItem(item)
+            if item.scene() is self.scene:
+                self.scene.removeItem(item)
         self._target_items.clear()
 
     # ── 分支层级计算 ──────────────────────────────────────────
 
     def _compute_branch_levels(self):
-        """计算每个区段的分支层级（主线=0，侧线=1+）。
-
-        通过 BFS 从主线入口段出发，沿 forward 边传播相同层级，
-        沿 lateral 边递增层级。
-        """
-        from collections import deque
         td = self.td
         td._seg_map = {s.seg_id: s for s in td.segments}
+        if not td.segments:
+            self._seg_layout = {}
+            return
 
-        # 找主线入口段：start_neighbor=0 且有 end_neighbor 的段
-        root_id = None
-        for s in td.segments:
-            if s.start_neighbor == 0 and s.end_neighbor > 0 and s.end_neighbor != 65535:
-                root_id = s.seg_id
-                break
-        # 兜底：找第一个不受任何 neighbor 引用的段
-        if root_id is None:
-            all_refs = set()
-            for s in td.segments:
-                for n in (s.start_neighbor, s.end_neighbor,
-                          s.start_lateral, s.end_lateral):
-                    if n > 0 and n != 65535:
-                        all_refs.add(n)
-            for s in td.segments:
-                if s.seg_id not in all_refs:
-                    root_id = s.seg_id
-                    break
-        # 最终兜底
-        if root_id is None:
-            root_id = td.segments[0].seg_id
+        def _is_valid_seg_id(sid: int) -> bool:
+            return sid > 0 and sid != 65535 and sid in td._seg_map
 
-        visited = set()
-        q = deque([root_id])
-        visited.add(root_id)
-        self._branch_levels[root_id] = 0
+        def _walk_main_chain(start_id: int) -> tuple[set[int], float]:
+            chain = set()
+            total = 0.0
+            sid = start_id
+            while _is_valid_seg_id(sid) and sid not in chain:
+                chain.add(sid)
+                seg = td._seg_map[sid]
+                total += seg.length
+                sid = seg.end_neighbor
+            return chain, total
+
+        starts = [
+            s.seg_id for s in td.segments
+            if s.start_neighbor == 0 and _is_valid_seg_id(s.end_neighbor)
+        ]
+        chains = {}
+        for start_id in starts:
+            chain, total = _walk_main_chain(start_id)
+            chains[start_id] = (chain, total)
+
+        trunk_start_ids = []
+        if len(starts) >= 2:
+            best_score = None
+            best_pair = None
+            overlap_penalty = 10
+            for i, a in enumerate(starts):
+                ca = chains[a][0]
+                for b in starts[i + 1:]:
+                    cb = chains[b][0]
+                    overlap = len(ca & cb)
+                    score = (len(ca) + len(cb)) - overlap_penalty * overlap
+                    if best_score is None or score > best_score:
+                        best_score = score
+                        best_pair = (a, b)
+            if best_pair is not None:
+                trunk_start_ids = [best_pair[0], best_pair[1]]
+        if not trunk_start_ids and starts:
+            trunk_start_ids = [max(starts, key=lambda sid: chains[sid][1])]
+
+        trunks = []
+        for start_id in trunk_start_ids:
+            chain = set(chains[start_id][0])
+            changed = True
+            while changed:
+                changed = False
+                for sid in list(chain):
+                    prev_id = td._seg_map[sid].start_neighbor
+                    if not _is_valid_seg_id(prev_id):
+                        continue
+                    if prev_id in chain:
+                        continue
+                    if td._seg_map[prev_id].end_neighbor != sid:
+                        continue
+                    chain.add(prev_id)
+                    changed = True
+            trunks.append(chain)
+
+        from collections import deque
+        self._seg_layout = {}
+        q = deque()
+
+        for trunk_idx, chain in enumerate(trunks):
+            for sid in chain:
+                if sid in self._seg_layout:
+                    continue
+                self._seg_layout[sid] = (trunk_idx, 0)
+                q.append((sid, trunk_idx, 0))
 
         while q:
-            sid = q.popleft()
+            sid, trunk_idx, depth = q.popleft()
             seg = td._seg_map.get(sid)
             if not seg:
                 continue
-            cur_level = self._branch_levels.get(sid, 0)
 
-            for nid in (seg.start_neighbor, seg.end_neighbor):
-                if nid <= 0 or nid == 65535 or nid not in td._seg_map:
-                    continue
-                if nid not in visited:
-                    visited.add(nid)
-                    self._branch_levels[nid] = cur_level
-                    q.append(nid)
+            nid = seg.end_neighbor
+            if _is_valid_seg_id(nid) and nid not in self._seg_layout:
+                self._seg_layout[nid] = (trunk_idx, depth)
+                q.append((nid, trunk_idx, depth))
 
             for nid in (seg.start_lateral, seg.end_lateral):
-                if nid <= 0 or nid == 65535 or nid not in td._seg_map:
+                if not _is_valid_seg_id(nid):
                     continue
-                if nid not in visited:
-                    visited.add(nid)
-                    self._branch_levels[nid] = cur_level + 1
-                    q.append(nid)
-                else:
-                    self._branch_levels[nid] = min(
-                        self._branch_levels.get(nid, 999), cur_level + 1)
+                next_depth = depth + 1
+                cur = self._seg_layout.get(nid)
+                if cur is None or cur[0] == trunk_idx and cur[1] > next_depth:
+                    self._seg_layout[nid] = (trunk_idx, next_depth)
+                    q.append((nid, trunk_idx, next_depth))
 
     def _get_level(self, seg_id: int) -> int:
-        return self._branch_levels.get(seg_id, 0)
+        return self._seg_layout.get(seg_id, (0, 0))[1]
+
+    def _get_stack_level(self, seg_id: int) -> int:
+        trunk, depth = self._seg_layout.get(seg_id, (0, 0))
+        return trunk + depth
 
     def _find_fork_x(self, branch_seg_id: int) -> float | None:
         """查找分支段的道岔分岔点在场景中的 x 坐标（像素）。
@@ -464,16 +505,16 @@ class TrackView(QGraphicsView):
         dot_brush = QBrush(COLOR_BRANCH)
 
         for seg in td.segments:
-            parent_level = self._get_level(seg.seg_id)
-            parent_y = parent_level * BRANCH_OFFSET + base_y
+            parent_depth = self._get_level(seg.seg_id)
+            parent_y = self._get_stack_level(seg.seg_id) * BRANCH_OFFSET + base_y
 
             # ── start_lateral：道岔在父段起点 ──────────────────
             if seg.start_lateral > 0 and seg.start_lateral in td._seg_map:
                 child_id = seg.start_lateral
-                child_level = self._get_level(child_id)
-                if child_level > parent_level:
+                child_depth = self._get_level(child_id)
+                if child_depth > parent_depth:
                     fork_x = self._x(seg.abs_start)
-                    child_y = child_level * BRANCH_OFFSET + base_y
+                    child_y = self._get_stack_level(child_id) * BRANCH_OFFSET + base_y
                     # 斜线：从分岔点 → 分支线起点
                     self.scene.addLine(
                         fork_x, parent_y, fork_x + DIAG_X, child_y, connector_pen
@@ -488,10 +529,10 @@ class TrackView(QGraphicsView):
             # ── end_lateral：道岔在父段终点 ────────────────────
             if seg.end_lateral > 0 and seg.end_lateral in td._seg_map:
                 child_id = seg.end_lateral
-                child_level = self._get_level(child_id)
-                if child_level > parent_level:
+                child_depth = self._get_level(child_id)
+                if child_depth > parent_depth:
                     fork_x = self._x(seg.abs_start + seg.length)
-                    child_y = child_level * BRANCH_OFFSET + base_y
+                    child_y = self._get_stack_level(child_id) * BRANCH_OFFSET + base_y
                     # 斜线：从分岔点 → 分支线起点
                     self.scene.addLine(
                         fork_x, parent_y, fork_x + DIAG_X, child_y, connector_pen
@@ -515,15 +556,15 @@ class TrackView(QGraphicsView):
         scene_w = self._x(total_len) + 200
 
         self._compute_branch_levels()
-        max_level = max(self._branch_levels.values()) if self._branch_levels else 0
+        max_level = max((t + d) for (t, d) in self._seg_layout.values()) if self._seg_layout else 0
         base_y = self._base_y
 
         # ── 区段线段 ──────────────────────────────────────────
         for seg in td.segments:
-            level = self._get_level(seg.seg_id)
-            y = level * BRANCH_OFFSET + base_y
+            trunk, depth = self._seg_layout.get(seg.seg_id, (0, 0))
+            y = (trunk + depth) * BRANCH_OFFSET + base_y
 
-            if level > 0:
+            if depth > 0:
                 # 分支段：从斜线连接器终点开始（岔出点 + DIAG_X 偏移）
                 fork_x = self._find_fork_x(seg.seg_id)
                 if fork_x is not None:
@@ -534,7 +575,7 @@ class TrackView(QGraphicsView):
                 x1 = self._x(seg.abs_start)
             x2 = x1 + self._x(seg.length)
 
-            item = SegmentItem(x1, y, x2, seg, level, self.scene)
+            item = SegmentItem(x1, y, x2, seg, depth, self.scene)
             self.scene.addItem(item)
             self._segment_items[seg.seg_id] = item
 
@@ -546,8 +587,8 @@ class TrackView(QGraphicsView):
             seg = td._seg_map.get(sl.seg_id)
             if not seg:
                 continue
-            level = self._get_level(sl.seg_id)
-            if level > 0:
+            trunk, depth = self._seg_layout.get(sl.seg_id, (0, 0))
+            if depth > 0:
                 fork_x = self._find_fork_x(sl.seg_id)
                 if fork_x is not None:
                     x1 = fork_x + DIAG_X + self._x(sl.start_offset)
@@ -558,7 +599,7 @@ class TrackView(QGraphicsView):
             else:
                 x1 = self._x(sl.abs_start)
                 x2 = self._x(sl.abs_end)
-            y = level * BRANCH_OFFSET + base_y + 13
+            y = (trunk + depth) * BRANCH_OFFSET + base_y + 13
 
             speed = sl.speed_limit
             if speed >= 18:
@@ -671,6 +712,12 @@ class TrackViewWidget(QWidget):
         self.status_bar.setObjectName("trackStatusBar")
         layout.addWidget(self.status_bar)
 
+        # 视角跟随开关
+        self._follow_cb = QCheckBox("锁定视角")
+        self._follow_cb.setChecked(True)
+        self._follow_cb.toggled.connect(self._on_follow_toggled)
+        layout.addWidget(self._follow_cb)
+
         self.view: Optional[TrackView] = None
         if track_data is None:
             self._load_data()
@@ -732,6 +779,13 @@ class TrackViewWidget(QWidget):
         """更新列车在线路图上的位置。"""
         if self.view is not None:
             self.view.set_train_position(car_abs_positions, controller)
+
+    def _on_follow_toggled(self, checked: bool):
+        """视角跟随开关"""
+        if self.view:
+            self.view.follow_train = checked
+            if checked and self.view._train_items:
+                self.view.ensureVisible(self.view._train_items[0], xMargin=80, yMargin=60)
 
     def refresh(self):
         """刷新当前线路视图；没有外部数据时回退到数据库加载"""
