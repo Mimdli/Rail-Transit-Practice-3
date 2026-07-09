@@ -40,7 +40,7 @@ COLOR_TRAILER_CAR = QColor(100, 116, 139, 200)  # 拖车：灰色
 COLOR_TRAIN_BORDER = QColor(30, 64, 175, 220)
 
 SCALE = 0.22          # 米 → 像素
-BRANCH_OFFSET = 42    # 分支偏移高度 (px)
+BRANCH_OFFSET = 60    # 分支偏移高度 (px)
 LINE_WIDTH = 9
 HOVER_WIDTH = 14
 TRAIN_HEIGHT = 18     # 列车矩形高度 (px)
@@ -250,21 +250,9 @@ class TrackView(QGraphicsView):
     # ── 分支层级计算 ──────────────────────────────────────────
 
     def _compute_branch_levels(self):
-        """计算各 segment 的分支层级，使用贪心区间着色避免视觉重叠。
-
-        算法：
-          1. 沿 forward neighbor 链 BFS → 主线为 level 0
-          2. 收集所有侧线 segment（不在主线上），按 abs_start 排序
-          3. 贪心分配层级：非重叠的侧线可复用同一层级，重叠的侧线分配到不同层级
-
-        这样每条道岔分支在视觉上都有合适的垂直偏移，互不遮挡。
-        """
         from collections import deque
         td = self.td
-        if not td.segments:
-            return
-
-        # ── Step 1: 找根段（不被其他段 forward-引用的段） ──
+        td._seg_map = {s.seg_id: s for s in td.segments}
         referenced = set()
         for s in td.segments:
             for n in (s.start_neighbor, s.end_neighbor):
@@ -278,62 +266,67 @@ class TrackView(QGraphicsView):
         if root_id is None:
             root_id = td.segments[0].seg_id
 
-        # ── Step 2: 沿 forward neighbor BFS → 主线 = level 0 ──
         visited = set()
         q = deque([root_id])
         visited.add(root_id)
+        self._branch_levels[root_id] = 0
+
         while q:
             sid = q.popleft()
-            self._branch_levels[sid] = 0
             seg = td._seg_map.get(sid)
             if not seg:
                 continue
+            cur_level = self._branch_levels.get(sid, 0)
+
             for nid in (seg.start_neighbor, seg.end_neighbor):
-                if nid > 0 and nid != 65535 and nid in td._seg_map and nid not in visited:
+                if nid <= 0 or nid == 65535 or nid not in td._seg_map:
+                    continue
+                if nid not in visited:
                     visited.add(nid)
+                    self._branch_levels[nid] = cur_level
                     q.append(nid)
 
-        # ── Step 3: 收集侧线 segment（不在 visited 中） ──
-        branches = []
-        for seg in td.segments:
-            if seg.seg_id not in visited:
-                x_start = seg.abs_start
-                x_end = seg.abs_start + seg.length
-                branches.append((seg.seg_id, x_start, x_end))
-
-        if not branches:
-            # 所有段都在主线上，无需分支层级
-            for seg in td.segments:
-                if seg.seg_id not in self._branch_levels:
-                    self._branch_levels[seg.seg_id] = 0
-            return
-
-        # ── Step 4: 贪心区间着色 — 按起点排序，非重叠可复用层级 ──
-        branches.sort(key=lambda b: b[1])  # 按 abs_start 排序
-        level_end_x: dict[int, float] = {}  # level → 该层最后一个 segment 的终点 X
-
-        for seg_id, x_start, x_end in branches:
-            assigned = False
-            # 尝试分配到已有层级（需无重叠）
-            for lvl in sorted(level_end_x.keys()):
-                if level_end_x[lvl] <= x_start + 1:  # +1 容差，略留间隙
-                    self._branch_levels[seg_id] = lvl
-                    level_end_x[lvl] = x_end
-                    assigned = True
-                    break
-            if not assigned:
-                # 新建层级
-                new_lvl = len(level_end_x) + 1
-                self._branch_levels[seg_id] = new_lvl
-                level_end_x[new_lvl] = x_end
-
-        # ── 兜底：未分配的段 → level 0 ──
-        for seg in td.segments:
-            if seg.seg_id not in self._branch_levels:
-                self._branch_levels[seg.seg_id] = 0
+            for nid in (seg.start_lateral, seg.end_lateral):
+                if nid <= 0 or nid == 65535 or nid not in td._seg_map:
+                    continue
+                if nid not in visited:
+                    visited.add(nid)
+                    self._branch_levels[nid] = cur_level + 1
+                    q.append(nid)
+                else:
+                    self._branch_levels[nid] = min(
+                        self._branch_levels.get(nid, 999), cur_level + 1)
 
     def _get_level(self, seg_id: int) -> int:
         return self._branch_levels.get(seg_id, 0)
+
+    def _draw_switch_connectors(self, td: TrackData, base_y: float):
+        """绘制主线与道岔分支之间的连接线"""
+        if not td._seg_map:
+            td._seg_map = {s.seg_id: s for s in td.segments}
+
+        pen = QPen(COLOR_BRANCH, 5)
+        pen.setStyle(Qt.SolidLine)
+
+        for seg in td.segments:
+            parent_level = self._get_level(seg.seg_id)
+            parent_y = parent_level * BRANCH_OFFSET + base_y
+
+            if seg.start_lateral > 0 and seg.start_lateral in td._seg_map:
+                child_level = self._get_level(seg.start_lateral)
+                if child_level > parent_level:
+                    fork_x = self._x(seg.abs_start)
+                    child_y = child_level * BRANCH_OFFSET + base_y
+                    line = self.scene.addLine(fork_x, parent_y, fork_x, child_y, pen)
+                    line.setZValue(0)
+
+            if seg.end_lateral > 0 and seg.end_lateral in td._seg_map:
+                child_level = self._get_level(seg.end_lateral)
+                if child_level > parent_level:
+                    fork_x = self._x(seg.abs_start + seg.length)
+                    child_y = child_level * BRANCH_OFFSET + base_y
+                    line = self.scene.addLine(fork_x, parent_y, fork_x, child_y, pen)
+                    line.setZValue(0)
 
     # ── 场景构建 ──────────────────────────────────────────────
 
@@ -361,52 +354,8 @@ class TrackView(QGraphicsView):
             self.scene.addItem(item)
             self._segment_items[seg.seg_id] = item
 
-        # ── 道岔连接线（从主线分叉点到侧线起点） ──────────────
-        connector_pen = QPen(QColor(120, 150, 180, 180), 2, Qt.DashLine)
-        for seg in td.segments:
-            main_y = base_y
-
-            # 终点侧向道岔：分叉点在主线段的终点
-            if seg.end_lateral > 0 and seg.end_lateral != 65535:
-                lat_seg = td._seg_map.get(seg.end_lateral)
-                if lat_seg:
-                    lat_level = self._get_level(seg.end_lateral)
-                    if lat_level > 0:
-                        fork_x = self._x(seg.abs_start + seg.length)
-                        branch_y = base_y + lat_level * BRANCH_OFFSET
-                        # 斜线连接：从主线分叉点到侧线起点
-                        conn = self.scene.addLine(
-                            fork_x, main_y, fork_x + 18, branch_y,
-                            connector_pen,
-                        )
-                        conn.setZValue(0)
-                        # 分叉点小圆标记
-                        dot = self.scene.addEllipse(
-                            fork_x - 3, main_y - 3, 6, 6,
-                            QPen(QColor(100, 140, 180), 1.5),
-                            QBrush(QColor(255, 255, 255, 200)),
-                        )
-                        dot.setZValue(3)
-
-            # 起点侧向道岔：分叉点在主线段的起点
-            if seg.start_lateral > 0 and seg.start_lateral != 65535:
-                lat_seg = td._seg_map.get(seg.start_lateral)
-                if lat_seg:
-                    lat_level = self._get_level(seg.start_lateral)
-                    if lat_level > 0:
-                        fork_x = self._x(seg.abs_start)
-                        branch_y = base_y + lat_level * BRANCH_OFFSET
-                        conn = self.scene.addLine(
-                            fork_x, main_y, fork_x + 18, branch_y,
-                            connector_pen,
-                        )
-                        conn.setZValue(0)
-                        dot = self.scene.addEllipse(
-                            fork_x - 3, main_y - 3, 6, 6,
-                            QPen(QColor(100, 140, 180), 1.5),
-                            QBrush(QColor(255, 255, 255, 200)),
-                        )
-                        dot.setZValue(3)
+        # ── 道岔连接线 ──────────────────────────────────────────
+        self._draw_switch_connectors(td, base_y)
 
         # ── 限速区段 ──────────────────────────────────────────
         for sl in td.speed_limits:
