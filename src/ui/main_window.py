@@ -63,6 +63,13 @@ class MainWindow(QMainWindow):
         )
         self.auto_drive = AutoDriveController(self.controller)
 
+        # ── 进路（路线选择） ────────────────────────────────────
+        self.routes = TrackLoader.create_demo_routes()
+        self.auto_drive.set_available_routes(self.routes)
+        # 默认选中"自动"进路
+        auto_route = next((r for r in self.routes if r.is_auto), self.routes[0])
+        self.auto_drive.set_route(auto_route)
+
         # ── 旧版兼容引用（供联锁/日志模块中未迁移的代码使用） ────
         self.vehicle = self.controller  # 兼容别名
 
@@ -110,6 +117,7 @@ class MainWindow(QMainWindow):
             self.controller, self.auto_drive, self.interlock,
             self.track_adapter, self.recorder, show_log=False,
         )
+        self.control_panel.populate_routes(self.routes)
 
         top_content = QWidget()
         top_layout = QHBoxLayout(top_content)

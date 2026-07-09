@@ -229,16 +229,22 @@ def test_traction_near_construction_speed():
 
 
 def test_traction_exactly_at_construction_speed():
-    """v=22.22 (= 构造速度): F = 0（牵引力自然衰减至零）"""
+    """v=22.22 (= 构造速度): F = F_c（与恒功率区连续，避免硬截断导数振荡）"""
     f, limited = calc_tractive_force(MOTOR, 22.22, 1.0, 0.18)
-    assert f == 0.0
+    # 在构造速度处与恒功率区连续: F_c = F_max * v_trans / v_c ≈ 36003.6 N
+    fc = 80000.0 * 10.0 / 22.22
+    assert abs(f - fc) < fc * 0.01, f"Expected ≈{fc:.1f}, got {f:.1f}"
     assert not limited
 
 
 def test_traction_above_construction_speed():
-    """v=25 (> 22.22): F = 0"""
+    """v=25 (> 22.22): F = F_c * (v_c/v)² → 自然特性区平滑衰减"""
     f, limited = calc_tractive_force(MOTOR, 25.0, 1.0, 0.18)
-    assert f == 0.0
+    vc = 22.22
+    fc = 80000.0 * 10.0 / vc
+    expected = fc * (vc / 25.0) ** 2
+    assert abs(f - expected) < expected * 0.01, f"Expected ≈{expected:.1f}, got {f:.1f}"
+    assert not limited
 
 
 def test_traction_half_throttle():
@@ -397,36 +403,36 @@ def test_electric_brake_motor_only():
     assert e_trailer == 0.0, "拖车无电气制动"
 
 
-def test_electric_brake_fades_at_low_speed():
-    """v < 5 km/h 时电气制动线性衰减。"""
-    # v = 20 m/s = 72 km/h → fade_ratio = 1.0
+def test_electric_brake_no_fade_at_low_speed():
+    """全速度范围电制动力恒定（无低速衰减）。"""
+    # v = 20 m/s = 72 km/h
     e_high = calc_electric_brake_magnitude(MOTOR, 20.0, 1.0)
-    # v = 0.5 m/s = 1.8 km/h → fade_ratio = 1.8/5.0 = 0.36
+    # v = 0.5 m/s = 1.8 km/h
     e_low = calc_electric_brake_magnitude(MOTOR, 0.5, 1.0)
-    assert e_low < e_high, f"低速应衰减: high={e_high:.1f}, low={e_low:.1f}"
+    assert e_low == e_high, f"低速电制动不应衰减: high={e_high:.1f}, low={e_low:.1f}"
 
 
-def test_electric_brake_fade_zero_at_stop():
-    """v=0 时电气制动完全消失。"""
+def test_electric_brake_active_at_stop():
+    """v=0 时电气制动仍可用（静止保持转矩）。"""
     e_stop = calc_electric_brake_magnitude(MOTOR, 0.0, 1.0)
-    assert e_stop == 0.0
+    assert e_stop > 0.0, "停车时应有电制动力"
 
 
-def test_friction_brake_compensates_fade():
-    """电气制动衰减时，空气制动补偿差额。"""
+def test_friction_brake_independent_of_speed():
+    """速度变化时，空气制动占比不变（电制动不再衰减，无需补偿）。"""
     brake_level = 1.0
     raw_total = _calc_raw_brake_magnitude(MOTOR, brake_level)
 
-    # 高速: 电气 ≈ 0.7 * raw_total, 空气 ≈ 0.3 * raw_total
+    # 高速
     e_high = calc_electric_brake_magnitude(MOTOR, 20.0, brake_level)
     f_high = calc_friction_brake_magnitude(MOTOR, brake_level, e_high)
     assert abs(e_high + f_high - raw_total) < 1.0, "电空总和应等于总需求"
 
-    # 低速: 电气衰减, 空气增大补偿
+    # 低速: 电制动力不变，空气制动占比也不变
     e_low = calc_electric_brake_magnitude(MOTOR, 0.5, brake_level)
     f_low = calc_friction_brake_magnitude(MOTOR, brake_level, e_low)
     assert abs(e_low + f_low - raw_total) < 1.0, "电空总和应始终等于总需求"
-    assert f_low > f_high, "低速时空气制动应补偿电气衰减"
+    assert f_low == f_high, "低速时空气制动不应补偿（电制动未衰减）"
 
 
 def test_total_brake_adhesion_applied_to_sum():
@@ -513,9 +519,9 @@ if __name__ == "__main__":
     test_total_resistance_includes_curve()
     # Electro-pneumatic brake
     test_electric_brake_motor_only()
-    test_electric_brake_fades_at_low_speed()
-    test_electric_brake_fade_zero_at_stop()
-    test_friction_brake_compensates_fade()
+    test_electric_brake_no_fade_at_low_speed()
+    test_electric_brake_active_at_stop()
+    test_friction_brake_independent_of_speed()
     test_total_brake_adhesion_applied_to_sum()
     test_brake_load_compensation_with_ep()
     print("All forces tests passed!")
