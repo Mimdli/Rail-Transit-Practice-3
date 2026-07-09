@@ -37,11 +37,52 @@
 
 ### 1. 车辆仿真模块
 
-模拟列车的运动状态和控制响应，采用简化动力学模型，体现：
+当前界面仍使用旧单质点 `VehicleModel` 驱动一辆可操控列车，体现：
 - **牵引/制动/惰行**三种控制状态
 - 上坡加速能力下降、下坡制动距离变长
 - 速度越高空气阻力越明显
 - 支持手动驾驶和自动运行两种模式
+
+同时，后端已合入新的多体车辆动力学框架，供后续 UI 迁移和更真实仿真使用：
+- `VehicleController`：多体列车顶层控制器，管理编组状态、控制指令和仿真步进
+- `PerCarDynamicsPipeline`：逐车计算牵引、制动、阻力、坡度、车钩力和状态更新
+- `TrainConsist` / `CarConfig` / `CarState`：描述列车编组、单车参数和单车状态
+- `AutoDriveController`：面向新控制器的自动驾驶控制逻辑
+- `ForceReport`：输出每步动力学分解结果，便于调试和评价
+
+注意：当前 Qt 前端尚未迁移到新 `VehicleController`，因此界面暂时不会展示每节车状态、车钩力或多车编组细节。
+
+当前前端车辆计算逻辑（旧 `VehicleModel`）：
+1. 主界面每 `100 ms` 刷新一次仿真步。
+2. 根据列车当前位置查询线路坡度和线路限速。
+3. 根据信号系统计算有效限速：线路限速会受到黄灯限速约束。
+4. 根据当前控制级位计算牵引/制动加速度：
+   - 低牵引 = `0.3 * max_traction`
+   - 中牵引 = `0.6 * max_traction`
+   - 满牵引 = `max_traction`
+   - 常用制动/全制动/紧急制动分别使用预设制动减速度
+5. 计算基本运行阻力：`-(a + b*v + c*v²)`。
+6. 计算坡度加速度：`-9.81 * 坡度‰ / 1000`。
+7. 合成总加速度：`牵引/制动 + 基本阻力 + 坡度加速度`。
+8. 用 `v = v + a * dt` 更新速度，并裁剪到 `[0, 当前限速, 车辆最高速度]`。
+9. 用 `position = position + v * dt` 更新位置。
+
+新多体车辆后端计算逻辑（`VehicleController` + `PerCarDynamicsPipeline`）：
+1. `VehicleController` 持有列车编组、各节车状态、线路查询接口和环境查询接口。
+2. 控制指令以 `throttle` / `brake_level` 输入，并经过一阶低通滤波，模拟牵引建磁和制动响应迟滞。
+3. 一个外部步长会被拆成多个物理微步，避免车钩力和高速积分不稳定。
+4. 每个微步先查询各节车所在位置的限速、坡度、曲线、隧道和黏着条件。
+5. 对每节车分别计算 Davis 阻力、坡度阻力、隧道阻力、曲线阻力、牵引力、电制动力和空气/摩擦制动力。
+6. 根据相邻车辆的位置差、速度差和车钩参数计算车钩力。
+7. 聚合每节车合力，按等效质量积分更新单车速度、位置和加速度。
+8. 对各节车执行限速裁剪，并生成 `ForceReport`，记录牵引、制动、阻力、车钩力和限幅情况。
+
+新自动驾驶逻辑（`AutoDriveController`）：
+1. 没有目标或线路接口时保持安全惰行。
+2. 根据头车到目标停车点的沿线距离分三段控制：
+   - 距离小于紧急制动距离：紧急制动。
+   - 距离小于停车控制距离：按距离比例降低目标速度，过快则常用制动，过慢则低牵引。
+   - 距离较远：按线路限速的一定比例巡航，低于巡航速度则中牵引，否则惰行。
 
 ### 2. 轨道线路模块
 
@@ -109,8 +150,20 @@ Rail-Transit-Practice-3/
 │   ├── main.py               # 程序入口
 │   ├── vehicle/              # 车辆仿真模块
 │   │   ├── __init__.py
-│   │   ├── model.py          # 车辆动力学模型
-│   │   └── controller.py     # 车辆控制器（手动/自动）
+│   │   ├── model.py          # 旧单质点模型（当前 UI 兼容使用）
+│   │   ├── controller.py     # 旧手动/自动控制器（当前 UI 兼容使用）
+│   │   ├── vehicle_controller.py # 新多体车辆顶层控制器
+│   │   ├── dynamics_pipeline.py  # 逐车动力学计算流水线
+│   │   ├── forces.py         # 牵引/制动/阻力等力计算
+│   │   ├── auto_drive.py     # 新自动驾驶控制器
+│   │   ├── coupler.py        # 车钩力计算
+│   │   ├── environment.py    # 环境查询接口与默认环境
+│   │   └── force_report.py   # 动力学计算报告
+│   ├── common/               # 公共数据结构
+│   │   ├── car_config.py     # 单车参数与车钩参数
+│   │   ├── car_state.py      # 单车状态
+│   │   ├── consist.py        # 列车编组
+│   │   └── track_position.py # 线路位置与线路查询接口
 │   ├── track/                # 轨道线路模块
 │   │   ├── __init__.py
 │   │   ├── loader.py         # Excel 数据加载器
@@ -135,6 +188,17 @@ Rail-Transit-Practice-3/
 │       └── controls.py       # 控制按钮
 ├── tests/                    # 单元测试
 │   ├── test_vehicle.py
+│   ├── test_controller.py
+│   ├── test_forces.py
+│   ├── test_dynamics_pipeline.py
+│   ├── test_auto_drive.py
+│   ├── test_consist.py
+│   ├── test_car_config.py
+│   ├── test_car_state.py
+│   ├── test_coupler.py
+│   ├── test_environment.py
+│   ├── test_force_report.py
+│   ├── test_track_position.py
 │   ├── test_track.py
 │   └── test_signal.py
 ├── data/                     # 运行时数据文件
@@ -168,8 +232,8 @@ python src/main.py
 |--------|------|
 | **Must** | 车辆运行、线路站点、限速、坡度、手动控制、状态显示、日志记录 |
 | **Should** | 自动停站、信号约束、供电异常、车门联锁 |
-| **Could** | 天气影响、载荷模式、黏着控制、防空转/防滑 |
-| **Won't** | 完整 CBTC、完整联锁表、真实供电网络、复杂列车编组 |
+| **Could** | 天气影响、载荷模式、黏着控制、防空转/防滑、前端接入多体车辆控制器 |
+| **Won't** | 完整 CBTC、完整联锁表、真实供电网络 |
 
 ## MVP 定义
 
@@ -180,6 +244,7 @@ python src/main.py
 - **天气与黏着条件**：晴天/雨天/冰雪切换，轮轨黏着系数限制
 - **载荷与车辆质量**：AW0（空载）/ AW2（定员）/ AW3（超员）模式
 - **防空转/防滑**：轮轨保护逻辑
+- **多体车辆前端集成**：将 Qt 界面从旧 `VehicleModel` 迁移到 `VehicleController`，展示编组、单车状态和车钩力
 
 ## 许可
 
