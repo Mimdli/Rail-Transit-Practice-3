@@ -1,0 +1,120 @@
+"""网络通信管理器
+
+统一协调所有子系统通信模块的生命周期：
+- 车辆UDP (20ms)
+- 信号系统网关 (250ms/100ms)
+- 司机台PLC (100ms)
+- ATP DMI (160ms)
+
+所有模块在独立线程中运行，外部系统不可用时静默降级。
+"""
+
+import logging
+from typing import Optional, Callable
+
+from .udp_vehicle import VehicleUDPClient
+from .signal_gateway import SignalGateway
+from .tcp_plc import PLCClient
+
+logger = logging.getLogger(__name__)
+
+
+class NetworkManager:
+    """多系统通信管理器
+
+    Usage:
+        mgr = NetworkManager()
+        mgr.set_vehicle_send_source(lambda: [(acc, spd, dist)] * 20)
+        mgr.start()
+        # ... 运行仿真 ...
+        mgr.stop()
+    """
+
+    def __init__(self):
+        # 子系统
+        self.vehicle_udp = VehicleUDPClient()
+        self.signal_gateway = SignalGateway()
+        self.plc = PLCClient()
+
+        # 总开关
+        self._running = False
+
+        # 连接状态摘要
+        self._connection_status: dict[str, bool] = {
+            "vehicle_udp": False,
+            "signal_gateway": False,
+            "plc": False,
+        }
+
+    @property
+    def connection_status(self) -> dict[str, bool]:
+        """获取各子系统连接状态"""
+        self._connection_status["vehicle_udp"] = self.vehicle_udp.connected
+        self._connection_status["signal_gateway"] = self.signal_gateway.connected
+        self._connection_status["plc"] = self.plc.connected
+        return dict(self._connection_status)
+
+    @property
+    def is_any_connected(self) -> bool:
+        """是否有任一子系统已连接"""
+        return any(self.connection_status.values())
+
+    # ---- 车辆UDP ----
+
+    def set_vehicle_send_source(self, source: Callable[[], list[tuple[float, float, float]]]):
+        """设置车辆数据源回调"""
+        self.vehicle_udp.set_send_source(source)
+
+    def set_vehicle_recv_callback(self, cb: Callable[[list[tuple[float, float, float]]], None]):
+        """设置车辆接收回调"""
+        self.vehicle_udp.set_recv_callback(cb)
+
+    @property
+    def vehicle_commands(self) -> list[tuple[float, float]]:
+        return self.vehicle_udp.last_commands
+
+    # ---- 信号网关 ----
+
+    def set_signal_send_source(self, source: Callable[[], tuple[list, list]]):
+        """设置信号发送数据源"""
+        self.signal_gateway.set_send_source(source)
+
+    def set_signal_recv_callback(self, cb: Callable[[bytes], None]):
+        """设置信号接收回调"""
+        self.signal_gateway.set_recv_callback(cb)
+
+    # ---- PLC ----
+
+    def set_plc_recv_callback(self, cb: Callable[[dict], None]):
+        """设置PLC数据接收回调"""
+        self.plc.set_recv_callback(cb)
+
+    def send_plc_output(self, atp_safe_out: int = 0):
+        """发送输出到PLC"""
+        self.plc.send_output(atp_safe_out)
+
+    @property
+    def plc_data(self) -> Optional[dict]:
+        return self.plc.last_plc_data
+
+    # ---- 生命周期 ----
+
+    def start(self):
+        """启动所有通信模块"""
+        if self._running:
+            return
+        self._running = True
+
+        self.vehicle_udp.start()
+        self.signal_gateway.start()
+        self.plc.start()
+
+        logger.info("NetworkManager: 所有通信模块已启动")
+
+    def stop(self):
+        """停止所有通信模块"""
+        self._running = False
+        self.vehicle_udp.stop()
+        self.signal_gateway.stop()
+        self.plc.stop()
+        logger.info("NetworkManager: 所有通信模块已停止")
