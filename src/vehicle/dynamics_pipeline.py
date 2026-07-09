@@ -156,9 +156,11 @@ class PerCarDynamicsPipeline:
                 # 速度不能为负（列车不倒行，除非特殊情况）
                 if car.velocity < 0.0:
                     car.velocity = 0.0
-                # 更新位置
-                abs_positions[i] += car.velocity * dt_phy
-                car.position = track.from_absolute(abs_positions[i])
+                # 沿区段拓扑推进（岔口处不能用绝对里程线性累加，否则会误入侧线死胡同）
+                delta = car.velocity * dt_phy
+                if abs(delta) > 1e-12:
+                    car.position = track.advance_position(car.position, delta)
+                abs_positions[i] = track.to_absolute(car.position)
                 car.acceleration = a
 
             # Step 6 — 限速裁剪

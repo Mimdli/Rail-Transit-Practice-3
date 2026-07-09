@@ -74,6 +74,17 @@ def test_adapter_lateral_branch_advance():
     assert abs(pos.offset - 420.0) < 0.1
 
 
+def test_advance_past_fork_stays_on_main():
+    """模拟过岔：默认应沿 end_neighbor 走主线，不陷入侧线尽头。"""
+    td = TrackLoader().load_demo_data()
+    adapter = TrackDataAdapter(td)
+    pos = TrackPosition(1, 700.0)
+    for _ in range(30):
+        pos = adapter.advance_position(pos, 5.0)
+    assert pos.segment_id != 6
+    assert pos.segment_id in (2, 3, 4, 5)
+
+
 def test_demo_stations_have_positions():
     loader = TrackLoader()
     td = loader.load_demo_data()
