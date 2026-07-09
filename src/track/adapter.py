@@ -16,13 +16,12 @@ from src.track.data import TrackData
 class TrackDataAdapter(ITrackQuery):
     """将 TrackData 适配为 ITrackQuery。
 
-    通过 TrackData.segments 的拓扑邻居（正向/侧向）推进列车位置，
-    支持主线与道岔分支独立走行；岔口走哪条路由 fork_routes 指定。
+    通过 TrackData.segments 的 abs_start + length 信息，
+    将 TrackPosition (segment_id, offset) 与绝对里程互相转换。
 
     Usage:
         track = TrackLoader().load_demo_data()
         adapter = TrackDataAdapter(track)
-        adapter.set_fork_route(1, 6)  # Seg1 终点走侧线 Seg6
         controller = VehicleController(consist, adapter, env)
     """
 
@@ -38,25 +37,6 @@ class TrackDataAdapter(ITrackQuery):
         self._td = track_data
         self._tunnel_seg_ids = tunnel_seg_ids or set()
         self._curve_seg_radius = curve_seg_radius or {}
-        # 岔口路由：parent_seg_id -> 离开该段时进入的 next_seg_id
-        self._fork_routes: Dict[int, int] = {}
-
-    # ── 岔口路由 ───────────────────────────────────────────────
-
-    def set_fork_route(self, at_seg_id: int, next_seg_id: int) -> None:
-        """指定列车离开 at_seg_id 终点时进入的相邻区段（正向或侧向）。"""
-        self._fork_routes[at_seg_id] = next_seg_id
-
-    def use_lateral_fork(self, at_seg_id: int) -> bool:
-        """在 at_seg_id 终点优先走侧向分支。成功返回 True。"""
-        seg = self._td._seg_map.get(at_seg_id)
-        if seg is None or seg.end_lateral <= 0 or seg.end_lateral == 65535:
-            return False
-        self._fork_routes[at_seg_id] = seg.end_lateral
-        return True
-
-    def clear_fork_routes(self) -> None:
-        self._fork_routes.clear()
 
     # ── 线路查询 ───────────────────────────────────────────────
 
@@ -77,89 +57,43 @@ class TrackDataAdapter(ITrackQuery):
     # ── 位置坐标转换 ───────────────────────────────────────────
 
     def advance_position(self, pos: TrackPosition, distance: float) -> TrackPosition:
-        """沿当前区段拓扑推进，支持跨段与道岔分支。"""
-        if distance == 0:
-            return pos
+        """沿线路推进指定距离。
 
-        seg_map = self._td._seg_map
-        seg_id = pos.segment_id
-        offset = pos.offset
-        remaining = distance
-
-        while abs(remaining) > 1e-9:
-            seg = seg_map.get(seg_id)
-            if seg is None:
-                return pos
-
-            if remaining > 0:
-                room = seg.length - offset
-                if remaining <= room + 1e-9:
-                    return TrackPosition(seg_id, offset + remaining)
-                remaining -= room
-                next_id = self._next_forward(seg)
-                if next_id is None or next_id not in seg_map:
-                    return TrackPosition(seg_id, seg.length)
-                seg_id = next_id
-                offset = 0.0
-            else:
-                if -remaining <= offset + 1e-9:
-                    return TrackPosition(seg_id, offset + remaining)
-                remaining += offset
-                prev_id = self._next_backward(seg)
-                if prev_id is None or prev_id not in seg_map:
-                    return TrackPosition(seg_id, 0.0)
-                prev_seg = seg_map[prev_id]
-                seg_id = prev_id
-                offset = prev_seg.length
-
-        return TrackPosition(seg_id, offset)
-
-    def _next_forward(self, seg) -> Optional[int]:
-        if seg.seg_id in self._fork_routes:
-            chosen = self._fork_routes[seg.seg_id]
-            if chosen > 0 and chosen != 65535:
-                return chosen
-        for nid in (seg.end_neighbor, seg.end_lateral):
-            if nid > 0 and nid != 65535:
-                return nid
-        return None
-
-    def _next_backward(self, seg) -> Optional[int]:
-        for nid in (seg.start_neighbor, seg.start_lateral):
-            if nid > 0 and nid != 65535:
-                return nid
-        return None
+        通过绝对坐标转换实现，支持跨区段推进。
+        超出线路终点时钳位到终点；允许起点之前的负位置（列车尾部）。
+        """
+        total = self._td.total_length()
+        abs_pos = self.to_absolute(pos)
+        new_abs = abs_pos + distance
+        if new_abs > total:
+            new_abs = total
+        return self.from_absolute(new_abs)
 
     def to_absolute(self, pos: TrackPosition) -> float:
         """TrackPosition → 线路绝对里程 (m)。"""
         seg = self._td._seg_map.get(pos.segment_id)
         if seg is None:
+            # 尝试回退：如果 segment_id 不存在，返回 offset 作为绝对位置
             return pos.offset
         return seg.abs_start + pos.offset
 
-    def from_absolute(self, abs_pos: float, hint_seg_id: int = 0) -> TrackPosition:
+    def from_absolute(self, abs_pos: float) -> TrackPosition:
         """线路绝对里程 → TrackPosition。
 
-        多段共线（主线/侧线重叠里程）时优先 hint_seg_id，否则取 seg_id 最小者。
+        允许第一段出现负 offset（列车尾部可能在线路起点之前）。
         """
-        if hint_seg_id:
-            seg = self._td._seg_map.get(hint_seg_id)
-            if seg is not None and seg.abs_start <= abs_pos < seg.abs_start + seg.length:
-                return TrackPosition(hint_seg_id, abs_pos - seg.abs_start)
-
         total = self._td.total_length()
         if abs_pos >= total:
             last = max(self._td.segments, key=lambda s: s.abs_start + s.length)
             return TrackPosition(segment_id=last.seg_id, offset=last.length)
 
-        candidates = [
-            s for s in self._td.segments
-            if s.abs_start <= abs_pos < s.abs_start + s.length
-        ]
-        if candidates:
-            seg = min(candidates, key=lambda s: s.seg_id)
-            return TrackPosition(segment_id=seg.seg_id, offset=abs_pos - seg.abs_start)
+        for seg in self._td.segments:
+            seg_end = seg.abs_start + seg.length
+            if seg.abs_start <= abs_pos < seg_end:
+                return TrackPosition(segment_id=seg.seg_id,
+                                     offset=abs_pos - seg.abs_start)
 
+        # abs_pos < 0 或落在段间隙中 → 归入根区段（abs_start == 0），允许负 offset
         if self._td.segments:
             root_seg = self._td.segments[0]
             for seg in self._td.segments:

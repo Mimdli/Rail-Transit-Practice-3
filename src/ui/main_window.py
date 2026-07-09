@@ -23,7 +23,6 @@ from src.power.supply import PowerSupply, PowerStatus
 from src.door.interlock import DoorInterlock
 from src.logger.recorder import Recorder
 from src.logger.evaluator import Evaluator
-from src.network import NetworkManager
 
 
 class MainWindow(QMainWindow):
@@ -44,9 +43,7 @@ class MainWindow(QMainWindow):
         # 定时器
         self.timer = QTimer()
         self.timer.timeout.connect(self._update)
-        self._timer_ms = 100
-        self._physics_substeps = 3  # 每帧多次积分，兼顾稳定性与实时性
-        self.timer.start(self._timer_ms)
+        self.timer.start(100)  # 100ms 刷新
 
     def _init_modules(self):
         """初始化所有核心模块"""
@@ -75,11 +72,6 @@ class MainWindow(QMainWindow):
         self.interlock = DoorInterlock(self.controller, self.track, self.track_adapter)
         self.recorder = Recorder()
         self.evaluator = Evaluator()
-
-        # ── 网络通信（可选，启动时不连接外部） ─────────────────
-        self.network = NetworkManager()
-        self._setup_network_callbacks()
-        self._network_mode = False
 
         self.front_train_positions: list[float] = [300.0]
         self._last_signal_aspects: dict[str, SignalAspect] = {}
@@ -154,7 +146,6 @@ class MainWindow(QMainWindow):
         self.data_source_combo.setObjectName("dataSourceCombo")
         self.data_source_combo.addItem("演示数据", "demo")
         self.data_source_combo.addItem("数据库线路", "database")
-        self.data_source_combo.addItem("外部系统", "network")
         self.data_source_combo.currentIndexChanged.connect(self._on_data_source_changed)
 
         self.data_source_status = QLabel(self._data_source_summary())
@@ -176,21 +167,6 @@ class MainWindow(QMainWindow):
         mode = self.data_source_combo.currentData()
         if mode == self.data_mode:
             return
-
-        # 切换到外部系统模式
-        if mode == "network":
-            self._network_mode = True
-            self.data_mode = "network"
-            self.network.start()
-            self.recorder.record("系统", "切换到外部系统模式，网络通信已启动")
-            self.data_source_status.setText("外部系统 | 连接中...")
-            self._refresh_connection_status()
-            return
-
-        # 从外部系统切回本地模式
-        if self._network_mode:
-            self._network_mode = False
-            self.network.stop()
 
         try:
             new_track = self._load_track_data(mode)
@@ -233,8 +209,7 @@ class MainWindow(QMainWindow):
         # 重建线路可视化并立即将列车绘制到新线路上
         self.track_view.set_track_data(track, self._data_source_label())
         car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
-        car_segs = [s.position.segment_id for s in self.controller.states]
-        self.track_view.set_train_position(car_abs, self.controller, car_segs)
+        self.track_view.set_train_position(car_abs, self.controller)
 
         self.front_train_positions = self._default_front_train_positions()
         self._last_signal_aspects.clear()
@@ -255,26 +230,10 @@ class MainWindow(QMainWindow):
 
     def _data_source_label(self) -> str:
         """当前数据源展示名称"""
-        if self.data_mode == "database":
-            return "数据库线路"
-        if self.data_mode == "network":
-            return "外部系统"
-        return "演示数据"
+        return "数据库线路" if self.data_mode == "database" else "演示数据"
 
     def _data_source_summary(self) -> str:
         """当前数据源摘要"""
-        if self.data_mode == "network":
-            status = self.network.connection_status
-            parts = [self._data_source_label()]
-            if status["vehicle_udp"]:
-                parts.append("车辆UDP ✓")
-            if status["signal_gateway"]:
-                parts.append("信号网关 ✓")
-            if status["plc"]:
-                parts.append("PLC ✓")
-            if not any(status.values()):
-                parts.append("未连接")
-            return " | ".join(parts)
         if not hasattr(self, "track"):
             return ""
         return (
@@ -308,60 +267,54 @@ class MainWindow(QMainWindow):
 
     def _update(self):
         """定时更新"""
-        # 仿真时间与 UI 刷新对齐（原 dt=0.033 仅 1/3 实时，体感极慢）
-        dt_frame = self._timer_ms / 1000.0
-        dt = dt_frame / self._physics_substeps
+        dt = 0.033  # 30fps 仿真步长
 
-        # ---- 网络模式：从外部系统注入数据 ----
-        if self._network_mode:
-            self._network_update_step(dt_frame)
-            self.dashboard.refresh()
-            car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
-            car_segs = [s.position.segment_id for s in self.controller.states]
-            self.track_view.set_train_position(car_abs, self.controller, car_segs)
-            self._update_log_display()
-            return
-
-        # ---- 本地模式：原有逻辑 ----
+        # ── 线路条件（头车绝对位置） ──────────────────────────────
         head_abs = self._head_abs_position()
         head_speed = self.controller.head_speed
 
+        # ── 信号系统 ──────────────────────────────────────────────
         self.signal_system.update_aspects_by_occupancy(
             self.track.signals, self.front_train_positions
         )
         self._record_signal_changes()
 
+        # 信号限速（使用旧 TrackData 接口，传入绝对位置）
         track_limit = self.track.get_speed_limit_at(head_abs)
         effective_limit = self.signal_system.get_effective_speed_limit(
             head_abs, track_limit, self.track.signals
         )
 
+        # ── 供电状态影响牵引能力 ──────────────────────────────────
         if not self.power_supply.can_traction():
             self.controller.set_throttle(0.0)
 
+        # ── 自动驾驶 ──────────────────────────────────────────────
         if self.controller.running_mode == RunningMode.AUTOMATIC:
             self.auto_drive.step()
 
-        report = None
-        for _ in range(self._physics_substeps):
-            report = self.controller.step(dt)
-        self.power_supply.step(dt_frame)
-        self.recorder.step(dt_frame)
-        self.sim_time += dt_frame
+        # ── 推进多体动力学仿真 ────────────────────────────────────
+        report = self.controller.step(dt)
+        self.power_supply.step(dt)
+        self.recorder.step(dt)
+        self.sim_time += dt
 
+        # ── 运行评价 ──────────────────────────────────────────────
         self.evaluator.update_max_speed(head_speed)
         self._record_status_snapshot(effective_limit)
 
+        # ── 超速检测 ──────────────────────────────────────────────
         if head_speed > effective_limit + 0.5:
             self.recorder.record("超速",
                 f"超速: {head_speed * 3.6:.1f} km/h", head_abs, head_speed)
 
+        # ── 更新 UI ───────────────────────────────────────────────
         self.dashboard.refresh(report)
         car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
-        car_segs = [s.position.segment_id for s in self.controller.states]
-        self.track_view.set_train_position(car_abs, self.controller, car_segs)
+        self.track_view.set_train_position(car_abs, self.controller)
         self._update_log_display()
 
+        # ── 更新力学分析面板 ───────────────────────────────────────
         self.force_panel.feed(
             self.sim_time,
             head_speed * 3.6,
@@ -370,75 +323,9 @@ class MainWindow(QMainWindow):
         )
         self.force_panel.set_report(report)
 
-    def _network_update_step(self, dt: float):
-        """网络模式下的仿真步进：使用外部数据驱动"""
-        # 1. 发送本地车辆状态到外部平台
-        head_speed = self.controller.head_speed
-        head_accel = self.controller.states[0].acceleration if self.controller.states else 0.0
-        head_pos = self._head_abs_position()
-        self.network.set_vehicle_send_source(lambda: [
-            (head_accel, head_speed, head_pos)
-        ] * 20)
-
-        # 2. 读取外部平台指令，通过旧版控制器接口设置
-        cmds = self.network.vehicle_commands
-        if cmds and len(cmds) > 0:
-            cmd, pct = cmds[0]
-            if cmd == 1:  # 加速
-                self.controller.set_throttle(float(pct) / 100.0)
-            elif cmd == 2:  # 减速
-                self.controller.set_brake(float(pct) / 100.0)
-            elif cmd == 0:  # 惰行
-                self.controller.set_throttle(0.0)
-                self.controller.set_brake(0.0)
-
-        # 3. 发送信号状态到总控
-        switches = []
-        signals = [(s.signal_id, self._aspect_to_protocol(
-            self.signal_system.get_signal_aspect(s))) for s in self.track.signals]
-        self.network.set_signal_send_source(lambda: (switches, signals[:20]))
-
-        # 4. 推进本地仿真
-        self.controller.step(dt)
-        self.recorder.step(dt)
-        self.sim_time += dt
-
-        # 5. 定期刷新连接状态
-        self._refresh_connection_status()
-
-    def _aspect_to_protocol(self, aspect) -> int:
-        """将内部 SignalAspect 映射为协议灯色码"""
-        mapping = {
-            SignalAspect.RED: 0x01,
-            SignalAspect.YELLOW: 0x02,
-            SignalAspect.GREEN: 0x04,
-        }
-        return mapping.get(aspect, 0x00)
-
-    def _refresh_connection_status(self):
-        """刷新连接状态显示"""
-        if not self._network_mode:
-            return
-        self.data_source_status.setText(self._data_source_summary())
-
-    def _setup_network_callbacks(self):
-        """设置网络模块的回调函数"""
-        def on_vehicle_recv(commands):
-            pass
-        def on_signal_recv(data: bytes):
-            pass
-        def on_plc_recv(data: dict):
-            if "handle_position" in data:
-                pass
-        self.network.set_vehicle_recv_callback(on_vehicle_recv)
-        self.network.set_signal_recv_callback(on_signal_recv)
-        self.network.set_plc_recv_callback(on_plc_recv)
-
     def closeEvent(self, event):
         """关闭窗口"""
         self.timer.stop()
-        if self._network_mode:
-            self.network.stop()
         event.accept()
 
     def _apply_style(self):
