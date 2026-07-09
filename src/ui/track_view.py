@@ -46,6 +46,7 @@ LINE_WIDTH = 9
 HOVER_WIDTH = 14
 TRAIN_HEIGHT = 18     # 列车矩形高度 (px)
 TRAIN_Y_OFFSET = -9   # 列车中心对齐轨道线（TRAIN_HEIGHT/2），实现重叠效果
+SWITCH_SLANT_PX = 30   # 道岔斜线水平偏移 (px)
 
 
 class SegmentItem(QGraphicsLineItem):
@@ -150,6 +151,7 @@ class TrackView(QGraphicsView):
         # 列车覆盖层（独立管理，方便清除重建）
         self._train_items = []
         self._target_items = []  # 目标标记（独立管理，不随列车刷新清除）
+        self._last_train_pos_key = None
 
         # 主线轨道 Y 基准坐标（分支线在此基础上叠加 BRANCH_OFFSET）
         self._base_y = 90

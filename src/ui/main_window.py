@@ -23,6 +23,7 @@ from src.power.supply import PowerSupply, PowerStatus
 from src.door.interlock import DoorInterlock
 from src.logger.recorder import Recorder
 from src.logger.evaluator import Evaluator
+from src.network.manager import NetworkManager
 
 
 class MainWindow(QMainWindow):
@@ -86,6 +87,11 @@ class MainWindow(QMainWindow):
         self._last_status_log_time: float = -1.0
         self._displayed_event_count: int = 0
         self.sim_time: float = 0.0
+
+        # ── 网络通信（默认关闭，通过界面开关切换） ──────────────────
+        self._network_mode: bool = False
+        self.network = NetworkManager()
+
         self.recorder.record("系统", "系统启动，当前数据源: 演示数据")
 
     def _init_ui(self):
@@ -274,6 +280,14 @@ class MainWindow(QMainWindow):
         """获取头车当前位置的线路限速 (m/s)。"""
         abs_pos = self._head_abs_position()
         return self.track.get_speed_limit_at(abs_pos)
+
+    # ── 网络模式更新 ──────────────────────────────────────────
+
+    def _network_update_step(self, dt: float):
+        """网络模式下的更新步骤：从外部网络系统获取数据驱动仿真"""
+        # 从网络管理器获取车辆指令并更新控制器状态
+        # TODO: 接入实际网络数据源后补充完整逻辑
+        pass
 
     # ── 主更新循环 ──────────────────────────────────────────────
 
