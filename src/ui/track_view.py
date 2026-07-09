@@ -138,6 +138,9 @@ class TrackView(QGraphicsView):
 
         # 列车覆盖层（独立管理，方便清除重建）
         self._train_items = []
+        self._last_train_pos_key: Optional[tuple] = None
+        self._user_panned = False
+        self._suppress_scroll_signal = False
 
         # 主线轨道 Y 基准坐标（分支线在此基础上叠加 BRANCH_OFFSET）
         self._base_y = 90
@@ -148,11 +151,25 @@ class TrackView(QGraphicsView):
         if total_w > 0:
             self.resetTransform()
             # 初始视野对准线路起点附近（列车在此出发）
-            view_w = self.viewport().width() if self.viewport() else 900
+            self._suppress_scroll_signal = True
             self.centerOn(self._x(200), 120)
+            self._suppress_scroll_signal = False
+
+        self.horizontalScrollBar().valueChanged.connect(self._on_user_scroll)
 
     def _x(self, pos_m: float) -> float:
         return pos_m * SCALE
+
+    def _on_user_scroll(self, _value: int):
+        """用户拖动滚动条或手型平移后，不再自动拉回视野"""
+        if self._suppress_scroll_signal:
+            return
+        self._user_panned = True
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self.dragMode() == QGraphicsView.ScrollHandDrag:
+            self._user_panned = True
+        super().mousePressEvent(event)
 
     def wheelEvent(self, event):
         factor = 1.15
@@ -174,19 +191,23 @@ class TrackView(QGraphicsView):
         return self._base_y + TRAIN_Y_OFFSET + level * BRANCH_OFFSET
 
     def set_train_position(self, car_abs_positions: list, controller: VehicleController = None):
-        """更新列车在线路图上的显示位置，并确保列车在视野内。
+        """更新列车在线路图上的显示位置。
 
         以头车所在的轨道区段确定整列车的 Y 坐标（主线/分支），
         避免因逐车判定导致列车在道岔区段重叠处视觉断裂。
-
-        Args:
-            car_abs_positions: 每节车的绝对位置列表 (m)，从头车到尾车排列。
-            controller: VehicleController 实例（用于获取编组信息）。
+        用户手动平移/滚动后不再自动拉回视野，避免与拖拽冲突。
         """
-        self._clear_train_overlay()
-
         if controller is None or not car_abs_positions:
+            self._clear_train_overlay()
+            self._last_train_pos_key = None
             return
+
+        pos_key = tuple(round(p, 1) for p in car_abs_positions)
+        if pos_key == self._last_train_pos_key:
+            return
+        self._last_train_pos_key = pos_key
+
+        self._clear_train_overlay()
 
         n_cars = len(car_abs_positions)
         if n_cars == 0:
@@ -238,9 +259,11 @@ class TrackView(QGraphicsView):
             idx_label.setZValue(21)
             self._train_items.append(idx_label)
 
-        # 确保头车在视野内
-        if train_rects:
+        # 仅初始未手动浏览时跟随列车，避免每帧 ensureVisible 与拖拽冲突
+        if train_rects and not self._user_panned:
+            self._suppress_scroll_signal = True
             self.ensureVisible(train_rects[0], xMargin=80, yMargin=60)
+            self._suppress_scroll_signal = False
 
     def _clear_train_overlay(self):
         """清除上次绘制的列车图形。"""
