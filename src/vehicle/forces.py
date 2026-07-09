@@ -164,11 +164,7 @@ def calc_tractive_force(car: CarConfig, velocity: float,
         # 恒功率: F = F_max * v_transition / v
         raw_force = car.max_traction_force * car.traction_transition_speed / v
     else:
-        # 自然特性区: 牵引力平滑衰减至零，避免构造速度处的硬截断导数速度振荡
-        # F(v) = F_c * (v_c / v)^2，在 v=v_c 处与恒功率区连续
-        vc = car.construction_speed
-        fc = car.max_traction_force * car.traction_transition_speed / vc
-        raw_force = fc * (vc / v) ** 2
+        raw_force = 0.0
 
     force = raw_force * throttle
 
@@ -200,14 +196,11 @@ def calc_electric_brake_magnitude(car: CarConfig, velocity: float,
                                     brake_level: float) -> float:
     """计算电气制动（再生制动）需求幅值 (N, ≥ 0)。
 
-    动车承担 70% 总制动需求，支持全速度范围完全电制动（含 0 km/h 停车）。
+    动车在高速时承担 70% 总制动需求，低速 (< 5 km/h) 线性衰减至零。
     拖车无电气制动能力。
 
     注意: 此函数返回原始需求值，不含黏着限制。
     黏着限制应由调用方对总制动力（电气+空气）统一施加。
-
-    速度参数保留用于未来再生效率 η(v) 的独立计算（低速反电动势不足时
-    回收效率趋零，但电机制动转矩仍可维持），此函数不处理能量回收。
 
     Args:
         car: 车辆配置。
@@ -223,14 +216,21 @@ def calc_electric_brake_magnitude(car: CarConfig, velocity: float,
     total_magnitude = _calc_raw_brake_magnitude(car, brake_level)
     electric_magnitude = total_magnitude * 0.7
 
-    return electric_magnitude
+    # 低速衰减: v < 5 km/h (≈ 1.39 m/s) 时线性衰减至零
+    v_kmh = abs(velocity) * 3.6
+    if v_kmh < 5.0:
+        fade_ratio = v_kmh / 5.0  # 5→0 km/h 时 1→0
+    else:
+        fade_ratio = 1.0
+
+    return electric_magnitude * fade_ratio
 
 
 def calc_friction_brake_magnitude(car: CarConfig, brake_level: float,
                                     electric_magnitude: float) -> float:
     """计算空气制动（摩擦制动）需求幅值 (N, ≥ 0)。
 
-    补充电气制动不足的差额（如拖车、过载等情景），维持总制动力 = 需求值。
+    自动补偿电气制动的低速衰减，维持总制动力 = 需求值。
     electric_magnitude 为 calc_electric_brake_magnitude 的返回值。
 
     Args:
@@ -274,7 +274,7 @@ def calc_friction_brake_force(car: CarConfig, velocity: float,
                                electric_magnitude: float) -> float:
     """计算空气制动（摩擦制动）力 (N)，含符号。
 
-    正值 = 前进方向。补充电气制动不足的差额（如拖车、过载等情景）。
+    正值 = 前进方向。自动补偿电气制动的低速衰减。
 
     Args:
         car: 车辆配置。
@@ -296,7 +296,7 @@ def calc_brake_force(car: CarConfig, velocity: float,
                      brake_level: float, adhesion_coefficient: float = 0.18) -> tuple:
     """计算总制动力 (N) = 电气制动 + 空气制动，含黏着限制和载荷补偿。
 
-    电气制动与空气制动协同工作，维持总需求不变。
+    电气制动低速衰减时，空气制动自动补偿差额，维持总需求不变。
     黏着限制对总制动力统一施加（单轴黏着不能区分电/空）。
 
     Args:
