@@ -33,17 +33,21 @@ def test_demo_segments_have_coordinates():
 def test_demo_segment_chain_continuous():
     loader = TrackLoader()
     td = loader.load_demo_data()
-    # 验证区段链连续: 下一个的 abs_start ≈ 上一个的 abs_start + length
-    sorted_segs = sorted(td.segments, key=lambda s: s.abs_start)
-    for i in range(len(sorted_segs) - 1):
-        expected = sorted_segs[i].abs_start + sorted_segs[i].length
-        assert abs(sorted_segs[i + 1].abs_start - expected) < 1.0
+    # 仅验证主线区段链连续；侧线从道岔岔出，与主线共享分叉点坐标
+    main_segs = sorted(
+        [s for s in td.segments if s.seg_id in (1, 2, 3, 4, 5)],
+        key=lambda s: s.abs_start,
+    )
+    for i in range(len(main_segs) - 1):
+        expected = main_segs[i].abs_start + main_segs[i].length
+        assert abs(main_segs[i + 1].abs_start - expected) < 1.0
 
 
 def test_demo_total_length():
     loader = TrackLoader()
     td = loader.load_demo_data()
-    expected = sum(s.length for s in td.segments)
+    main_segs = [s for s in td.segments if s.seg_id in (1, 2, 3, 4, 5)]
+    expected = sum(s.length for s in main_segs)
     assert abs(td.total_length() - expected) < 1.0
 
 
