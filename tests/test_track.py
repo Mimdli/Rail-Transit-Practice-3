@@ -131,6 +131,64 @@ def test_db_train_passes_1400m_with_traction():
     raise AssertionError("列车未能在合理步数内越过 1400m 坡段")
 
 
+def test_train_holds_at_rest_without_traction():
+    """无牵引无制动时列车应保持静止，不因坡道或车钩力溜车。"""
+    import os
+    from src.common.consist import CONSIST_4M2T
+    from src.vehicle.vehicle_controller import VehicleController
+    from src.vehicle.environment import MockEnvironment, WeatherType
+
+    db_path = os.path.join(os.path.dirname(__file__), "..", "data", "railway.db")
+    if not os.path.exists(db_path):
+        td = TrackLoader().load_demo_data()
+    else:
+        td = DBLoader().load_from_db(db_path)
+    adapter = TrackDataAdapter(td)
+    env = MockEnvironment(WeatherType.DRY, adapter)
+    ctrl = VehicleController(CONSIST_4M2T, adapter, env)
+    start_abs = adapter.to_absolute(ctrl.states[0].position)
+    for _ in range(200):
+        ctrl.step(0.1)
+    end_abs = adapter.to_absolute(ctrl.states[0].position)
+    assert ctrl.states[0].velocity < 0.01
+    assert abs(end_abs - start_abs) < 0.5
+
+
+def test_db_train_reaches_line_end():
+    """数据库线路：全牵引下应能走完全程末端（含 18103m 岔点死胡同）。"""
+    import os
+    from src.common.consist import CONSIST_4M2T
+    from src.vehicle.vehicle_controller import VehicleController
+    from src.vehicle.environment import MockEnvironment, WeatherType
+
+    db_path = os.path.join(os.path.dirname(__file__), "..", "data", "railway.db")
+    if not os.path.exists(db_path):
+        return
+    td = DBLoader().load_from_db(db_path)
+    adapter = TrackDataAdapter(td)
+    total = td.total_length()
+    env = MockEnvironment(WeatherType.DRY, adapter)
+    ctrl = VehicleController(CONSIST_4M2T, adapter, env)
+    # 从末端岔区前启动，验证 18103m 附近不再卡死
+    start = adapter.from_absolute(17900.0, hint_seg_id=213)
+    ctrl.states[0].position = start
+    ctrl.states[0].velocity = 10.0
+    for i in range(1, len(ctrl.states)):
+        ctrl.states[i].position = adapter.advance_position(
+            ctrl.states[i - 1].position, -CONSIST_4M2T[i - 1].length
+        )
+        ctrl.states[i].velocity = 10.0
+    ctrl.set_throttle(1.0)
+    for _ in range(3000):
+        ctrl.step(0.033)
+        abs_h = adapter.to_absolute(ctrl.states[0].position)
+        if abs_h >= total - 1.0:
+            return
+    raise AssertionError(
+        f"列车未到达线路终点: 停在 {abs_h:.1f}m / {total:.1f}m"
+    )
+
+
 def test_demo_stations_have_positions():
     loader = TrackLoader()
     td = loader.load_demo_data()

@@ -116,8 +116,14 @@ class VehicleController:
         避免初始 slack take-up 产生的冲击力。
         """
         slack = self.pipeline.coupler_config.slack if pre_tension else 0.0
+        body_len = sum(
+            car.length + (slack if i < len(self.consist) - 1 else 0.0)
+            for i, car in enumerate(self.consist)
+        )
+        # 从线路起点发车时，头车需前移整列车长度，使尾车落在起点而非重叠
+        head_offset = body_len if start_offset < 1e-6 else start_offset
         self.states = []
-        head_pos = TrackPosition(segment_id=start_segment_id, offset=start_offset)
+        head_pos = TrackPosition(segment_id=start_segment_id, offset=head_offset)
         self.states.append(CarState(
             position=head_pos,
             velocity=0.0,
@@ -136,7 +142,7 @@ class VehicleController:
             else:
                 back_pos = TrackPosition(
                     segment_id=start_segment_id,
-                    offset=max(0.0, start_offset - gap_behind),
+                    offset=max(0.0, head_offset - gap_behind),
                 )
             self.states.append(CarState(
                 position=back_pos,

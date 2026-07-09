@@ -149,6 +149,13 @@ class PerCarDynamicsPipeline:
             # Step 5 — 积分更新状态（使用微步长 dt_phy）
             for i in range(n_cars):
                 car = states[i]
+                # 无牵引无制动时静止驻车，避免坡道溜车
+                if (eff_throttle <= 1e-9 and eff_brake <= 1e-9
+                        and car.velocity <= 1e-6):
+                    car.velocity = 0.0
+                    car.acceleration = 0.0
+                    abs_positions[i] = track.to_absolute(car.position)
+                    continue
                 # 回转质量系数：等效质量 = 静质量 × rotary_mass_factor
                 effective_mass = consist[i].mass * consist[i].rotary_mass_factor
                 a = net_forces[i] / effective_mass

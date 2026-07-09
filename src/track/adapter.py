@@ -8,9 +8,12 @@ TrackData（基于绝对浮点位置）包装为 ITrackQuery（基于 TrackPosit
 可通过 tunnel_seg_ids / curve_seg_radius 参数补充，或使用默认值（无隧道、无曲线）。
 """
 
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Set
 from src.common.track_position import TrackPosition, ITrackQuery
 from src.track.data import TrackData
+
+# 共线岔点处区段端点里程允许的最大间隙 (m)
+_OVERLAP_JUNCTION_TOL = 2.0
 
 
 class TrackDataAdapter(ITrackQuery):
@@ -95,12 +98,14 @@ class TrackDataAdapter(ITrackQuery):
                 room = seg.length - offset
                 if remaining <= room + 1e-9:
                     return TrackPosition(seg_id, offset + remaining)
+                end_abs = seg.abs_start + seg.length
                 remaining -= room
-                next_id = self._next_forward(seg)
+                next_id = self._pick_forward_exit(seg)
                 if next_id is None or next_id not in seg_map:
                     return TrackPosition(seg_id, seg.length)
+                next_seg = seg_map[next_id]
                 seg_id = next_id
-                offset = 0.0
+                offset = max(0.0, min(end_abs - next_seg.abs_start, next_seg.length))
             else:
                 if -remaining <= offset + 1e-9:
                     return TrackPosition(seg_id, offset + remaining)
@@ -114,15 +119,65 @@ class TrackDataAdapter(ITrackQuery):
 
         return TrackPosition(seg_id, offset)
 
-    def _next_forward(self, seg) -> Optional[int]:
+    def _forward_exit_candidates(self, seg) -> List[int]:
         if seg.seg_id in self._fork_routes:
             chosen = self._fork_routes[seg.seg_id]
             if chosen > 0 and chosen != 65535:
-                return chosen
+                return [chosen]
+        cands = []
         for nid in (seg.end_neighbor, seg.end_lateral):
             if nid > 0 and nid != 65535:
-                return nid
-        return None
+                cands.append(nid)
+        return cands
+
+    def _pick_forward_exit(self, seg) -> Optional[int]:
+        """离开区段时选择前向出口，优先能抵达更远终点的路径。"""
+        cands = self._forward_exit_candidates(seg)
+        if cands:
+            if len(cands) == 1:
+                return cands[0]
+            memo: Dict[int, float] = {}
+            return max(cands, key=lambda nid: self._max_reachable_end_abs(nid, memo))
+        return self._overlap_forward_at(seg.abs_start + seg.length, exclude=seg.seg_id)
+
+    def _overlap_forward_at(self, abs_pos: float, exclude: int = 0) -> Optional[int]:
+        """在共线岔点处，按绝对里程匹配可接续的下一段。"""
+        cands = []
+        for s in self._td.segments:
+            if s.seg_id == exclude:
+                continue
+            if (s.abs_start - _OVERLAP_JUNCTION_TOL
+                    <= abs_pos
+                    <= s.abs_start + s.length + _OVERLAP_JUNCTION_TOL):
+                cands.append(s.seg_id)
+        if not cands:
+            return None
+        memo: Dict[int, float] = {}
+        return max(cands, key=lambda nid: self._max_reachable_end_abs(nid, memo))
+
+    def _max_reachable_end_abs(self, seg_id: int, memo: Dict[int, float],
+                              visiting: Optional[Set[int]] = None) -> float:
+        if seg_id in memo:
+            return memo[seg_id]
+        seg = self._td._seg_map.get(seg_id)
+        if seg is None:
+            return 0.0
+        if visiting is None:
+            visiting = set()
+        if seg_id in visiting:
+            return seg.abs_start + seg.length
+        visiting.add(seg_id)
+
+        best = seg.abs_start + seg.length
+        for nid in self._forward_exit_candidates(seg):
+            best = max(best, self._max_reachable_end_abs(nid, memo, visiting))
+        overlap = self._overlap_forward_at(best, exclude=seg_id)
+        if overlap is not None:
+            best = max(best, self._max_reachable_end_abs(overlap, memo, visiting))
+
+        visiting.remove(seg_id)
+        memo[seg_id] = best
+        return best
 
     def _next_backward(self, seg) -> Optional[int]:
         for nid in (seg.start_neighbor, seg.start_lateral):
