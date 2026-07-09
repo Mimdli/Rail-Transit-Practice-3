@@ -41,7 +41,6 @@ COLOR_TRAIN_BORDER = QColor(30, 64, 175, 220)
 
 SCALE = 0.22          # 米 → 像素
 BRANCH_OFFSET = 60    # 分支偏移高度 (px)
-SWITCH_SLANT_PX = 40  # 道岔斜线水平延伸 (px)
 LINE_WIDTH = 9
 HOVER_WIDTH = 14
 TRAIN_HEIGHT = 18     # 列车矩形高度 (px)
@@ -302,18 +301,12 @@ class TrackView(QGraphicsView):
         return self._branch_levels.get(seg_id, 0)
 
     def _draw_switch_connectors(self, td: TrackData, base_y: float):
-        """绘制主线与道岔分支之间的斜向连接线（道岔 turnout 示意）"""
+        """绘制主线与道岔分支之间的连接线"""
         if not td._seg_map:
             td._seg_map = {s.seg_id: s for s in td.segments}
 
         pen = QPen(COLOR_BRANCH, 5)
         pen.setStyle(Qt.SolidLine)
-
-        def _slant_connect(fork_x: float, parent_y: float, child_y: float, at_end: bool):
-            """从主线岔点斜向连接到分支轨道层"""
-            end_x = fork_x + SWITCH_SLANT_PX if at_end else fork_x - SWITCH_SLANT_PX
-            line = self.scene.addLine(fork_x, parent_y, end_x, child_y, pen)
-            line.setZValue(0)
 
         for seg in td.segments:
             parent_level = self._get_level(seg.seg_id)
@@ -324,14 +317,16 @@ class TrackView(QGraphicsView):
                 if child_level > parent_level:
                     fork_x = self._x(seg.abs_start)
                     child_y = child_level * BRANCH_OFFSET + base_y
-                    _slant_connect(fork_x, parent_y, child_y, at_end=False)
+                    line = self.scene.addLine(fork_x, parent_y, fork_x, child_y, pen)
+                    line.setZValue(0)
 
             if seg.end_lateral > 0 and seg.end_lateral in td._seg_map:
                 child_level = self._get_level(seg.end_lateral)
                 if child_level > parent_level:
                     fork_x = self._x(seg.abs_start + seg.length)
                     child_y = child_level * BRANCH_OFFSET + base_y
-                    _slant_connect(fork_x, parent_y, child_y, at_end=True)
+                    line = self.scene.addLine(fork_x, parent_y, fork_x, child_y, pen)
+                    line.setZValue(0)
 
     # ── 场景构建 ──────────────────────────────────────────────
 
