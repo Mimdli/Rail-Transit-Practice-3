@@ -31,11 +31,12 @@ def _calc_coupler_force_raw(delta_x: float, delta_v: float,
     slack = config.slack
 
     if delta_x > slack:
-        # 拉伸区
-        force = config.stiffness * (delta_x - slack) + config.damping * delta_v
+        # 拉伸区: 弹簧恢复力为正（拉回平衡位置）
+        # dx/dt = v_front - v_rear = -delta_v，阻尼抵抗相对运动
+        force = config.stiffness * (delta_x - slack) - config.damping * delta_v
     elif delta_x < -slack:
-        # 压缩区
-        force = config.stiffness * (delta_x + slack) + config.damping * delta_v
+        # 压缩区: 弹簧恢复力为负（推回平衡位置）
+        force = config.stiffness * (delta_x + slack) - config.damping * delta_v
     else:
         # 自由区（间隙内）—— 无力
         force = 0.0

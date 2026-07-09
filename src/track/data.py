@@ -139,17 +139,30 @@ class TrackData:
         while q:
             cur_id = q.popleft()
             cur = self._seg_map[cur_id]
-            child_pos = cur.abs_start + cur.length
 
-            # 检查四个方向的邻居
-            for nid in (cur.start_neighbor, cur.end_neighbor,
-                        cur.start_lateral, cur.end_lateral):
+            # 终点方向（end_neighbor / end_lateral）：分支在父段终点
+            end_child_pos = cur.abs_start + cur.length
+            # 起点方向（start_neighbor / start_lateral）：分支在父段起点
+            start_child_pos = cur.abs_start
+
+            # 处理终点方向的邻居
+            for nid in (cur.end_neighbor, cur.end_lateral):
                 if nid <= 0 or nid == 65535:
                     continue
                 if nid in visited or nid not in self._seg_map:
                     continue
                 visited.add(nid)
-                self._seg_map[nid].abs_start = child_pos
+                self._seg_map[nid].abs_start = end_child_pos
+                q.append(nid)
+
+            # 处理起点方向的邻居
+            for nid in (cur.start_neighbor, cur.start_lateral):
+                if nid <= 0 or nid == 65535:
+                    continue
+                if nid in visited or nid not in self._seg_map:
+                    continue
+                visited.add(nid)
+                self._seg_map[nid].abs_start = start_child_pos
                 q.append(nid)
 
         # 映射限速、坡度和信号到绝对位置
