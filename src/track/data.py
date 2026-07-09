@@ -13,6 +13,19 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict
 
+# 真实线路坡度一般不超过 ±40‰；源 Excel 偶发将 ‰ 放大 10 倍（如 300 表示 30‰）
+_MAX_PHYSICAL_GRADIENT = 40.0
+
+
+def normalize_gradient_value(gradient: float) -> float:
+    """将坡度值规范到仿真可用的物理范围 (‰)。"""
+    g = float(gradient)
+    if abs(g) > 100.0:
+        g /= 10.0
+    if abs(g) > _MAX_PHYSICAL_GRADIENT:
+        g = max(-_MAX_PHYSICAL_GRADIENT, min(_MAX_PHYSICAL_GRADIENT, g))
+    return g
+
 
 @dataclass
 class Station:
@@ -181,11 +194,24 @@ class TrackData:
                 return sl.speed_limit
         return 22.0  # 默认限速
 
-    def get_gradient_at(self, position: float) -> float:
-        """获取指定位置 (m) 的坡度值 (‰)"""
+    def get_gradient_at(self, position: float, seg_id: int = 0) -> float:
+        """获取指定位置 (m) 的坡度值 (‰)。
+
+        seg_id 非 0 时优先匹配该区段上的坡度记录，避免岔口共线里程误匹配。
+        """
+        matched = []
         for g in self.gradients:
             if g.abs_start <= position <= g.abs_end:
-                return g.gradient
+                if seg_id == 0 or g.seg_id == seg_id:
+                    matched.append(g)
+        if not matched and seg_id:
+            for g in self.gradients:
+                if g.abs_start <= position <= g.abs_end:
+                    matched.append(g)
+        if matched:
+            # 共线重叠时取 seg_id 最小者（与 from_absolute 主线优先一致）
+            g = min(matched, key=lambda x: x.seg_id)
+            return normalize_gradient_value(g.gradient)
         return 0.0
 
     def get_station_at(self, position: float, threshold: float = 50.0) -> Optional[Station]:

@@ -296,8 +296,10 @@ class MainWindow(QMainWindow):
 
     def _head_gradient(self) -> float:
         """获取头车当前位置的坡度 (‰)。"""
-        abs_pos = self._head_abs_position()
-        return self.track.get_gradient_at(abs_pos)
+        states = self.controller.states
+        if states:
+            return self.track_adapter.get_gradient(states[0].position)
+        return self.track.get_gradient_at(self._head_abs_position())
 
     def _head_track_limit(self) -> float:
         """获取头车当前位置的线路限速 (m/s)。"""

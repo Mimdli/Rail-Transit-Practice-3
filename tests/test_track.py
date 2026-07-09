@@ -85,6 +85,52 @@ def test_advance_past_fork_stays_on_main():
     assert pos.segment_id in (2, 3, 4, 5)
 
 
+def test_normalize_gradient_value():
+    from src.track.data import normalize_gradient_value
+    assert normalize_gradient_value(300.0) == 30.0
+    assert normalize_gradient_value(20.0) == 20.0
+    assert normalize_gradient_value(350.0) == 35.0
+    assert normalize_gradient_value(500.0) == 40.0
+
+
+def test_db_gradient_at_1404_not_stuck_value():
+    """数据库线路 1404m 处坡度不应为不可爬行的 300‰。"""
+    import os
+    db_path = os.path.join(os.path.dirname(__file__), "..", "data", "railway.db")
+    if not os.path.exists(db_path):
+        return
+    td = DBLoader().load_from_db(db_path)
+    adapter = TrackDataAdapter(td)
+    pos = adapter.from_absolute(1404.0, hint_seg_id=2)
+    grad = adapter.get_gradient(pos)
+    assert abs(grad) <= 40.0
+    assert grad == 30.0
+
+
+def test_db_train_passes_1400m_with_traction():
+    """数据库线路：全牵引下列车应能越过 1400m 坡段，不再速度归零卡死。"""
+    import os
+    from src.common.consist import CONSIST_4M2T
+    from src.vehicle.vehicle_controller import VehicleController
+    from src.vehicle.environment import MockEnvironment, WeatherType
+
+    db_path = os.path.join(os.path.dirname(__file__), "..", "data", "railway.db")
+    if not os.path.exists(db_path):
+        return
+    td = DBLoader().load_from_db(db_path)
+    adapter = TrackDataAdapter(td)
+    env = MockEnvironment(WeatherType.DRY, adapter)
+    ctrl = VehicleController(CONSIST_4M2T, adapter, env)
+    ctrl.set_throttle(1.0)
+    for _ in range(8000):
+        ctrl.step(0.033)
+        abs_h = adapter.to_absolute(ctrl.states[0].position)
+        if abs_h > 1550:
+            assert ctrl.states[0].velocity > 1.0
+            return
+    raise AssertionError("列车未能在合理步数内越过 1400m 坡段")
+
+
 def test_demo_stations_have_positions():
     loader = TrackLoader()
     td = loader.load_demo_data()

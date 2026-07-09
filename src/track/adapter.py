@@ -66,7 +66,7 @@ class TrackDataAdapter(ITrackQuery):
 
     def get_gradient(self, pos: TrackPosition) -> float:
         abs_pos = self.to_absolute(pos)
-        return self._td.get_gradient_at(abs_pos)
+        return self._td.get_gradient_at(abs_pos, seg_id=pos.segment_id)
 
     def get_is_tunnel(self, pos: TrackPosition) -> bool:
         return pos.segment_id in self._tunnel_seg_ids
