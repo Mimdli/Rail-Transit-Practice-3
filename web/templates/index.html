@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>轨道交通模拟系统</title>
+<style>
+  /* ====== Reset & Base ====== */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+    background: #eef2f6; color: #172033; font-size: 14px;
+    min-height: 100vh;
+  }
+
+  /* ====== Header ====== */
+  .header {
+    background: #fff; border-bottom: 1px solid #d8dee8;
+    padding: 12px 20px; display: flex; align-items: center; gap: 16px;
+  }
+  .header h1 { font-size: 20px; font-weight: 800; color: #111827; }
+  .header .badge {
+    background: #2563eb; color: #fff; padding: 4px 10px;
+    border-radius: 12px; font-size: 12px; font-weight: 700;
+  }
+  .header .data-info { margin-left: auto; color: #475467; font-size: 13px; font-weight: 600; }
+
+  /* ====== Layout ====== */
+  .main-container { display: flex; gap: 0; height: calc(100vh - 100px); }
+  .left-panel { flex: 3; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+  .right-panel { flex: 2; padding: 16px; overflow-y: auto; border-left: 1px solid #d8dee8; }
+
+  /* ====== Cards ====== */
+  .card {
+    background: #fff; border: 1px solid #d8dee8; border-radius: 8px;
+    padding: 14px; margin-bottom: 0;
+  }
+  .card-title {
+    font-size: 15px; font-weight: 800; color: #1d2939; margin-bottom: 10px;
+    padding-bottom: 6px; border-bottom: 1px solid #e5eaf2;
+    display: flex; align-items: center; gap: 8px;
+  }
+
+  /* ====== Track Map ====== */
+  .track-map-container {
+    position: relative; background: #f8fafc; border: 1px solid #d8dee8;
+    border-radius: 8px; overflow: hidden; cursor: grab; flex: 1; min-height: 380px;
+  }
+  .track-map-container:active { cursor: grabbing; }
+  .track-map-container.dragging { cursor: grabbing; }
+  #trackMapSvg { width: 100%; height: 100%; display: block; user-select: none; }
+  .map-controls {
+    position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; z-index: 5;
+  }
+  .map-btn {
+    width: 30px; height: 30px; border: 1px solid #cbd5e1; border-radius: 5px;
+    background: #fff; cursor: pointer; font-size: 16px; font-weight: 700;
+    color: #475467; display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+  .map-btn:hover { background: #f4f7fb; border-color: #94a3b8; }
+  .map-tooltip {
+    position: absolute; background: rgba(30,41,59,0.92); color: #e5e7eb;
+    padding: 6px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;
+    pointer-events: none; z-index: 10; white-space: nowrap; display: none;
+  }
+  .station-tooltip {
+    position: absolute; background: #fff; border: 2px solid #dc2626; border-radius: 8px;
+    padding: 8px 12px; font-size: 13px; font-weight: 700; color: #1d2939;
+    pointer-events: none; z-index: 10; display: none; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    white-space: nowrap;
+  }
+
+  /* ====== Compact Indicators Row ====== */
+  .indicators-compact {
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px;
+  }
+  .ind-mini {
+    text-align: center; padding: 8px 4px;
+    background: #f8fafc; border-radius: 6px; border: 1px solid #e5eaf2;
+  }
+  .ind-mini .label { font-size: 11px; color: #667085; font-weight: 700; }
+  .ind-mini .value { font-size: 20px; font-weight: 800; }
+  .speed-normal { color: #16a34a; }
+  .speed-warn { color: #dc2626; }
+
+  /* ====== Info Grid ====== */
+  .info-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+  }
+  .info-item {
+    padding: 6px 8px; background: #f8fafc; border-radius: 6px;
+    font-size: 13px; font-weight: 650; color: #1d2939;
+  }
+
+  /* ====== Buttons ====== */
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .btn {
+    padding: 10px 16px; border-radius: 7px; border: 1px solid #cbd5e1;
+    font-size: 15px; font-weight: 700; cursor: pointer; background: #fff;
+    color: #172033; transition: all 0.15s; min-width: 80px;
+  }
+  .btn:hover { background: #f4f7fb; border-color: #94a3b8; }
+  .btn:active { transform: scale(0.97); }
+  .btn.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+  .btn.primary:hover { background: #1d4ed8; }
+  .btn.warning { background: #f59e0b; border-color: #f59e0b; color: #111; }
+  .btn.warning:hover { background: #d97706; }
+  .btn.danger { background: #dc2626; border-color: #dc2626; color: #fff; }
+  .btn.danger:hover { background: #b91c1c; }
+  .btn.success { background: #16a34a; border-color: #16a34a; color: #fff; }
+  .btn.success:hover { background: #15803d; }
+
+  /* ====== Log ====== */
+  .log-container {
+    background: #111827; border-radius: 8px; border: 1px solid #1e293b;
+    padding: 12px; font-family: Consolas, "Microsoft YaHei UI", monospace;
+    font-size: 13px; height: 300px; overflow-y: auto;
+    color: #e5e7eb; line-height: 1.7;
+  }
+  .log-entry { margin-bottom: 4px; }
+  .log-time { color: #93c5fd; }
+  .log-type { font-weight: 700; }
+  .log-meta { color: #94a3b8; font-size: 11px; }
+
+  /* ====== Evaluation ====== */
+  .eval-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 13px; }
+  .eval-item { padding: 4px 8px; background: #f8fafc; border-radius: 4px; }
+  .eval-item .eval-val { font-weight: 700; color: #2563eb; }
+
+  /* ====== Bottom bar ====== */
+  .bottom-bar {
+    background: #fff; border-top: 1px solid #d8dee8; padding: 10px 20px;
+    display: flex; align-items: center; gap: 12px; position: fixed;
+    bottom: 0; left: 0; right: 0; z-index: 10;
+  }
+  .bottom-bar .sim-time { font-weight: 700; font-size: 16px; color: #1d2939; }
+
+  /* ====== Status hint ====== */
+  .status-hint {
+    background: #fff7ed; border: 1px solid #fed7aa; border-radius: 7px;
+    color: #9a3412; padding: 8px 10px; font-size: 14px; font-weight: 700;
+  }
+
+  /* ====== Legend (inside map) ====== */
+  .map-legend {
+    position: absolute; bottom: 8px; left: 8px; background: rgba(255,255,255,0.92);
+    border: 1px solid #d8dee8; border-radius: 6px; padding: 6px 8px;
+    font-size: 11px; display: flex; flex-wrap: wrap; gap: 8px; z-index: 5;
+  }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+  /* ====== Responsive ====== */
+  @media (max-width: 900px) {
+    .main-container { flex-direction: column; height: auto; }
+    .right-panel { border-left: none; border-top: 1px solid #d8dee8; }
+    .indicators-compact { grid-template-columns: repeat(3, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <h1>🚇 轨道交通模拟系统</h1>
+  <span class="badge">Web 版</span>
+  <span class="data-info" id="dataInfo">加载中...</span>
+</div>
+
+<!-- Main Content -->
+<div class="main-container">
+
+  <!-- ========== LEFT PANEL ========== -->
+  <div class="left-panel">
+
+    <!-- Track Map -->
+    <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:0;">
+      <div class="card-title">
+        🗺️ 线路全景图
+        <span style="font-weight:400;font-size:12px;color:#667085;margin-left:auto" id="mapInfo"></span>
+      </div>
+      <div class="track-map-container" id="trackMapContainer">
+        <svg id="trackMapSvg" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div class="map-tooltip" id="mapTooltip"></div>
+        <div class="station-tooltip" id="stationTooltip"></div>
+        <div class="map-controls">
+          <button class="map-btn" title="放大" onclick="zoomMap(1.3)">+</button>
+          <button class="map-btn" title="缩小" onclick="zoomMap(0.7)">−</button>
+          <button class="map-btn" title="定位列车" onclick="centerOnTrain()" style="font-size:12px">🚂</button>
+        </div>
+        <div class="map-legend" id="mapLegend">
+          <div class="legend-item"><span class="legend-dot" style="background:#3b3b3b"></span> 主线</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#94a3b8"></span> 支线/岔线</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#f59e0b;transform:rotate(45deg);border-radius:0"></span> 道岔</div>
+          <div class="legend-item"><span class="legend-dot" style="background:rgba(22,163,74,0.5)"></span> ≥60km/h</div>
+          <div class="legend-item"><span class="legend-dot" style="background:rgba(217,119,6,0.5)"></span> 35-60</div>
+          <div class="legend-item"><span class="legend-dot" style="background:rgba(220,38,38,0.5)"></span> &lt;35</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#dc2626;border-radius:50%"></span> 车站</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Compact Indicators -->
+    <div class="card">
+      <div class="indicators-compact">
+        <div class="ind-mini"><div class="label">速度 km/h</div><div class="value" id="indSpeed">0.0</div></div>
+        <div class="ind-mini"><div class="label">限速 km/h</div><div class="value" id="indLimit">80</div></div>
+        <div class="ind-mini"><div class="label">位置 m</div><div class="value" id="indPosition">0</div></div>
+        <div class="ind-mini"><div class="label">坡度 ‰</div><div class="value" id="indGradient">0.0</div></div>
+        <div class="ind-mini"><div class="label">信号</div><div class="value" id="indSignal" style="font-size:14px">--</div></div>
+        <div class="ind-mini"><div class="label">供电</div><div class="value" id="indPower" style="font-size:13px">正常</div></div>
+      </div>
+    </div>
+
+    <!-- Status Info -->
+    <div class="card">
+      <div class="info-grid">
+        <div class="info-item">模式: <strong id="infoMode">手动</strong></div>
+        <div class="info-item">当前站: <strong id="infoStation">区间</strong></div>
+        <div class="info-item">下一站: <strong id="infoNextStation">--</strong></div>
+        <div class="info-item">距离: <strong id="infoDistance">--</strong></div>
+        <div class="info-item">车门: <strong id="infoDoor">全部关闭</strong></div>
+        <div class="info-item">加速度: <strong id="infoAccel">0.00</strong> m/s²</div>
+      </div>
+    </div>
+
+    <!-- Status Hint -->
+    <div class="status-hint" id="statusHint">系统就绪 — 滚轮缩放地图，拖拽平移，点击按钮定位列车</div>
+  </div>
+
+  <!-- ========== RIGHT PANEL ========== -->
+  <div class="right-panel">
+
+    <!-- Driving Controls -->
+    <div class="card">
+      <div class="card-title">🎮 驾驶控制</div>
+      <div class="btn-row">
+        <button class="btn primary" onclick="sendControl('traction')">牵引</button>
+        <button class="btn" onclick="sendControl('coast')">惰行</button>
+        <button class="btn warning" onclick="sendControl('service_brake')">常用制动</button>
+        <button class="btn" onclick="sendControl('full_brake')">全制动</button>
+        <button class="btn danger" onclick="sendControl('emergency_brake')">紧急制动</button>
+      </div>
+    </div>
+
+    <!-- Door Controls -->
+    <div class="card">
+      <div class="card-title">🚪 车门控制</div>
+      <div class="btn-row">
+        <button class="btn" onclick="sendControl('open_left_door')">开左门</button>
+        <button class="btn" onclick="sendControl('open_right_door')">开右门</button>
+        <button class="btn" onclick="sendControl('close_door')">关门</button>
+      </div>
+    </div>
+
+    <!-- Mode & Power -->
+    <div class="card">
+      <div class="card-title">⚙️ 模式 & 供电</div>
+      <div class="btn-row">
+        <button class="btn" onclick="sendControl('manual_mode')">手动模式</button>
+        <button class="btn success" onclick="sendControl('auto_mode')">自动驾驶</button>
+      </div>
+      <div class="btn-row" style="margin-top:8px">
+        <button class="btn" onclick="sendControl('set_power', {status:'NORMAL'})">供电正常</button>
+        <button class="btn warning" onclick="sendControl('set_power', {status:'LOW_VOLTAGE'})">电压低</button>
+        <button class="btn danger" onclick="sendControl('set_power', {status:'POWER_OFF'})">断电</button>
+        <button class="btn" onclick="sendControl('set_power', {status:'RECOVERING'})">故障恢复</button>
+      </div>
+    </div>
+
+    <!-- Sim Controls -->
+    <div class="card">
+      <div class="card-title">⏯️ 仿真控制</div>
+      <div class="btn-row">
+        <button class="btn success" id="btnStart" onclick="startSim()">▶ 开始</button>
+        <button class="btn warning" id="btnStop" onclick="stopSim()" disabled>⏸ 暂停</button>
+        <button class="btn danger" onclick="resetSim()">🔄 重置</button>
+      </div>
+    </div>
+
+    <!-- Evaluation -->
+    <div class="card">
+      <div class="card-title">📈 运行评价</div>
+      <div class="eval-grid" id="evalPanel">
+        <div class="eval-item">最高速度: <span class="eval-val">--</span></div>
+        <div class="eval-item">平均停车误差: <span class="eval-val">--</span></div>
+        <div class="eval-item">超速次数: <span class="eval-val">0</span></div>
+        <div class="eval-item">红灯违规: <span class="eval-val">0</span></div>
+        <div class="eval-item">紧急制动: <span class="eval-val">0</span></div>
+        <div class="eval-item">安全事件: <span class="eval-val">0</span></div>
+      </div>
+    </div>
+
+    <!-- Log -->
+    <div class="card">
+      <div class="card-title">📜 运行日志</div>
+      <div class="log-container" id="logContainer"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Bottom Bar -->
+<div class="bottom-bar">
+  <span class="sim-time">⏱ 仿真时间: <span id="bottomTime">0.0</span>s</span>
+  <span style="margin-left:auto;color:#667085;font-size:13px">轨道交通模拟系统 v3.0 — Web Edition</span>
+</div>
+
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+<script>
+// ====== Socket.IO ======
+const socket = io();
+
+// ====== State ======
+let logSince = 0;
+let isRunning = true;
+let trackGeometry = null;
+let trainPos = 0;
+let signalAspects = {};
+
+// ====== Track Map State ======
+const MAP_SCALE = 0.12;
+const MAIN_Y = 130;
+const BRANCH_OFFSET = 35;
+const TRACK_H = 8;
+const BRANCH_H = 4;
+let svgWidth = 1000;
+let svgHeight = 380;
+let viewX = 0, viewY = 0, viewW = 1000, viewH = 380;
+let isDragging = false;
+let dragStart = {x:0, y:0};
+let dragViewStart = {x:0, y:0};
+
+// ====== Socket Events ======
+socket.on('connect', () => { console.log('Socket.IO connected'); });
+socket.on('state', (data) => { updateUI(data); });
+
+// ====== Init ======
+fetchTrackGeometry();
+fetch('/api/state').then(r => r.json()).then(updateUI).catch(() => {});
+fetch('/api/running').then(r => r.json()).then(d => {
+  isRunning = d.running;
+  document.getElementById('btnStart').disabled = d.running;
+  document.getElementById('btnStop').disabled = !d.running;
+  document.getElementById('statusHint').textContent = d.running ? '仿真运行中' : '仿真已暂停';
+});
+
+setInterval(() => {
+  if (!socket.connected) {
+    fetch('/api/state').then(r => r.json()).then(updateUI).catch(() => {});
+  }
+  fetch('/api/logs?since=' + logSince).then(r => r.json()).then(logs => {
+    logs.forEach(addLogEntry);
+    logSince += logs.length;
+  }).catch(() => {});
+}, 200);
+
+setInterval(() => {
+  if (socket.connected) socket.emit('request_state');
+}, 200);
+
+// ====== Fetch Track Geometry ======
+function fetchTrackGeometry() {
+  fetch('/api/track_geometry').then(r => r.json()).then(geo => {
+    trackGeometry = geo;
+    signalAspects = geo.signal_aspects || {};
+    buildTrackMap();
+    document.getElementById('mapInfo').textContent =
+      `区段 ${geo.segments.length} | 车站 ${geo.stations.length} | 道岔 ${(geo.switches||[]).length} | 全长 ${geo.total_length.toFixed(0)}m`;
+  }).catch(err => console.error('Failed to load track geometry:', err));
+}
+
+// ====== Build SVG Track Map ======
+function buildTrackMap() {
+  if (!trackGeometry) return;
+  const geo = trackGeometry;
+  const svg = document.getElementById('trackMapSvg');
+  svgWidth = geo.total_length * MAP_SCALE + 400;
+  svgHeight = 380;
+
+  const container = document.getElementById('trackMapContainer');
+  const cw = container.clientWidth;
+  const ch = container.clientHeight;
+  viewW = cw;
+  viewH = ch;
+  viewX = 0;
+  viewY = 0;
+
+  svg.setAttribute('viewBox', `${viewX} ${viewY} ${viewW} ${viewH}`);
+  svg.setAttribute('width', '100%');
+  svg.setAttribute('height', '100%');
+  svg.style.minHeight = ch + 'px';
+
+  let html = '';
+
+  // Defs
+  html += `<defs>
+    <pattern id="grid" width="100" height="50" patternUnits="userSpaceOnUse">
+      <path d="M 100 0 L 0 0 0 50" fill="none" stroke="#e5eaf2" stroke-width="0.5"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-opacity="0.15"/>
+    </filter>
+  </defs>`;
+  html += `<rect x="0" y="0" width="${svgWidth}" height="${svgHeight}" fill="url(#grid)" />`;
+
+  // Gradient bands
+  geo.gradients.forEach(g => {
+    const x1 = g.abs_start * MAP_SCALE + 100;
+    const x2 = g.abs_end * MAP_SCALE + 100;
+    if (x2 - x1 < 1) return;
+    const isUp = g.gradient > 0;
+    const alpha = Math.min(Math.abs(g.gradient) / 50, 0.6);
+    const color = isUp ? `rgba(59,130,246,${alpha})` : `rgba(239,68,68,${alpha})`;
+    html += `<rect x="${x1}" y="${MAIN_Y + TRACK_H + 14}" width="${x2-x1}" height="6" fill="${color}" rx="1">
+      <title>坡度 ${g.gradient}‰ (${g.abs_start.toFixed(0)}m ~ ${g.abs_end.toFixed(0)}m)</title>
+    </rect>`;
+  });
+
+  // Speed limit bands
+  geo.speed_limits.forEach(sl => {
+    const x1 = sl.abs_start * MAP_SCALE + 100;
+    const x2 = sl.abs_end * MAP_SCALE + 100;
+    if (x2 - x1 < 1) return;
+    let color;
+    if (sl.speed_kmh >= 60) color = 'rgba(22,163,74,0.45)';
+    else if (sl.speed_kmh >= 35) color = 'rgba(217,119,6,0.45)';
+    else color = 'rgba(220,38,38,0.45)';
+    html += `<rect x="${x1}" y="${MAIN_Y - 14}" width="${x2-x1}" height="8" fill="${color}" rx="1">
+      <title>限速 ${sl.speed_kmh}km/h (${sl.abs_start.toFixed(0)}m ~ ${sl.abs_end.toFixed(0)}m)</title>
+    </rect>`;
+  });
+
+  // Segments
+  geo.segments.forEach(seg => {
+    const x1 = seg.abs_start * MAP_SCALE + 100;
+    const x2 = (seg.abs_start + seg.length) * MAP_SCALE + 100;
+    if (x2 - x1 < 0.5) return;
+    const level = seg.level || 0;
+    const y = MAIN_Y + level * BRANCH_OFFSET;
+    const isMain = level === 0;
+    const thick = isMain ? TRACK_H : BRANCH_H;
+    const color = isMain ? '#3b3b3b' : '#94a3b8';
+    html += `<rect x="${x1}" y="${y - thick/2}" width="${x2-x1}" height="${thick}" fill="${color}" rx="${thick/2}"
+      class="track-seg" data-seg="${seg.seg_id}" data-level="${level}"
+      onmouseenter="showSegTip(event,${seg.seg_id},${seg.abs_start.toFixed(0)},${seg.length.toFixed(0)},${level})"
+      onmouseleave="hideSegTip()">
+      <title>Seg ${seg.seg_id} · 长度 ${seg.length.toFixed(1)}m · 起点 ${seg.abs_start.toFixed(0)}m</title>
+    </rect>`;
+  });
+
+  // Switch connectors (道岔)
+  if (geo.switches) {
+    geo.switches.forEach((sw, idx) => {
+      const sx = sw.position * MAP_SCALE + 100;
+      const fromY = MAIN_Y + (sw.from_level || 0) * BRANCH_OFFSET;
+      const toY = MAIN_Y + (sw.to_level || 0) * BRANCH_OFFSET;
+      if (Math.abs(fromY - toY) < 1) return;
+      const dirUp = toY < fromY;
+      const yOff = Math.abs(toY - fromY) * 0.6;
+
+      // Cubic bezier for smooth switch curve
+      const cp1x = sx - 15, cp1y = fromY + (dirUp ? -yOff : yOff);
+      const cp2x = sx + 15, cp2y = toY + (dirUp ? yOff : -yOff);
+      html += `<path d="M ${sx} ${fromY} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${sx} ${toY}"
+        fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.7"
+        class="switch-conn" data-switch="${idx}"
+        onmouseenter="showSwitchTip(event,${sw.from_seg},${sw.to_seg},${sw.position.toFixed(0)})"
+        onmouseleave="hideSwitchTip()">
+        <title>道岔: Seg${sw.from_seg} ↔ Seg${sw.to_seg} @ ${sw.position.toFixed(0)}m</title>
+      </path>`;
+
+      // Diamond marker
+      const dSize = 5;
+      const diamond = `M ${sx-dSize} ${fromY} L ${sx} ${fromY-dSize*1.2} L ${sx+dSize} ${fromY} L ${sx} ${fromY+dSize*1.2} Z`;
+      html += `<path d="${diamond}" fill="#f59e0b" stroke="#92400e" stroke-width="0.8"
+        class="switch-marker" data-switch="${idx}"
+        onmouseenter="showSwitchTip(event,${sw.from_seg},${sw.to_seg},${sw.position.toFixed(0)})"
+        onmouseleave="hideSwitchTip()"/>`;
+
+      // Label (every 3rd or yard area)
+      if (idx % 3 === 0 || sw.position < 2000) {
+        const labelX = sx + 8;
+        const labelY = fromY + (dirUp ? -12 : 14);
+        html += `<text x="${labelX}" y="${labelY}" font-size="8" fill="#92400e" font-weight="600"
+          style="pointer-events:none">岔${sw.from_seg}/${sw.to_seg}</text>`;
+      }
+    });
+  }
+
+  // Kilometre markers
+  for (let km = 0; km <= geo.total_length; km += 500) {
+    const x = km * MAP_SCALE + 100;
+    html += `<line x1="${x}" y1="${MAIN_Y + 56}" x2="${x}" y2="${MAIN_Y + 68}" stroke="#94a3b8" stroke-width="1"/>`;
+    html += `<text x="${x}" y="${MAIN_Y + 82}" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="Consolas,monospace">K${(km/1000).toFixed(1)}</text>`;
+  }
+
+  // Stations
+  geo.stations.forEach((st, i) => {
+    if (st.position <= 0) return;
+    const cx = st.position * MAP_SCALE + 100;
+    const cy = MAIN_Y;
+    html += `<circle cx="${cx}" cy="${cy}" r="9" fill="#fff" stroke="#dc2626" stroke-width="2.5" class="station-dot"
+      data-station="${st.name}" data-pos="${st.position.toFixed(0)}"
+      onmouseenter="showStationTip(event,'${st.name}',${st.position.toFixed(0)})"
+      onmouseleave="hideStationTip()"
+      style="cursor:pointer;filter:url(#shadow)"/>`;
+    const labelY = i % 2 === 0 ? cy - 18 : cy + 26;
+    html += `<text x="${cx}" y="${labelY}" text-anchor="middle" font-size="11" font-weight="800" fill="#dc2626"
+      style="pointer-events:none">${st.name}</text>`;
+  });
+
+  // Signals
+  geo.signals.forEach(sig => {
+    if (sig.position <= 0) return;
+    const cx = sig.position * MAP_SCALE + 100;
+    const aspect = signalAspects[sig.signal_id] || '绿灯';
+    const colors = {'绿灯':'#16a34a','黄灯':'#d97706','红灯':'#dc2626'};
+    const color = colors[aspect] || '#666';
+    html += `<circle cx="${cx}" cy="${MAIN_Y - TRACK_H - 6}" r="4" fill="${color}" stroke="#fff" stroke-width="1">
+      <title>${sig.signal_id} · ${aspect}</title>
+    </circle>`;
+  });
+
+  // Train marker
+  html += `<g id="trainMarker" transform="translate(${100}, ${MAIN_Y})">
+    <rect x="-15" y="-18" width="30" height="14" rx="3" fill="#2563eb" stroke="#fff" stroke-width="1.5" filter="url(#shadow)"/>
+    <rect x="-12" y="-16" width="6" height="10" rx="2" fill="rgba(255,255,255,0.4)"/>
+    <rect x="-3" y="-16" width="6" height="10" rx="2" fill="rgba(255,255,255,0.4)"/>
+    <rect x="6" y="-16" width="6" height="10" rx="2" fill="rgba(255,255,255,0.4)"/>
+    <text x="0" y="-22" text-anchor="middle" font-size="9" font-weight="800" fill="#2563eb">列车</text>
+  </g>`;
+
+  svg.innerHTML = html;
+  setupMapInteraction();
+}
+
+// ====== Map Interaction ======
+function setupMapInteraction() {
+  const container = document.getElementById('trackMapContainer');
+  const svg = document.getElementById('trackMapSvg');
+
+  container.onwheel = (e) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.15 : 0.85;
+    zoomMapAt(factor, e.offsetX, e.offsetY);
+  };
+
+  container.onmousedown = (e) => {
+    if (e.target.closest('.map-btn')) return;
+    isDragging = true;
+    container.classList.add('dragging');
+    dragStart = {x: e.clientX, y: e.clientY};
+    dragViewStart = {x: viewX, y: viewY};
+  };
+
+  window.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    const dx = (e.clientX - dragStart.x);
+    const dy = (e.clientY - dragStart.y);
+    viewX = dragViewStart.x - dx;
+    viewY = dragViewStart.y - dy;
+    updateViewBox();
+  });
+
+  window.addEventListener('mouseup', () => {
+    isDragging = false;
+    container.classList.remove('dragging');
+  });
+
+  // Touch events
+  container.ontouchstart = (e) => {
+    if (e.touches.length === 1) {
+      isDragging = true;
+      dragStart = {x: e.touches[0].clientX, y: e.touches[0].clientY};
+      dragViewStart = {x: viewX, y: viewY};
+    }
+  };
+  container.ontouchmove = (e) => {
+    if (!isDragging || e.touches.length !== 1) return;
+    const dx = (e.touches[0].clientX - dragStart.x);
+    const dy = (e.touches[0].clientY - dragStart.y);
+    viewX = dragViewStart.x - dx;
+    viewY = dragViewStart.y - dy;
+    updateViewBox();
+  };
+  container.ontouchend = () => { isDragging = false; };
+}
+
+function updateViewBox() {
+  const svg = document.getElementById('trackMapSvg');
+  viewX = Math.max(-50, Math.min(viewX, svgWidth - viewW + 50));
+  viewY = Math.max(-30, Math.min(viewY, svgHeight - viewH + 30));
+  svg.setAttribute('viewBox', `${viewX} ${viewY} ${viewW} ${viewH}`);
+}
+
+function zoomMap(factor) {
+  const container = document.getElementById('trackMapContainer');
+  zoomMapAt(factor, container.clientWidth / 2, container.clientHeight / 2);
+}
+
+function zoomMapAt(factor, cx, cy) {
+  const newW = viewW / factor;
+  const newH = viewH / factor;
+  const minW = 200, maxW = svgWidth * 1.5;
+  if (newW < minW || newW > maxW) return;
+  const ratioX = cx / viewW;
+  const ratioY = cy / viewH;
+  viewX = viewX + (viewW - newW) * ratioX;
+  viewY = viewY + (viewH - newH) * ratioY;
+  viewW = newW;
+  viewH = newH;
+  updateViewBox();
+}
+
+function centerOnTrain() {
+  if (!trackGeometry) return;
+  const tx = trainPos * MAP_SCALE + 100;
+  viewX = tx - viewW / 2;
+  viewY = MAIN_Y - viewH / 2;
+  updateViewBox();
+}
+
+// ====== Tooltips ======
+function showSegTip(e, segId, start, len, level) {
+  const tip = document.getElementById('mapTooltip');
+  tip.textContent = `Seg ${segId} · 起点 ${start}m · 长度 ${len}m · ${level > 0 ? '支线/岔线 L' + level : '主线'}`;
+  tip.style.display = 'block';
+  const rect = document.getElementById('trackMapContainer').getBoundingClientRect();
+  tip.style.left = (e.clientX - rect.left + 14) + 'px';
+  tip.style.top = (e.clientY - rect.top - 10) + 'px';
+}
+
+function hideSegTip() {
+  document.getElementById('mapTooltip').style.display = 'none';
+}
+
+function showStationTip(e, name, pos) {
+  const tip = document.getElementById('stationTooltip');
+  tip.innerHTML = `<strong>${name}</strong> &nbsp;位置 ${pos}m`;
+  tip.style.display = 'block';
+  const rect = document.getElementById('trackMapContainer').getBoundingClientRect();
+  tip.style.left = (e.clientX - rect.left + 14) + 'px';
+  tip.style.top = (e.clientY - rect.top - 14) + 'px';
+}
+
+function hideStationTip() {
+  document.getElementById('stationTooltip').style.display = 'none';
+}
+
+function showSwitchTip(e, fromSeg, toSeg, pos) {
+  const tip = document.getElementById('mapTooltip');
+  tip.innerHTML = `<strong>道岔</strong> &nbsp;Seg${fromSeg} ↔ Seg${toSeg} &nbsp;@ ${pos}m`;
+  tip.style.display = 'block';
+  const rect = document.getElementById('trackMapContainer').getBoundingClientRect();
+  tip.style.left = (e.clientX - rect.left + 14) + 'px';
+  tip.style.top = (e.clientY - rect.top - 10) + 'px';
+}
+
+function hideSwitchTip() {
+  document.getElementById('mapTooltip').style.display = 'none';
+}
+
+// ====== Update Train Position ======
+function updateTrainPosition(pos) {
+  trainPos = pos;
+  const train = document.getElementById('trainMarker');
+  if (!train) return;
+  const tx = pos * MAP_SCALE + 100;
+  train.setAttribute('transform', `translate(${tx}, ${MAIN_Y})`);
+  const margin = viewW * 0.15;
+  if (tx < viewX + margin || tx > viewX + viewW - margin) {
+    viewX = tx - viewW / 2;
+    updateViewBox();
+  }
+}
+
+// ====== UI Updates ======
+function updateUI(d) {
+  const speedEl = document.getElementById('indSpeed');
+  speedEl.textContent = d.speed_kmh.toFixed(1);
+  speedEl.className = 'value ' + (d.speed_kmh > d.speed_limit_kmh * 0.95 ? 'speed-warn' : 'speed-normal');
+
+  document.getElementById('indLimit').textContent = d.speed_limit_kmh.toFixed(0);
+  document.getElementById('indPosition').textContent = d.position.toFixed(0);
+  document.getElementById('indGradient').textContent = d.gradient.toFixed(1);
+  document.getElementById('indSignal').textContent = d.signal ? d.signal.split(':')[1] || d.signal : '--';
+  document.getElementById('indPower').textContent = d.power;
+
+  document.getElementById('infoMode').textContent = d.mode;
+  document.getElementById('infoStation').textContent = d.current_station;
+  document.getElementById('infoNextStation').textContent = d.next_station;
+  document.getElementById('infoDistance').textContent = d.next_station_distance > 0 ? d.next_station_distance.toFixed(0) + ' m' : '--';
+  document.getElementById('infoDoor').textContent = d.door;
+  document.getElementById('infoAccel').textContent = d.acceleration.toFixed(2);
+
+  if (d.signal_aspects) {
+    signalAspects = d.signal_aspects;
+    updateSignalDots();
+  }
+
+  updateTrainPosition(d.position);
+
+  const ev = d.evaluation || {};
+  const evalHtml = [
+    `最高速度: <span class="eval-val">${(ev['最高速度 (km/h)'] || 0).toFixed(1)} km/h</span>`,
+    `平均停车误差: <span class="eval-val">${ev['平均停车误差 (m)'] || '--'} m</span>`,
+    `超速次数: <span class="eval-val">${ev['超速次数'] || 0}</span>`,
+    `红灯违规: <span class="eval-val">${ev['红灯违规次数'] || 0}</span>`,
+    `紧急制动: <span class="eval-val">${ev['紧急制动次数'] || 0}</span>`,
+    `安全事件: <span class="eval-val">${ev['安全事件总数'] || 0}</span>`,
+  ];
+  document.getElementById('evalPanel').innerHTML = evalHtml.map(e => `<div class="eval-item">${e}</div>`).join('');
+  document.getElementById('bottomTime').textContent = d.sim_time.toFixed(1);
+  document.getElementById('dataInfo').textContent =
+    `区段 ${d.stations ? d.stations.length * 2 - 1 : '--'} | 车站 ${d.stations ? d.stations.length : '--'} | 总长 ${d.total_length.toFixed(0)} m`;
+}
+
+function updateSignalDots() {
+  const svg = document.getElementById('trackMapSvg');
+  if (!svg || !trackGeometry) return;
+  const colors = {'绿灯':'#16a34a','黄灯':'#d97706','红灯':'#dc2626'};
+  trackGeometry.signals.forEach(sig => {
+    const aspect = signalAspects[sig.signal_id] || '绿灯';
+    const cx = sig.position * MAP_SCALE + 100;
+    const circles = svg.querySelectorAll('circle');
+    circles.forEach(c => {
+      const ccx = parseFloat(c.getAttribute('cx'));
+      if (Math.abs(ccx - cx) < 2 && c.getAttribute('fill') !== '#fff' && c.getAttribute('r') === '4') {
+        c.setAttribute('fill', colors[aspect] || '#666');
+        const title = c.querySelector('title');
+        if (title) title.textContent = `${sig.signal_id} · ${aspect}`;
+      }
+    });
+  });
+}
+
+// ====== Log ======
+const logColors = {
+  '紧急制动': '#f87171', '超速': '#f87171', '红灯违规': '#f87171',
+  '信号': '#fbbf24', '状态': '#38bdf8', '操作': '#86efac',
+};
+
+function addLogEntry(e) {
+  const container = document.getElementById('logContainer');
+  const color = logColors[e.type] || '#c4b5fd';
+  const div = document.createElement('div');
+  div.className = 'log-entry';
+  div.innerHTML = `<span class="log-time">[${e.timestamp.toFixed(1)}s]</span> <span style="color:${color};font-weight:700">● ${e.type}</span> ${e.description} <div class="log-meta">位置 ${e.position?.toFixed(1) || '0'}m · 速度 ${e.speed?.toFixed(1) || '0'} km/h</div>`;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+// ====== Controls ======
+function sendControl(action, extra = {}) {
+  fetch('/api/control', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action, ...extra}),
+  }).then(r => r.json()).then(resp => {
+    if (resp.status === 'error') {
+      document.getElementById('statusHint').textContent = '⚠ ' + resp.message;
+    } else {
+      document.getElementById('statusHint').textContent = '操作: ' + action;
+    }
+    if (socket.connected) socket.emit('request_state');
+  }).catch(err => {
+    document.getElementById('statusHint').textContent = '通信错误: ' + err;
+  });
+}
+
+function startSim() {
+  fetch('/api/start', {method:'POST'}).then(() => {
+    isRunning = true;
+    document.getElementById('btnStart').disabled = true;
+    document.getElementById('btnStop').disabled = false;
+    document.getElementById('statusHint').textContent = '仿真运行中';
+  });
+}
+
+function stopSim() {
+  fetch('/api/stop', {method:'POST'}).then(() => {
+    isRunning = false;
+    document.getElementById('btnStart').disabled = false;
+    document.getElementById('btnStop').disabled = true;
+    document.getElementById('statusHint').textContent = '仿真已暂停';
+  });
+}
+
+function resetSim() {
+  fetch('/api/reset', {method:'POST'}).then(() => {
+    logSince = 0;
+    document.getElementById('logContainer').innerHTML = '';
+    document.getElementById('statusHint').textContent = '仿真已重置';
+    fetch('/api/track_geometry').then(r => r.json()).then(geo => {
+      signalAspects = geo.signal_aspects || {};
+      updateSignalDots();
+    });
+    if (socket.connected) socket.emit('request_state');
+  });
+}
+
+// ====== Keyboard Shortcuts ======
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  switch(e.key.toLowerCase()) {
+    case 'w': sendControl('traction'); break;
+    case 's': sendControl('coast'); break;
+    case 'x': sendControl('service_brake'); break;
+    case 'a': sendControl('emergency_brake'); break;
+    case 'd': sendControl('close_door'); break;
+    case 'arrowleft': sendControl('open_left_door'); break;
+    case 'arrowright': sendControl('open_right_door'); break;
+    case 'm': sendControl('manual_mode'); break;
+    case 't': sendControl('auto_mode'); break;
+    case 'f': centerOnTrain(); break;
+    case ' ': e.preventDefault(); isRunning ? stopSim() : startSim(); break;
+  }
+});
+
+// ====== Resize ======
+window.addEventListener('resize', () => {
+  const container = document.getElementById('trackMapContainer');
+  if (container) {
+    viewW = container.clientWidth;
+    viewH = container.clientHeight;
+    updateViewBox();
+  }
+});
+
+console.log('🚇 轨道交通模拟系统 Web 版 — 就绪');
+console.log('🗺️ 交互式线路图已加载 — 滚轮缩放 · 拖拽平移 · 悬停查看详情');
+console.log('⌨ 快捷键: W=牵引 S=惰行 X=制动 A=紧急 D=关门 ←→=开门 M/T=手动/自动 F=定位列车 空格=启/停');
+</script>
+</body>
+</html>
