@@ -231,8 +231,7 @@ class MainWindow(QMainWindow):
         # 重建线路可视化并立即将列车绘制到新线路上
         self.track_view.set_track_data(track, self._data_source_label())
         car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
-        car_segs = [s.position.segment_id for s in self.controller.states]
-        self.track_view.set_train_position(car_abs, self.controller, car_segs)
+        self.track_view.set_train_position(car_abs, self.controller)
 
         self.front_train_positions = self._default_front_train_positions()
         self._last_signal_aspects.clear()
@@ -349,8 +348,7 @@ class MainWindow(QMainWindow):
 
         self.dashboard.refresh(report)
         car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
-        car_segs = [s.position.segment_id for s in self.controller.states]
-        self.track_view.set_train_position(car_abs, self.controller, car_segs)
+        self.track_view.set_train_position(car_abs, self.controller)
         self._update_log_display()
 
         self.force_panel.feed(
