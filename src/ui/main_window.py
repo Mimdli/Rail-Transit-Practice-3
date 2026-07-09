@@ -44,9 +44,7 @@ class MainWindow(QMainWindow):
         # 定时器
         self.timer = QTimer()
         self.timer.timeout.connect(self._update)
-        self._timer_ms = 100
-        self._physics_substeps = 3  # 每帧多次积分，兼顾稳定性与实时性
-        self.timer.start(self._timer_ms)
+        self.timer.start(100)  # 100ms 刷新
 
     def _init_modules(self):
         """初始化所有核心模块"""
@@ -234,8 +232,7 @@ class MainWindow(QMainWindow):
         # 重建线路可视化并立即将列车绘制到新线路上
         self.track_view.set_track_data(track, self._data_source_label())
         car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
-        car_segs = [s.position.segment_id for s in self.controller.states]
-        self.track_view.set_train_position(car_abs, self.controller, car_segs)
+        self.track_view.set_train_position(car_abs, self.controller)
 
         self.front_train_positions = self._default_front_train_positions()
         self._last_signal_aspects.clear()
@@ -309,17 +306,12 @@ class MainWindow(QMainWindow):
 
     def _update(self):
         """定时更新"""
-        # 仿真时间与 UI 刷新对齐（原 dt=0.033 仅 1/3 实时，体感极慢）
-        dt_frame = self._timer_ms / 1000.0
-        dt = dt_frame / self._physics_substeps
+        dt = 0.033  # 30fps 仿真步长
 
         # ---- 网络模式：从外部系统注入数据 ----
         if self._network_mode:
-            self._network_update_step(dt_frame)
+            self._network_update_step(dt)
             self.dashboard.refresh()
-            car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
-            car_segs = [s.position.segment_id for s in self.controller.states]
-            self.track_view.set_train_position(car_abs, self.controller, car_segs)
             self._update_log_display()
             return
 
@@ -343,12 +335,10 @@ class MainWindow(QMainWindow):
         if self.controller.running_mode == RunningMode.AUTOMATIC:
             self.auto_drive.step()
 
-        report = None
-        for _ in range(self._physics_substeps):
-            report = self.controller.step(dt)
-        self.power_supply.step(dt_frame)
-        self.recorder.step(dt_frame)
-        self.sim_time += dt_frame
+        report = self.controller.step(dt)
+        self.power_supply.step(dt)
+        self.recorder.step(dt)
+        self.sim_time += dt
 
         self.evaluator.update_max_speed(head_speed)
         self._record_status_snapshot(effective_limit)
@@ -359,8 +349,7 @@ class MainWindow(QMainWindow):
 
         self.dashboard.refresh(report)
         car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
-        car_segs = [s.position.segment_id for s in self.controller.states]
-        self.track_view.set_train_position(car_abs, self.controller, car_segs)
+        self.track_view.set_train_position(car_abs, self.controller)
         self._update_log_display()
 
         self.force_panel.feed(
