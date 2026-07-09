@@ -32,7 +32,7 @@ COLOR_BG = QColor(245, 245, 245)
 COLOR_RULER = QColor(150, 150, 150)
 
 SCALE = 0.22          # 米 → 像素
-BRANCH_OFFSET = 42    # 分支偏移高度 (px)
+BRANCH_OFFSET = 60    # 分支偏移高度 (px)
 LINE_WIDTH = 9
 HOVER_WIDTH = 14
 
@@ -150,6 +150,7 @@ class TrackView(QGraphicsView):
     def _compute_branch_levels(self):
         from collections import deque
         td = self.td
+        td._seg_map = {s.seg_id: s for s in td.segments}
         referenced = set()
         for s in td.segments:
             for n in (s.start_neighbor, s.end_neighbor):
@@ -197,6 +198,34 @@ class TrackView(QGraphicsView):
     def _get_level(self, seg_id: int) -> int:
         return self._branch_levels.get(seg_id, 0)
 
+    def _draw_switch_connectors(self, td: TrackData, base_y: float):
+        """绘制主线与道岔分支之间的连接线"""
+        if not td._seg_map:
+            td._seg_map = {s.seg_id: s for s in td.segments}
+
+        pen = QPen(COLOR_BRANCH, 5)
+        pen.setStyle(Qt.SolidLine)
+
+        for seg in td.segments:
+            parent_level = self._get_level(seg.seg_id)
+            parent_y = parent_level * BRANCH_OFFSET + base_y
+
+            if seg.start_lateral > 0 and seg.start_lateral in td._seg_map:
+                child_level = self._get_level(seg.start_lateral)
+                if child_level > parent_level:
+                    fork_x = self._x(seg.abs_start)
+                    child_y = child_level * BRANCH_OFFSET + base_y
+                    line = self.scene.addLine(fork_x, parent_y, fork_x, child_y, pen)
+                    line.setZValue(0)
+
+            if seg.end_lateral > 0 and seg.end_lateral in td._seg_map:
+                child_level = self._get_level(seg.end_lateral)
+                if child_level > parent_level:
+                    fork_x = self._x(seg.abs_start + seg.length)
+                    child_y = child_level * BRANCH_OFFSET + base_y
+                    line = self.scene.addLine(fork_x, parent_y, fork_x, child_y, pen)
+                    line.setZValue(0)
+
     # ---- 场景构建 ----
 
     def _build(self):
@@ -222,6 +251,9 @@ class TrackView(QGraphicsView):
             item = SegmentItem(x1, y, x2, seg, level, self.scene)
             self.scene.addItem(item)
             self._segment_items[seg.seg_id] = item
+
+        # ---- 2.5 道岔连接线 ----
+        self._draw_switch_connectors(td, base_y)
 
         # ---- 3. 限速区段（半透明条，始终可见但淡化） ----
         for sl in td.speed_limits:
