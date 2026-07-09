@@ -9,8 +9,13 @@ from PyQt5.QtCore import QTimer, Qt
 from src.ui.dashboard import Dashboard
 from src.ui.controls import ControlPanel
 from src.ui.track_view import TrackViewWidget
-from src.vehicle.model import VehicleModel, RunningMode
-from src.vehicle.controller import ManualController, AutoController
+from src.ui.charts import ForcePanel
+from src.vehicle.vehicle_controller import VehicleController
+from src.vehicle.auto_drive import AutoDriveController
+from src.vehicle.enums import RunningMode, DoorSide, LoadLevel
+from src.vehicle.environment import MockEnvironment, WeatherType
+from src.common.consist import CONSIST_4M2T
+from src.track.adapter import TrackDataAdapter
 from src.track.db_loader import DBLoader
 from src.track.loader import TrackLoader
 from src.signal.system import SignalSystem, SignalAspect
@@ -42,16 +47,29 @@ class MainWindow(QMainWindow):
 
     def _init_modules(self):
         """初始化所有核心模块"""
-        self.vehicle = VehicleModel()
-        self.manual_ctrl = ManualController(self.vehicle)
-        self.auto_ctrl = AutoController(self.vehicle)
-
+        # ── 线路数据 ─────────────────────────────────────────────
         self.data_mode = "demo"
         self.track = self._load_track_data(self.data_mode)
+        self.track_adapter = TrackDataAdapter(self.track)
 
+        # ── 环境（Mock，后续集成时替换） ──────────────────────────
+        self.env = MockEnvironment(WeatherType.DRY, self.track_adapter)
+
+        # ── 新版多体动力学控制器 ──────────────────────────────────
+        self.controller = VehicleController(
+            consist=CONSIST_4M2T,
+            track=self.track_adapter,
+            env=self.env,
+        )
+        self.auto_drive = AutoDriveController(self.controller)
+
+        # ── 旧版兼容引用（供联锁/日志模块中未迁移的代码使用） ────
+        self.vehicle = self.controller  # 兼容别名
+
+        # ── 信号 / 供电 / 联锁 / 日志 ────────────────────────────
         self.signal_system = SignalSystem()
         self.power_supply = PowerSupply()
-        self.interlock = DoorInterlock(self.vehicle, self.track)
+        self.interlock = DoorInterlock(self.controller, self.track, self.track_adapter)
         self.recorder = Recorder()
         self.evaluator = Evaluator()
 
@@ -84,9 +102,13 @@ class MainWindow(QMainWindow):
         sim_splitter = QSplitter(Qt.Vertical)
         sim_splitter.setObjectName("simSplitter")
 
-        self.dashboard = Dashboard(self.vehicle, self.track, self.signal_system, self.power_supply)
+        self.dashboard = Dashboard(
+            self.controller, self.track, self.track_adapter,
+            self.signal_system, self.power_supply,
+        )
         self.control_panel = ControlPanel(
-            self.manual_ctrl, self.auto_ctrl, self.interlock, self.recorder, show_log=False
+            self.controller, self.auto_drive, self.interlock,
+            self.track_adapter, self.recorder, show_log=False,
         )
 
         top_content = QWidget()
@@ -98,15 +120,17 @@ class MainWindow(QMainWindow):
 
         sim_splitter.addWidget(top_content)
         sim_splitter.addWidget(self._create_log_panel())
-        sim_splitter.setSizes([580, 240])
+        sim_splitter.setSizes([640, 180])
         sim_splitter.setCollapsible(0, False)
         sim_splitter.setCollapsible(1, True)
         sim_layout.addWidget(sim_splitter)
 
         self.track_view = TrackViewWidget(self.track)
+        self.force_panel = ForcePanel()
 
         self.tabs.addTab(sim_page, "运行仿真")
         self.tabs.addTab(self.track_view, "线路可视化")
+        self.tabs.addTab(self.force_panel, "力学分析")
 
     def _create_data_source_bar(self) -> QWidget:
         """创建数据源切换条"""
@@ -147,7 +171,8 @@ class MainWindow(QMainWindow):
         try:
             new_track = self._load_track_data(mode)
         except Exception as exc:
-            self.recorder.record("系统", f"切换数据源失败: {exc}", self.vehicle.position, self.vehicle.speed)
+            self.recorder.record("系统", f"切换数据源失败: {exc}",
+                                 self._head_abs_position(), self.controller.head_speed)
             self.data_source_combo.blockSignals(True)
             self.data_source_combo.setCurrentIndex(self.data_source_combo.findData(self.data_mode))
             self.data_source_combo.blockSignals(False)
@@ -159,19 +184,42 @@ class MainWindow(QMainWindow):
     def _replace_track(self, track):
         """替换当前线路数据，并同步所有依赖该数据的模块"""
         self.track = track
-        self.vehicle.reset()
-        self.vehicle.running_mode = RunningMode.MANUAL
+        self.track_adapter = TrackDataAdapter(track)
+
+        # 更新 controller 的线路和环境引用
+        self.controller.track = self.track_adapter
+        self.env.track = self.track_adapter
+        # 找到 BFS 根区段（abs_start == 0），而非列表第一个
+        start_seg_id = 1
+        for seg in track.segments:
+            if abs(seg.abs_start) < 0.01:
+                start_seg_id = seg.seg_id
+                break
+        if start_seg_id == 1 and track.segments:
+            start_seg_id = track.segments[0].seg_id
+        self.controller.reset_states(start_segment_id=start_seg_id, start_offset=0.0)
+        self.controller.running_mode = RunningMode.MANUAL
+
         self.signal_system.clear_signal_aspects()
         self.interlock.track = track
+        self.interlock.track_adapter = self.track_adapter
         self.dashboard.track = track
+        self.dashboard.track_adapter = self.track_adapter
+
+        # 重建线路可视化并立即将列车绘制到新线路上
         self.track_view.set_track_data(track, self._data_source_label())
+        car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
+        self.track_view.set_train_position(car_abs, self.controller)
 
         self.front_train_positions = self._default_front_train_positions()
         self._last_signal_aspects.clear()
         self._last_status_log_time = -1.0
+        self.sim_time = 0.0
+        self.power_supply.reset()
         self.data_source_status.setText(self._data_source_summary())
         self.recorder.record("系统", f"切换数据源: {self._data_source_label()}")
         self.dashboard.refresh()
+        self.force_panel.clear()
 
     def _default_front_train_positions(self) -> list[float]:
         """根据线路长度放置一个演示前车，供闭塞逻辑展示"""
@@ -196,52 +244,84 @@ class MainWindow(QMainWindow):
             f"总长 {self.track.total_length():.0f} m"
         )
 
+    # ── 辅助方法 ──────────────────────────────────────────────────
+
+    def _head_abs_position(self) -> float:
+        """获取头车在线路上的绝对位置 (m)，供信号/日志等旧接口使用。"""
+        states = self.controller.states
+        if not states:
+            return 0.0
+        return self.track_adapter.to_absolute(states[0].position)
+
+    def _head_gradient(self) -> float:
+        """获取头车当前位置的坡度 (‰)。"""
+        abs_pos = self._head_abs_position()
+        return self.track.get_gradient_at(abs_pos)
+
+    def _head_track_limit(self) -> float:
+        """获取头车当前位置的线路限速 (m/s)。"""
+        abs_pos = self._head_abs_position()
+        return self.track.get_speed_limit_at(abs_pos)
+
+    # ── 主更新循环 ──────────────────────────────────────────────
+
     def _update(self):
         """定时更新"""
-        dt = self.vehicle.dt
+        dt = 0.033  # 30fps 仿真步长
 
-        # 更新线路条件
-        pos = self.vehicle.position
-        self.vehicle.current_gradient = self.track.get_gradient_at(pos)
-        track_limit = self.track.get_speed_limit_at(pos)
+        # ── 线路条件（头车绝对位置） ──────────────────────────────
+        head_abs = self._head_abs_position()
+        head_speed = self.controller.head_speed
 
-        # 根据信号机后方闭塞分区占用情况动态生成信号显示。
+        # ── 信号系统 ──────────────────────────────────────────────
         self.signal_system.update_aspects_by_occupancy(
             self.track.signals, self.front_train_positions
         )
         self._record_signal_changes()
 
-        # 信号限速
-        self.vehicle.current_speed_limit = self.signal_system.get_effective_speed_limit(
-            pos, track_limit, self.track.signals
+        # 信号限速（使用旧 TrackData 接口，传入绝对位置）
+        track_limit = self.track.get_speed_limit_at(head_abs)
+        effective_limit = self.signal_system.get_effective_speed_limit(
+            head_abs, track_limit, self.track.signals
         )
 
-        # 供电状态影响牵引能力
+        # ── 供电状态影响牵引能力 ──────────────────────────────────
         if not self.power_supply.can_traction():
-            if self.vehicle.control_level.value > 0:
-                self.vehicle.set_control_level_direct(self.vehicle.control_level)
+            self.controller.set_throttle(0.0)
 
-        # 自动运行
-        if self.vehicle.running_mode == RunningMode.AUTOMATIC:
-            self.auto_ctrl.step()
+        # ── 自动驾驶 ──────────────────────────────────────────────
+        if self.controller.running_mode == RunningMode.AUTOMATIC:
+            self.auto_drive.step()
 
-        # 推进仿真
-        self.vehicle.step()
+        # ── 推进多体动力学仿真 ────────────────────────────────────
+        report = self.controller.step(dt)
         self.power_supply.step(dt)
         self.recorder.step(dt)
         self.sim_time += dt
 
-        # 评价
-        self.evaluator.update_max_speed(self.vehicle.speed)
-        self._record_status_snapshot()
+        # ── 运行评价 ──────────────────────────────────────────────
+        self.evaluator.update_max_speed(head_speed)
+        self._record_status_snapshot(effective_limit)
 
-        # 超速检测
-        if self.vehicle.speed > self.vehicle.current_speed_limit + 0.5:
-            self.recorder.record("超速", f"超速: {self.vehicle.get_speed_kmh():.1f} km/h", pos, self.vehicle.speed)
+        # ── 超速检测 ──────────────────────────────────────────────
+        if head_speed > effective_limit + 0.5:
+            self.recorder.record("超速",
+                f"超速: {head_speed * 3.6:.1f} km/h", head_abs, head_speed)
 
-        # 更新 UI
-        self.dashboard.refresh()
+        # ── 更新 UI ───────────────────────────────────────────────
+        self.dashboard.refresh(report)
+        car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
+        self.track_view.set_train_position(car_abs, self.controller)
         self._update_log_display()
+
+        # ── 更新力学分析面板 ───────────────────────────────────────
+        self.force_panel.feed(
+            self.sim_time,
+            head_speed * 3.6,
+            report.max_coupler_force / 1000,
+            track_limit * 3.6,
+        )
+        self.force_panel.set_report(report)
 
     def closeEvent(self, event):
         """关闭窗口"""
@@ -261,9 +341,9 @@ class MainWindow(QMainWindow):
             }
             #pageTitle {
                 color: #111827;
-                font-size: 28px;
+                font-size: 22px;
                 font-weight: 800;
-                padding: 4px 2px 2px 2px;
+                padding: 2px 1px 1px 1px;
             }
             #statusIndicator, #infoPanel, #panelGroup {
                 background: #ffffff;
@@ -330,16 +410,16 @@ class MainWindow(QMainWindow):
                 padding: 10px 12px;
             }
             #statusIndicator {
-                min-height: 122px;
+                min-height: 80px;
             }
             #indicatorLabel {
                 color: #475467;
-                font-size: 15px;
+                font-size: 13px;
                 font-weight: 700;
             }
             #indicatorUnit {
                 color: #667085;
-                font-size: 13px;
+                font-size: 11px;
             }
             #sectionTitle {
                 color: #1d2939;
@@ -348,9 +428,10 @@ class MainWindow(QMainWindow):
             }
             #infoLabel {
                 color: #1d2939;
-                font-size: 17px;
+                font-size: 15px;
                 font-weight: 650;
-                padding: 6px 2px;
+                padding: 5px 6px;
+                min-height: 24px;
             }
             #signalOverview {
                 color: #172033;
@@ -374,15 +455,15 @@ class MainWindow(QMainWindow):
             }
             QGroupBox {
                 color: #1d2939;
-                font-size: 17px;
+                font-size: 15px;
                 font-weight: 800;
-                margin-top: 14px;
-                padding: 16px 10px 10px 10px;
+                margin-top: 10px;
+                padding: 8px 6px 6px 6px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 4px;
+                left: 8px;
+                padding: 0 3px;
             }
             QPushButton {
                 min-height: 44px;
@@ -507,17 +588,18 @@ class MainWindow(QMainWindow):
                     "信号",
                     f"{sig.signal_id} {aspect.value}",
                     sig.position,
-                    self.vehicle.speed,
+                    self.controller.head_speed,
                 )
                 self._last_signal_aspects[sig.signal_id] = aspect
 
-    def _record_status_snapshot(self):
+    def _record_status_snapshot(self, effective_limit: float):
         """每秒记录一次运行状态快照，便于复盘速度和加速度变化"""
         if self._last_status_log_time >= 0 and self.sim_time - self._last_status_log_time < 1.0:
             return
 
+        head_abs = self._head_abs_position()
         nearest_signal = self.signal_system.get_nearest_signal_ahead(
-            self.vehicle.position, self.track.signals
+            head_abs, self.track.signals
         )
         if nearest_signal:
             aspect = self.signal_system.get_signal_aspect(nearest_signal)
@@ -525,11 +607,12 @@ class MainWindow(QMainWindow):
         else:
             signal_text = "无前方信号"
 
-        mode = "自动" if self.vehicle.running_mode == RunningMode.AUTOMATIC else "手动"
+        mode = "自动" if self.controller.running_mode == RunningMode.AUTOMATIC else "手动"
+        head_accel = self.controller.states[0].acceleration if self.controller.states else 0.0
         description = (
-            f"状态快照: 模式 {mode} · 加速度 {self.vehicle.acceleration:+.2f} m/s² · "
-            f"限速 {self.vehicle.current_speed_limit * 3.6:.0f} km/h · "
+            f"状态快照: 模式 {mode} · 加速度 {head_accel:+.2f} m/s² · "
+            f"限速 {effective_limit * 3.6:.0f} km/h · "
             f"信号 {signal_text} · 供电 {self.power_supply.status.value}"
         )
-        self.recorder.record("状态", description, self.vehicle.position, self.vehicle.speed)
+        self.recorder.record("状态", description, head_abs, self.controller.head_speed)
         self._last_status_log_time = self.sim_time

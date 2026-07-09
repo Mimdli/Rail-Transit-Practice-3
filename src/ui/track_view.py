@@ -4,12 +4,14 @@
   - 区段线段（主线和道岔分支分层显示）
   - 限速区段（颜色编码）
   - 车站/信号机标记
+  - 实时列车位置叠加（多节车厢，动车/拖车分色）
 默认只显示轨道线和车站名，鼠标悬停时高亮区段并显示详细信息。
 """
 
 from PyQt5.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsLineItem,
     QGraphicsSimpleTextItem, QWidget, QVBoxLayout, QLabel,
+    QGraphicsRectItem,
 )
 from PyQt5.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt5.QtGui import QColor, QPen, QBrush, QFont, QPainter, QFontMetrics
@@ -17,6 +19,7 @@ from typing import Optional
 
 from src.track.data import TrackData, Segment
 from src.track.db_loader import DBLoader
+from src.vehicle.vehicle_controller import VehicleController
 
 
 # 颜色常量
@@ -31,10 +34,17 @@ COLOR_SPEED_LOW = QColor(220, 120, 120)
 COLOR_BG = QColor(245, 245, 245)
 COLOR_RULER = QColor(150, 150, 150)
 
+# 列车颜色
+COLOR_MOTOR_CAR = QColor(37, 99, 235, 200)     # 动车：蓝色
+COLOR_TRAILER_CAR = QColor(100, 116, 139, 200)  # 拖车：灰色
+COLOR_TRAIN_BORDER = QColor(30, 64, 175, 220)
+
 SCALE = 0.22          # 米 → 像素
 BRANCH_OFFSET = 42    # 分支偏移高度 (px)
 LINE_WIDTH = 9
 HOVER_WIDTH = 14
+TRAIN_HEIGHT = 18     # 列车矩形高度 (px)
+TRAIN_Y_OFFSET = -9   # 列车中心对齐轨道线（TRAIN_HEIGHT/2），实现重叠效果
 
 
 class SegmentItem(QGraphicsLineItem):
@@ -62,7 +72,6 @@ class SegmentItem(QGraphicsLineItem):
         self._label.setFont(QFont("Consolas", 7, QFont.Bold))
         self._label.setBrush(QColor(40, 40, 40))
         self._label.setZValue(10)
-        # 标签背景（用白色矩形垫底）
         br = self._label.boundingRect()
         self._label_bg = scene.addRect(
             QRectF(br.x() - 2, br.y() - 1, br.width() + 4, br.height() + 2),
@@ -75,7 +84,6 @@ class SegmentItem(QGraphicsLineItem):
         self._label.setVisible(visible)
         self._label_bg.setVisible(visible)
         if visible:
-            # 居中显示在区段上方
             mid_x = (self.line().x1() + self.line().x2()) / 2
             label_y = self.line().y1() - 40
             br = self._label.boundingRect()
@@ -127,13 +135,20 @@ class TrackView(QGraphicsView):
         self._signal_items = []
         self._station_labels = []
 
+        # 列车覆盖层（独立管理，方便清除重建）
+        self._train_items = []
+
+        # 主线轨道 Y 基准坐标（分支线在此基础上叠加 BRANCH_OFFSET）
+        self._base_y = 90
+
         self._build()
 
         total_w = self._x(self.td.total_length())
         if total_w > 0:
-            # 不自动压缩全线，按可读比例显示局部，剩余线路通过滚动条查看。
             self.resetTransform()
-            self.centerOn(min(total_w, 900), 120)
+            # 初始视野对准线路起点附近（列车在此出发）
+            view_w = self.viewport().width() if self.viewport() else 900
+            self.centerOn(self._x(200), 120)
 
     def _x(self, pos_m: float) -> float:
         return pos_m * SCALE
@@ -145,7 +160,94 @@ class TrackView(QGraphicsView):
         else:
             self.scale(1.0 / factor, 1.0 / factor)
 
-    # ---- 分支层级计算 ----
+    # ── 列车位置叠加 ──────────────────────────────────────────
+
+    def _car_y(self, car_abs: float) -> float:
+        """返回指定绝对位置处车厢应绘制的 Y 坐标。
+
+        根据车厢所在的轨道区段，确定其分支层级（主线=0，道岔分支>=1），
+        使列车绘制在正确的轨道线上。
+        """
+        seg_id = self.td.get_seg_id_at(car_abs)
+        level = self._branch_levels.get(seg_id, 0)
+        return self._base_y + TRAIN_Y_OFFSET + level * BRANCH_OFFSET
+
+    def set_train_position(self, car_abs_positions: list, controller: VehicleController = None):
+        """更新列车在线路图上的显示位置，并确保列车在视野内。
+
+        以头车所在的轨道区段确定整列车的 Y 坐标（主线/分支），
+        避免因逐车判定导致列车在道岔区段重叠处视觉断裂。
+
+        Args:
+            car_abs_positions: 每节车的绝对位置列表 (m)，从头车到尾车排列。
+            controller: VehicleController 实例（用于获取编组信息）。
+        """
+        self._clear_train_overlay()
+
+        if controller is None or not car_abs_positions:
+            return
+
+        n_cars = len(car_abs_positions)
+        if n_cars == 0:
+            return
+
+        # 以头车所在区段的分支层级确定整列车 Y 坐标
+        head_y = self._car_y(car_abs_positions[0])
+
+        # 从头车到尾车依次绘制
+        train_rects = []
+        for i in range(n_cars):
+            car_config = controller.consist[i]
+            car_length_px = car_config.length * SCALE
+            car_abs = car_abs_positions[i]
+
+            # 车厢矩形：以 car_abs 为前边界（右边界），向左延伸 car_length_px
+            car_x = self._x(car_abs) - car_length_px
+
+            # 动车/拖车不同颜色
+            if car_config.is_motor:
+                fill_color = COLOR_MOTOR_CAR
+            else:
+                fill_color = COLOR_TRAILER_CAR
+
+            # 矩形：车厢主体（整列车使用统一的 Y = head_y）
+            rect = self.scene.addRect(
+                QRectF(car_x, head_y, car_length_px, TRAIN_HEIGHT),
+                QPen(COLOR_TRAIN_BORDER, 1),
+                QBrush(fill_color),
+            )
+            rect.setZValue(20)
+            self._train_items.append(rect)
+            train_rects.append(rect)
+
+            # 头车标记
+            if i == 0:
+                label = QGraphicsSimpleTextItem("▶", rect)
+                label.setFont(QFont("Consolas", 9, QFont.Bold))
+                label.setBrush(QColor(255, 255, 255))
+                label.setPos(3, 1)
+                label.setZValue(21)
+                self._train_items.append(label)
+
+            # 车厢序号
+            idx_label = QGraphicsSimpleTextItem(str(i + 1), rect)
+            idx_label.setFont(QFont("Consolas", 7))
+            idx_label.setBrush(QColor(255, 255, 255, 180))
+            idx_label.setPos(car_length_px / 2 - 5, 1)
+            idx_label.setZValue(21)
+            self._train_items.append(idx_label)
+
+        # 确保头车在视野内
+        if train_rects:
+            self.ensureVisible(train_rects[0], xMargin=80, yMargin=60)
+
+    def _clear_train_overlay(self):
+        """清除上次绘制的列车图形。"""
+        for item in self._train_items:
+            self.scene.removeItem(item)
+        self._train_items.clear()
+
+    # ── 分支层级计算 ──────────────────────────────────────────
 
     def _compute_branch_levels(self):
         from collections import deque
@@ -197,7 +299,7 @@ class TrackView(QGraphicsView):
     def _get_level(self, seg_id: int) -> int:
         return self._branch_levels.get(seg_id, 0)
 
-    # ---- 场景构建 ----
+    # ── 场景构建 ──────────────────────────────────────────────
 
     def _build(self):
         if not self.td.segments:
@@ -210,9 +312,9 @@ class TrackView(QGraphicsView):
 
         self._compute_branch_levels()
         max_level = max(self._branch_levels.values()) if self._branch_levels else 0
-        base_y = 90  # 主线 Y 坐标
+        base_y = self._base_y
 
-        # ---- 2. 绘制区段线段（可悬停） ----
+        # ── 区段线段 ──────────────────────────────────────────
         for seg in td.segments:
             x1 = self._x(seg.abs_start)
             x2 = self._x(seg.abs_start + seg.length)
@@ -223,7 +325,7 @@ class TrackView(QGraphicsView):
             self.scene.addItem(item)
             self._segment_items[seg.seg_id] = item
 
-        # ---- 3. 限速区段（半透明条，始终可见但淡化） ----
+        # ── 限速区段 ──────────────────────────────────────────
         for sl in td.speed_limits:
             x1 = self._x(sl.abs_start)
             x2 = self._x(sl.abs_end)
@@ -248,7 +350,7 @@ class TrackView(QGraphicsView):
             rect.setZValue(0)
             self._speed_rects.append(rect)
 
-        # ---- 4. 车站（始终可见） ----
+        # ── 车站 ──────────────────────────────────────────────
         platform_poses = sorted(set(p.position for p in td.platforms if p.position > 0))
         for i, st in enumerate(td.stations):
             pos = platform_poses[i] if i < len(platform_poses) else st.position
@@ -257,13 +359,11 @@ class TrackView(QGraphicsView):
             x = self._x(pos)
             y = 26
 
-            # 圆点
             dot = self.scene.addEllipse(x - 6, y - 6, 12, 12,
                                         QPen(COLOR_STATION, 2), QBrush(Qt.white))
             dot.setZValue(2)
             self._signal_items.append(dot)
 
-            # 名称
             text = QGraphicsSimpleTextItem(st.name)
             text.setPos(x - 22, y - 46)
             text.setFont(QFont("Microsoft YaHei", 9, QFont.Bold))
@@ -272,7 +372,7 @@ class TrackView(QGraphicsView):
             self.scene.addItem(text)
             self._station_labels.append(text)
 
-        # ---- 5. 信号机（小灰点，悬停时显色） ----
+        # ── 信号机 ────────────────────────────────────────────
         for sig in td.signals:
             if sig.position <= 0:
                 continue
@@ -287,7 +387,7 @@ class TrackView(QGraphicsView):
             dot.setZValue(1)
             self._signal_items.append(dot)
 
-        # ---- 6. 公里标 ----
+        # ── 公里标 ────────────────────────────────────────────
         ruler_y = base_y + (max_level + 1) * BRANCH_OFFSET + 70
         for km in range(0, int(total_len) + 500, 500):
             x = self._x(km)
@@ -298,7 +398,7 @@ class TrackView(QGraphicsView):
             label.setBrush(COLOR_RULER)
             self.scene.addItem(label)
 
-        # ---- 7. 图例 ----
+        # ── 图例 ──────────────────────────────────────────────
         legend_x = scene_w - 140
         legend_y = 10
         items = [
@@ -310,6 +410,8 @@ class TrackView(QGraphicsView):
             ("限速(<12m/s)", COLOR_SPEED_LOW),
             ("信号机", COLOR_SIGNAL),
             ("车站", COLOR_STATION),
+            ("动车", COLOR_MOTOR_CAR),
+            ("拖车", COLOR_TRAILER_CAR),
         ]
         for i, (name, color) in enumerate(items):
             ly = legend_y + i * 14
@@ -320,7 +422,9 @@ class TrackView(QGraphicsView):
             lbl.setFont(QFont("Consolas", 8))
             self.scene.addItem(lbl)
 
-        self.scene.setSceneRect(0, -60, scene_w, ruler_y + 70)
+        # 场景矩形：左侧留 200px 余量容纳列车尾部（可能延伸到起点之前）
+        scene_margin_left = 200
+        self.scene.setSceneRect(-scene_margin_left, -60, scene_w + scene_margin_left, ruler_y + 70)
 
 
 class TrackViewWidget(QWidget):
@@ -393,6 +497,11 @@ class TrackViewWidget(QWidget):
             f"限速: {len(td.speed_limits)} | "
             f"信号: {len(td.signals)}"
         )
+
+    def set_train_position(self, car_abs_positions: list, controller: VehicleController = None):
+        """更新列车在线路图上的位置。"""
+        if self.view is not None:
+            self.view.set_train_position(car_abs_positions, controller)
 
     def refresh(self):
         """刷新当前线路视图；没有外部数据时回退到数据库加载"""
