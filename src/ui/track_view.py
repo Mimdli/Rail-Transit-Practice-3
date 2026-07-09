@@ -132,6 +132,8 @@ class TrackView(QGraphicsView):
         self.setScene(self.scene)
 
         self._branch_levels: dict = {}
+        self._trim_start_px: dict[int, float] = {}
+        self._trim_end_px: dict[int, float] = {}
         self._segment_items: dict[int, SegmentItem] = {}
         self._speed_rects = []
         self._signal_items = []
@@ -266,11 +268,7 @@ class TrackView(QGraphicsView):
             idx_label.setZValue(21)
             self._train_items.append(idx_label)
 
-        # 仅初始未手动浏览时跟随列车，避免每帧 ensureVisible 与拖拽冲突
-        if train_rects and not self._user_panned:
-            self._suppress_scroll_signal = True
-            self.ensureVisible(train_rects[0], xMargin=80, yMargin=60)
-            self._suppress_scroll_signal = False
+        # 不在每帧 ensureVisible，避免与手动向右滚动冲突（初始 centerOn 已够用）
 
     def _clear_train_overlay(self):
         """清除上次绘制的列车图形。"""
@@ -281,9 +279,12 @@ class TrackView(QGraphicsView):
     # ── 分支层级计算 ──────────────────────────────────────────
 
     def _compute_branch_levels(self):
+        """主线正向 BFS 为 0 层，侧向岔出及延伸段递增，保持多条分层线路。"""
         from collections import deque
         td = self.td
         td._seg_map = {s.seg_id: s for s in td.segments}
+        self._branch_levels = {}
+
         referenced = set()
         for s in td.segments:
             for n in (s.start_neighbor, s.end_neighbor):
@@ -297,70 +298,110 @@ class TrackView(QGraphicsView):
         if root_id is None:
             root_id = td.segments[0].seg_id
 
-        visited = set()
+        on_main = set()
         q = deque([root_id])
-        visited.add(root_id)
+        on_main.add(root_id)
         self._branch_levels[root_id] = 0
-
         while q:
             sid = q.popleft()
             seg = td._seg_map.get(sid)
             if not seg:
                 continue
-            cur_level = self._branch_levels.get(sid, 0)
-
+            lvl = self._branch_levels[sid]
             for nid in (seg.start_neighbor, seg.end_neighbor):
                 if nid <= 0 or nid == 65535 or nid not in td._seg_map:
                     continue
-                if nid not in visited:
-                    visited.add(nid)
-                    self._branch_levels[nid] = cur_level
+                if nid not in on_main:
+                    on_main.add(nid)
+                    self._branch_levels[nid] = lvl
                     q.append(nid)
 
+        branch_q = deque()
+        for seg in td.segments:
+            if seg.seg_id not in self._branch_levels:
+                continue
+            pl = self._branch_levels[seg.seg_id]
             for nid in (seg.start_lateral, seg.end_lateral):
                 if nid <= 0 or nid == 65535 or nid not in td._seg_map:
                     continue
-                if nid not in visited:
-                    visited.add(nid)
-                    self._branch_levels[nid] = cur_level + 1
-                    q.append(nid)
-                else:
-                    self._branch_levels[nid] = min(
-                        self._branch_levels.get(nid, 999), cur_level + 1)
+                nl = pl + 1
+                if self._branch_levels.get(nid, -1) < nl:
+                    self._branch_levels[nid] = nl
+                    branch_q.append(nid)
+
+        branch_visited = set()
+        while branch_q:
+            sid = branch_q.popleft()
+            if sid in branch_visited:
+                continue
+            branch_visited.add(sid)
+            seg = td._seg_map.get(sid)
+            if not seg:
+                continue
+            lvl = self._branch_levels.get(sid, 1)
+            for nid in (seg.start_neighbor, seg.end_neighbor):
+                if nid <= 0 or nid == 65535 or nid not in td._seg_map:
+                    continue
+                if nid in on_main and self._branch_levels.get(nid, 0) == 0:
+                    continue
+                if self._branch_levels.get(nid, -1) < lvl:
+                    self._branch_levels[nid] = lvl
+                    branch_q.append(nid)
+
+        for s in td.segments:
+            self._branch_levels.setdefault(s.seg_id, 0)
+
+    def _compute_fork_trims(self, td: TrackData):
+        """侧线在岔点缩进，使斜线与水平轨道能对接。"""
+        self._trim_start_px = {}
+        self._trim_end_px = {}
+        for parent in td.segments:
+            if parent.end_lateral > 0 and parent.end_lateral in td._seg_map:
+                cid = parent.end_lateral
+                self._trim_start_px[cid] = max(
+                    self._trim_start_px.get(cid, 0), float(SWITCH_SLANT_PX))
+            if parent.start_lateral > 0 and parent.start_lateral in td._seg_map:
+                cid = parent.start_lateral
+                self._trim_end_px[cid] = max(
+                    self._trim_end_px.get(cid, 0), float(SWITCH_SLANT_PX))
+
+    def _seg_line_x(self, seg: Segment) -> tuple:
+        x1 = self._x(seg.abs_start) + self._trim_start_px.get(seg.seg_id, 0)
+        x2 = self._x(seg.abs_start + seg.length) - self._trim_end_px.get(seg.seg_id, 0)
+        return x1, x2
 
     def _get_level(self, seg_id: int) -> int:
         return self._branch_levels.get(seg_id, 0)
 
     def _draw_switch_connectors(self, td: TrackData, base_y: float):
-        """绘制主线与道岔分支之间的斜向连接线（道岔 turnout 示意）"""
+        """斜向道岔线：从主线岔点连到侧线缩进端点，能接则接。"""
         if not td._seg_map:
             td._seg_map = {s.seg_id: s for s in td.segments}
 
         pen = QPen(COLOR_BRANCH, LINE_WIDTH)
         pen.setStyle(Qt.SolidLine)
 
-        def _slant_connect(fork_x: float, parent_y: float, child_y: float, at_end: bool):
-            end_x = fork_x + SWITCH_SLANT_PX if at_end else fork_x - SWITCH_SLANT_PX
-            line = self.scene.addLine(fork_x, parent_y, end_x, child_y, pen)
-            line.setZValue(0)
-
         for seg in td.segments:
             parent_level = self._get_level(seg.seg_id)
             parent_y = parent_level * BRANCH_OFFSET + base_y
 
             if seg.start_lateral > 0 and seg.start_lateral in td._seg_map:
-                child_level = self._get_level(seg.start_lateral)
+                child_id = seg.start_lateral
+                child_level = self._get_level(child_id)
                 if child_level > parent_level:
                     fork_x = self._x(seg.abs_start)
                     child_y = child_level * BRANCH_OFFSET + base_y
-                    _slant_connect(fork_x, parent_y, child_y, at_end=False)
+                    _, child_x = self._seg_line_x(td._seg_map[child_id])
+                    self.scene.addLine(fork_x, parent_y, child_x, child_y, pen).setZValue(0)
 
             if seg.end_lateral > 0 and seg.end_lateral in td._seg_map:
-                child_level = self._get_level(seg.end_lateral)
+                child_id = seg.end_lateral
+                child_level = self._get_level(child_id)
                 if child_level > parent_level:
                     fork_x = self._x(seg.abs_start + seg.length)
                     child_y = child_level * BRANCH_OFFSET + base_y
-                    _slant_connect(fork_x, parent_y, child_y, at_end=True)
+                    child_x, _ = self._seg_line_x(td._seg_map[child_id])
+                    self.scene.addLine(fork_x, parent_y, child_x, child_y, pen).setZValue(0)
 
     # ── 场景构建 ──────────────────────────────────────────────
 
@@ -374,13 +415,15 @@ class TrackView(QGraphicsView):
         scene_w = self._x(total_len) + 200
 
         self._compute_branch_levels()
+        self._compute_fork_trims(td)
         max_level = max(self._branch_levels.values()) if self._branch_levels else 0
         base_y = self._base_y
 
         # ── 区段线段 ──────────────────────────────────────────
         for seg in td.segments:
-            x1 = self._x(seg.abs_start)
-            x2 = self._x(seg.abs_start + seg.length)
+            x1, x2 = self._seg_line_x(seg)
+            if x2 <= x1:
+                continue
             level = self._get_level(seg.seg_id)
             y = level * BRANCH_OFFSET + base_y
 
@@ -393,13 +436,14 @@ class TrackView(QGraphicsView):
 
         # ── 限速区段 ──────────────────────────────────────────
         for sl in td.speed_limits:
-            x1 = self._x(sl.abs_start)
-            x2 = self._x(sl.abs_end)
             seg = td._seg_map.get(sl.seg_id)
             if not seg:
                 continue
             level = self._get_level(sl.seg_id)
             y = level * BRANCH_OFFSET + base_y + 13
+            trim_s = self._trim_start_px.get(sl.seg_id, 0)
+            x1 = max(self._x(sl.abs_start), self._x(seg.abs_start) + trim_s)
+            x2 = self._x(sl.abs_end)
 
             speed = sl.speed_limit
             if speed >= 18:
