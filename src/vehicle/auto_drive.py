@@ -24,14 +24,10 @@ Usage:
         ctrl.step(0.033)     # 推进仿真
 """
 
-from typing import Optional, List, TYPE_CHECKING
+from typing import Optional
 from src.common.track_position import TrackPosition, ITrackQuery
 from src.vehicle.enums import ControlLevel, RunningMode
 from src.vehicle.vehicle_controller import VehicleController
-
-if TYPE_CHECKING:
-    from src.track.route import Route
-    from src.track.data import TrackData
 
 
 class AutoDriveController:
@@ -63,69 +59,16 @@ class AutoDriveController:
         self.target_position: Optional[TrackPosition] = None
         self._track: Optional[ITrackQuery] = None
 
-        # ── 进路（路线选择） ─────────────────────────────────
-        self._route: Optional["Route"] = None
-        self._all_routes: List["Route"] = []  # 所有可用进路（供 UI 查询）
-
     # ── 目标设置 ───────────────────────────────────────────────
 
     def set_target(self, position: TrackPosition):
         """设置目标停车位置。
-
-        如果当前进路为"自动"模式（seg_ids 为空），自动沿主线
-        计算从当前位置到目标的进路。
 
         Args:
             position: 线路上的目标停车位置（头车应停在此处）。
         """
         self.target_position = position
         self._track = self.controller.track
-
-        # 自动算路：如果当前进路为"自动"模式
-        if self._route is not None and self._route.is_auto:
-            self._compute_and_set_route(position)
-
-    # ── 进路管理 ───────────────────────────────────────────────
-
-    def set_route(self, route: "Route"):
-        """设置当前进路。
-
-        如果 route.is_auto 为 True，在下次 set_target() 时自动算路。
-        否则立即将进路同步到 track adapter。
-
-        Args:
-            route: 要设置的进路。
-        """
-        self._route = route
-        if not route.is_auto:
-            if self._track is not None:
-                self._track.set_active_route(route)
-        else:
-            # 自动模式：如果已有 target，立即算路
-            if self.target_position is not None and self._track is not None:
-                self._compute_and_set_route(self.target_position)
-
-    @property
-    def active_route(self) -> Optional["Route"]:
-        """获取当前活动进路。"""
-        return self._route
-
-    @property
-    def available_routes(self) -> List["Route"]:
-        """获取所有可用进路列表（供 UI 显示）。"""
-        return list(self._all_routes)
-
-    def set_available_routes(self, routes: List["Route"]):
-        """设置可用进路列表。
-
-        Args:
-            routes: 所有可用进路（含"自动"模式）。
-        """
-        self._all_routes = list(routes)
-        # 默认选中"自动"
-        auto_route = next((r for r in routes if r.is_auto), None)
-        if auto_route is not None and self._route is None:
-            self._route = auto_route
 
     # ── 控制步进 ───────────────────────────────────────────────
 
@@ -197,33 +140,6 @@ class AutoDriveController:
         )
 
     # ── 内部方法 ───────────────────────────────────────────────
-
-    def _compute_and_set_route(self, target_position: TrackPosition):
-        """自动计算从当前头车位置到目标的主动进路。
-
-        沿主线 forward neighbor 链找到从头车所在 segment 到
-        目标所在 segment 的路径，设置到 track adapter。
-        """
-        if self._track is None:
-            return
-        if not self.controller.states:
-            return
-
-        from src.track.route import compute_mainline_route
-        from src.track.adapter import TrackDataAdapter
-
-        # 需要底层 TrackData 来做路由计算
-        if not isinstance(self._track, TrackDataAdapter):
-            return  # MockTrackQuery — 无道岔，不需要进路
-
-        td = self._track.track_data
-        head_pos = self.controller.states[0].position
-        start_seg = head_pos.segment_id
-        target_seg = target_position.segment_id
-
-        route = compute_mainline_route(td, start_seg, target_seg)
-        if route is not None:
-            self._track.set_active_route(route)
 
     def _apply(self, level: ControlLevel):
         """绕过运行模式检查直接设置控制指令。
