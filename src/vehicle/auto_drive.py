@@ -73,7 +73,7 @@ class AutoDriveController:
         """设置目标停车位置。
 
         如果当前进路为"自动"模式（seg_ids 为空），自动沿主线
-        计算从当前位置到目标的进路。
+        计算从当前位置到目标的进路。否则沿用已有的手动选择进路。
 
         Args:
             position: 线路上的目标停车位置（头车应停在此处）。
@@ -81,8 +81,12 @@ class AutoDriveController:
         self.target_position = position
         self._track = self.controller.track
 
-        # 自动算路：如果当前进路为"自动"模式
-        if self._route is not None and self._route.is_auto:
+        # 确保当前进路已同步到 track adapter
+        if self._route is not None and not self._route.is_auto:
+            if self._track is not None:
+                self._track.set_active_route(self._route)
+        elif self._route is not None and self._route.is_auto:
+            # 自动算路
             self._compute_and_set_route(position)
 
     # ── 进路管理 ───────────────────────────────────────────────
@@ -97,12 +101,16 @@ class AutoDriveController:
             route: 要设置的进路。
         """
         self._route = route
+        # 确保 _track 引用与 controller 同步（controller.track 可能已被替换）
+        track = self.controller.track
         if not route.is_auto:
-            if self._track is not None:
-                self._track.set_active_route(route)
+            if track is not None:
+                track.set_active_route(route)
+                self._track = track
         else:
             # 自动模式：如果已有 target，立即算路
-            if self.target_position is not None and self._track is not None:
+            if self.target_position is not None and track is not None:
+                self._track = track
                 self._compute_and_set_route(self.target_position)
 
     @property
