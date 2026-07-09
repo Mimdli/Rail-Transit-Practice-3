@@ -18,6 +18,7 @@ from src.power.supply import PowerSupply, PowerStatus
 from src.door.interlock import DoorInterlock
 from src.logger.recorder import Recorder
 from src.logger.evaluator import Evaluator
+from src.network import NetworkManager
 
 
 class MainWindow(QMainWindow):
@@ -54,6 +55,11 @@ class MainWindow(QMainWindow):
         self.interlock = DoorInterlock(self.vehicle, self.track)
         self.recorder = Recorder()
         self.evaluator = Evaluator()
+
+        # 网络通信（可选，启动时不连接外部）
+        self.network = NetworkManager()
+        self._setup_network_callbacks()
+        self._network_mode = False
 
         self.front_train_positions: list[float] = [300.0]
         self._last_signal_aspects: dict[str, SignalAspect] = {}
@@ -122,6 +128,7 @@ class MainWindow(QMainWindow):
         self.data_source_combo.setObjectName("dataSourceCombo")
         self.data_source_combo.addItem("演示数据", "demo")
         self.data_source_combo.addItem("数据库线路", "database")
+        self.data_source_combo.addItem("外部系统", "network")
         self.data_source_combo.currentIndexChanged.connect(self._on_data_source_changed)
 
         self.data_source_status = QLabel(self._data_source_summary())
@@ -143,6 +150,21 @@ class MainWindow(QMainWindow):
         mode = self.data_source_combo.currentData()
         if mode == self.data_mode:
             return
+
+        # 切换到外部系统模式
+        if mode == "network":
+            self._network_mode = True
+            self.data_mode = "network"
+            self.network.start()
+            self.recorder.record("系统", "切换到外部系统模式，网络通信已启动")
+            self.data_source_status.setText("外部系统 | 连接中...")
+            self._refresh_connection_status()
+            return
+
+        # 从外部系统切回本地模式
+        if self._network_mode:
+            self._network_mode = False
+            self.network.stop()
 
         try:
             new_track = self._load_track_data(mode)
@@ -182,10 +204,26 @@ class MainWindow(QMainWindow):
 
     def _data_source_label(self) -> str:
         """当前数据源展示名称"""
-        return "数据库线路" if self.data_mode == "database" else "演示数据"
+        if self.data_mode == "database":
+            return "数据库线路"
+        if self.data_mode == "network":
+            return "外部系统"
+        return "演示数据"
 
     def _data_source_summary(self) -> str:
         """当前数据源摘要"""
+        if self.data_mode == "network":
+            status = self.network.connection_status
+            parts = [self._data_source_label()]
+            if status["vehicle_udp"]:
+                parts.append("车辆UDP ✓")
+            if status["signal_gateway"]:
+                parts.append("信号网关 ✓")
+            if status["plc"]:
+                parts.append("PLC ✓")
+            if not any(status.values()):
+                parts.append("未连接")
+            return " | ".join(parts)
         if not hasattr(self, "track"):
             return ""
         return (
@@ -200,52 +238,119 @@ class MainWindow(QMainWindow):
         """定时更新"""
         dt = self.vehicle.dt
 
-        # 更新线路条件
+        # ---- 网络模式：从外部系统注入数据 ----
+        if self._network_mode:
+            self._network_update_step(dt)
+            self.dashboard.refresh()
+            self._update_log_display()
+            return
+
+        # ---- 本地模式：原有逻辑 ----
         pos = self.vehicle.position
         self.vehicle.current_gradient = self.track.get_gradient_at(pos)
         track_limit = self.track.get_speed_limit_at(pos)
 
-        # 根据信号机后方闭塞分区占用情况动态生成信号显示。
         self.signal_system.update_aspects_by_occupancy(
             self.track.signals, self.front_train_positions
         )
         self._record_signal_changes()
 
-        # 信号限速
         self.vehicle.current_speed_limit = self.signal_system.get_effective_speed_limit(
             pos, track_limit, self.track.signals
         )
 
-        # 供电状态影响牵引能力
         if not self.power_supply.can_traction():
             if self.vehicle.control_level.value > 0:
                 self.vehicle.set_control_level_direct(self.vehicle.control_level)
 
-        # 自动运行
         if self.vehicle.running_mode == RunningMode.AUTOMATIC:
             self.auto_ctrl.step()
 
-        # 推进仿真
         self.vehicle.step()
         self.power_supply.step(dt)
         self.recorder.step(dt)
         self.sim_time += dt
 
-        # 评价
         self.evaluator.update_max_speed(self.vehicle.speed)
         self._record_status_snapshot()
 
-        # 超速检测
         if self.vehicle.speed > self.vehicle.current_speed_limit + 0.5:
             self.recorder.record("超速", f"超速: {self.vehicle.get_speed_kmh():.1f} km/h", pos, self.vehicle.speed)
 
-        # 更新 UI
         self.dashboard.refresh()
         self._update_log_display()
+
+    def _network_update_step(self, dt: float):
+        """网络模式下的仿真步进：使用外部数据驱动"""
+        # 1. 发送本地车辆状态到外部平台
+        self.network.set_vehicle_send_source(lambda: [
+            (self.vehicle.acceleration, self.vehicle.speed, self.vehicle.position)
+        ] * 20)
+
+        # 2. 读取外部平台指令，覆盖本地控制器
+        cmds = self.network.vehicle_commands
+        if cmds and len(cmds) > 0:
+            cmd, pct = cmds[0]
+            if cmd == 1:  # 加速
+                self.manual_ctrl.set_traction(int(pct))
+            elif cmd == 2:  # 减速
+                self.manual_ctrl.set_brake(int(pct))
+            elif cmd == 0:  # 惰行
+                self.manual_ctrl.set_coast()
+
+        # 3. 发送信号状态到总控
+        switches = []
+        signals = [(s.signal_id, self._aspect_to_protocol(
+            self.signal_system.get_signal_aspect(s))) for s in self.track.signals]
+        self.network.set_signal_send_source(lambda: (switches, signals[:20]))
+
+        # 4. 推进本地仿真（使用外部指令驱动）
+        self.vehicle.step()
+        self.recorder.step(dt)
+        self.sim_time += dt
+
+        # 5. 定期刷新连接状态
+        self._refresh_connection_status()
+
+    def _aspect_to_protocol(self, aspect) -> int:
+        """将内部 SignalAspect 映射为协议灯色码"""
+        from src.signal.system import SignalAspect
+        mapping = {
+            SignalAspect.RED: 0x01,
+            SignalAspect.YELLOW: 0x02,
+            SignalAspect.GREEN: 0x04,
+        }
+        return mapping.get(aspect, 0x00)
+
+    def _refresh_connection_status(self):
+        """刷新连接状态显示"""
+        if not self._network_mode:
+            return
+        self.data_source_status.setText(self._data_source_summary())
+
+    def _setup_network_callbacks(self):
+        """设置网络模块的回调函数"""
+        def on_vehicle_recv(commands: list[tuple[float, float, float]]):
+            pass  # 指令在 _network_update_step 中读取
+
+        def on_signal_recv(data: bytes):
+            # 可解析外部信号机状态注入 SignalSystem
+            pass
+
+        def on_plc_recv(data: dict):
+            # 可将PLC手柄/按钮状态映射到本地控制器
+            if "handle_position" in data:
+                pass  # 手柄映射预留
+
+        self.network.set_vehicle_recv_callback(on_vehicle_recv)
+        self.network.set_signal_recv_callback(on_signal_recv)
+        self.network.set_plc_recv_callback(on_plc_recv)
 
     def closeEvent(self, event):
         """关闭窗口"""
         self.timer.stop()
+        if self._network_mode:
+            self.network.stop()
         event.accept()
 
     def _apply_style(self):
