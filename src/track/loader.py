@@ -126,13 +126,15 @@ class TrackLoader:
         """加载演示用简化数据（不依赖 Excel 文件，用于测试）"""
         td = self.track_data
 
-        # 5 个车站，4 个区间
+        # 主线 5 段 + 2 条道岔侧线（演示分叉可视化）
         td.segments = [
-            Segment(1, 758.0, 0, 2),
+            Segment(1, 758.0, 0, 2, end_lateral=6),
             Segment(2, 850.0, 1, 3),
-            Segment(3, 750.0, 2, 4),
+            Segment(3, 750.0, 2, 4, end_lateral=7),
             Segment(4, 700.0, 3, 5),
             Segment(5, 600.0, 4, 0),
+            Segment(6, 420.0, 0, 0),
+            Segment(7, 380.0, 0, 0),
         ]
 
         td.stations = [
@@ -166,6 +168,8 @@ class TrackLoader:
             SpeedLimit(4, 0.0, 350.0, 15.0),
             SpeedLimit(4, 350.0, 700.0, 22.0),
             SpeedLimit(5, 0.0, 600.0, 22.0),
+            SpeedLimit(6, 0.0, 420.0, 15.0),
+            SpeedLimit(7, 0.0, 380.0, 15.0),
         ]
 
         td.gradients = [

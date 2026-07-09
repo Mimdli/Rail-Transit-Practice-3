@@ -130,6 +130,12 @@ class VehicleController:
         self.step_count = 0
         self._history.clear()
 
+        # 重置控制指令和滤波器状态
+        self.throttle = 0.0
+        self.brake_level = 0.0
+        self.target_speed = 0.0
+        self.pipeline.reset_filters(throttle=True, brake=True)
+
         # 重置车门和运行模式
         self.left_door_open = False
         self.right_door_open = False
@@ -145,6 +151,9 @@ class VehicleController:
             level: 牵引力比例 (0.0 ~ 1.0)。
         """
         self.throttle = max(0.0, min(1.0, level))
+        # 施加牵引时立即释放制动滤波器，避免 PT1 衰减延迟
+        if level > 0:
+            self.pipeline.reset_filters(throttle=False, brake=True)
 
     def set_brake(self, level: float):
         """设置制动级别。
@@ -153,6 +162,12 @@ class VehicleController:
             level: 制动级别 (0.0 ~ 1.0，1.0 = 紧急制动)。
         """
         self.brake_level = max(0.0, min(1.0, level))
+        # 制动归零时立即重置滤波器，模拟制动缸快速排风
+        if level == 0.0:
+            self.pipeline.reset_filters(throttle=False, brake=True)
+        # 施加制动时重置牵引滤波器
+        if level > 0:
+            self.pipeline.reset_filters(throttle=True, brake=False)
 
     def set_target_speed(self, speed: float):
         """设置目标速度 (m/s)。控制器需自行实现调速逻辑。"""
@@ -183,11 +198,15 @@ class VehicleController:
         """紧急制动：最大制动力。"""
         self.throttle = 0.0
         self.brake_level = 1.0
+        # 紧急制动时立即重置牵引滤波器，确保牵引力立即归零
+        self.pipeline.reset_filters(throttle=True, brake=False)
 
     def coast(self):
         """惰行：无牵引无制动。"""
         self.throttle = 0.0
         self.brake_level = 0.0
+        # 惰行时重置全部滤波器，确保牵引和制动立即归零
+        self.pipeline.reset_filters(throttle=True, brake=True)
 
     # ── 车门控制 ───────────────────────────────────────────────
 

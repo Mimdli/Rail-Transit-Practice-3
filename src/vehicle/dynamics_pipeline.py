@@ -59,6 +59,21 @@ class PerCarDynamicsPipeline:
         self.tau_traction: float = tau_traction
         self.tau_brake: float = tau_brake
 
+    def reset_filters(self, throttle: bool = True, brake: bool = True):
+        """重置 PT1 滤波器状态，用于驾驶指令突变时快速响应。
+
+        当司控器手柄从紧急制动位直接拉到牵引位时，制动缸应立即排风，
+        而非等待 PT1 滤波自然衰减。
+
+        Args:
+            throttle: 是否重置牵引滤波器。
+            brake: 是否重置制动滤波器。
+        """
+        if throttle:
+            self.filtered_throttle = 0.0
+        if brake:
+            self.filtered_brake = 0.0
+
     def step(self, consist: TrainConsist, states: List[CarState],
              dt: float, track: ITrackQuery, env: IEnvironmentQuery,
              throttle: float = 0.0, brake_level: float = 0.0
