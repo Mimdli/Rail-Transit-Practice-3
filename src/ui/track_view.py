@@ -277,12 +277,10 @@ class TrackView(QGraphicsView):
     # ── 分支层级计算 ──────────────────────────────────────────
 
     def _compute_branch_levels(self):
-        """主线正向 BFS 为 0 层，侧向岔出及延伸段递增，保持多条分层线路。"""
+        """BFS 遍历：正向邻居同层，侧向邻居 +1 层（多层平行线路）。"""
         from collections import deque
         td = self.td
         td._seg_map = {s.seg_id: s for s in td.segments}
-        self._branch_levels = {}
-
         referenced = set()
         for s in td.segments:
             for n in (s.start_neighbor, s.end_neighbor):
@@ -296,73 +294,56 @@ class TrackView(QGraphicsView):
         if root_id is None:
             root_id = td.segments[0].seg_id
 
-        on_main = set()
+        visited = set()
         q = deque([root_id])
-        on_main.add(root_id)
+        visited.add(root_id)
         self._branch_levels[root_id] = 0
+
         while q:
             sid = q.popleft()
             seg = td._seg_map.get(sid)
             if not seg:
                 continue
-            lvl = self._branch_levels[sid]
+            cur_level = self._branch_levels.get(sid, 0)
+
             for nid in (seg.start_neighbor, seg.end_neighbor):
                 if nid <= 0 or nid == 65535 or nid not in td._seg_map:
                     continue
-                if nid not in on_main:
-                    on_main.add(nid)
-                    self._branch_levels[nid] = lvl
+                if nid not in visited:
+                    visited.add(nid)
+                    self._branch_levels[nid] = cur_level
                     q.append(nid)
 
-        branch_q = deque()
-        for seg in td.segments:
-            if seg.seg_id not in self._branch_levels:
-                continue
-            pl = self._branch_levels[seg.seg_id]
             for nid in (seg.start_lateral, seg.end_lateral):
                 if nid <= 0 or nid == 65535 or nid not in td._seg_map:
                     continue
-                nl = pl + 1
-                if self._branch_levels.get(nid, -1) < nl:
-                    self._branch_levels[nid] = nl
-                    branch_q.append(nid)
-
-        branch_visited = set()
-        while branch_q:
-            sid = branch_q.popleft()
-            if sid in branch_visited:
-                continue
-            branch_visited.add(sid)
-            seg = td._seg_map.get(sid)
-            if not seg:
-                continue
-            lvl = self._branch_levels.get(sid, 1)
-            for nid in (seg.start_neighbor, seg.end_neighbor):
-                if nid <= 0 or nid == 65535 or nid not in td._seg_map:
-                    continue
-                if nid in on_main and self._branch_levels.get(nid, 0) == 0:
-                    continue
-                if self._branch_levels.get(nid, -1) < lvl:
-                    self._branch_levels[nid] = lvl
-                    branch_q.append(nid)
-
-        for s in td.segments:
-            self._branch_levels.setdefault(s.seg_id, 0)
+                if nid not in visited:
+                    visited.add(nid)
+                    self._branch_levels[nid] = cur_level + 1
+                    q.append(nid)
+                else:
+                    self._branch_levels[nid] = min(
+                        self._branch_levels.get(nid, 999), cur_level + 1)
 
     def _get_level(self, seg_id: int) -> int:
         return self._branch_levels.get(seg_id, 0)
 
     def _draw_switch_connectors(self, td: TrackData, base_y: float):
-        """岔点斜线示意：固定角度延伸，不强制与侧线端点对接。"""
+        """绘制主线与道岔分支之间的斜向连接线（道岔 turnout 示意）。
+
+        end_lateral：岔点向右下斜连到分支层
+        start_lateral：岔点向左下斜连到分支层
+        """
         if not td._seg_map:
             td._seg_map = {s.seg_id: s for s in td.segments}
 
         pen = QPen(COLOR_BRANCH, LINE_WIDTH)
         pen.setStyle(Qt.SolidLine)
 
-        def _slant(fork_x: float, parent_y: float, child_y: float, at_end: bool):
+        def _slant_connect(fork_x: float, parent_y: float, child_y: float, at_end: bool):
             end_x = fork_x + SWITCH_SLANT_PX if at_end else fork_x - SWITCH_SLANT_PX
-            self.scene.addLine(fork_x, parent_y, end_x, child_y, pen).setZValue(0)
+            line = self.scene.addLine(fork_x, parent_y, end_x, child_y, pen)
+            line.setZValue(0)
 
         for seg in td.segments:
             parent_level = self._get_level(seg.seg_id)
@@ -373,14 +354,14 @@ class TrackView(QGraphicsView):
                 if child_level > parent_level:
                     fork_x = self._x(seg.abs_start)
                     child_y = child_level * BRANCH_OFFSET + base_y
-                    _slant(fork_x, parent_y, child_y, at_end=False)
+                    _slant_connect(fork_x, parent_y, child_y, at_end=False)
 
             if seg.end_lateral > 0 and seg.end_lateral in td._seg_map:
                 child_level = self._get_level(seg.end_lateral)
                 if child_level > parent_level:
                     fork_x = self._x(seg.abs_start + seg.length)
                     child_y = child_level * BRANCH_OFFSET + base_y
-                    _slant(fork_x, parent_y, child_y, at_end=True)
+                    _slant_connect(fork_x, parent_y, child_y, at_end=True)
 
     # ── 场景构建 ──────────────────────────────────────────────
 
@@ -408,7 +389,7 @@ class TrackView(QGraphicsView):
             self.scene.addItem(item)
             self._segment_items[seg.seg_id] = item
 
-        # ── 道岔斜线（示意，不必与水平线严丝合缝） ──────────────
+        # ── 道岔连接线（斜向 turnout 示意）────────────────────
         self._draw_switch_connectors(td, base_y)
 
         # ── 限速区段 ──────────────────────────────────────────
