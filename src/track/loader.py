@@ -121,80 +121,116 @@ class TrackLoader:
         return self.track_data
 
     def load_demo_data(self) -> TrackData:
-        """加载演示用简化数据（不依赖 Excel 文件，用于测试）"""
+        """加载演示用简化数据（不依赖 Excel 文件，用于测试）
+
+        线路拓扑::
+
+            主线: seg1 ──→ seg2 ──→ seg3 ──→ seg4
+                     │ E_Lat    │ E_Lat    │ S_Lat    │ E_Lat
+                     ↓          ↓          ↓          ↓
+                    seg5       seg6       seg7       seg8
+                 (侧线1)    (侧线2)    (侧线3)    (侧线4)
+
+        主线总长约 1000m，4 个车站，4 条道岔侧线。
+        侧线覆盖 end_lateral（seg1/2/4 终点岔出）和 start_lateral（seg3 起点岔出）两种道岔类型。
+        """
         td = self.track_data
 
-        # 主线 5 段 + 2 条道岔侧线（演示分叉可视化）
+        # ── 区段：主线 4 段 + 4 条道岔侧线 ─────────────────────
         td.segments = [
-            Segment(1, 758.0, 0, 2, end_lateral=6),
-            Segment(2, 850.0, 1, 3),
-            Segment(3, 750.0, 2, 4, end_lateral=7),
-            Segment(4, 700.0, 3, 5),
-            Segment(5, 600.0, 4, 0),
-            Segment(6, 420.0, 0, 0),
-            Segment(7, 380.0, 0, 0),
+            # seg_id, length, start_neighbor, end_neighbor, start_lateral, end_lateral
+            Segment(1, 250.0, 0, 2, end_lateral=5),          # 站A→站B，终点道岔→seg5
+            Segment(2, 250.0, 1, 3, end_lateral=6),          # 站B→站C，终点道岔→seg6
+            Segment(3, 250.0, 2, 4, start_lateral=7),        # 站C→站D，起点道岔→seg7
+            Segment(4, 250.0, 3, 0, end_lateral=8),          # 站D之后，终点道岔→seg8
+            Segment(5, 150.0, 0, 0),                          # 侧线1（seg1 终点分出）
+            Segment(6, 150.0, 0, 0),                          # 侧线2（seg2 终点分出）
+            Segment(7, 120.0, 0, 0),                          # 侧线3（seg3 起点分出）
+            Segment(8, 120.0, 0, 0),                          # 侧线4（seg4 终点分出）
         ]
 
+        # ── 车站：主线 4 站 ────────────────────────────────────
         td.stations = [
-            Station(1, "GGZ", 0.0, [1, 2]),
-            Station(2, "FSP", 758.0, [3, 4]),
-            Station(3, "XW", 1608.0, [5, 6]),
-            Station(4, "BDZ", 2358.0, [7, 8]),
-            Station(5, "GTG", 3058.0, [9, 10]),
+            Station(1, "站A", 0.0, [1, 2]),
+            Station(2, "站B", 250.0, [3, 4]),
+            Station(3, "站C", 500.0, [5, 6]),
+            Station(4, "站D", 750.0, [7, 8]),
         ]
 
+        # ── 站台 ──────────────────────────────────────────────
         td.platforms = [
-            Platform(1, 0.0, 1, "down", "GGZ"),
-            Platform(2, 0.0, 1, "up", "GGZ"),
-            Platform(3, 758.0, 2, "down", "FSP"),
-            Platform(4, 758.0, 2, "up", "FSP"),
-            Platform(5, 1608.0, 3, "down", "XW"),
-            Platform(6, 1608.0, 3, "up", "XW"),
-            Platform(7, 2358.0, 4, "down", "BDZ"),
-            Platform(8, 2358.0, 4, "up", "BDZ"),
-            Platform(9, 3058.0, 5, "down", "GTG"),
-            Platform(10, 3058.0, 5, "up", "GTG"),
+            Platform(1, 0.0, 1, "down", "站A"),
+            Platform(2, 0.0, 1, "up", "站A"),
+            Platform(3, 250.0, 2, "down", "站B"),
+            Platform(4, 250.0, 2, "up", "站B"),
+            Platform(5, 500.0, 3, "down", "站C"),
+            Platform(6, 500.0, 3, "up", "站C"),
+            Platform(7, 750.0, 4, "down", "站D"),
+            Platform(8, 750.0, 4, "up", "站D"),
         ]
 
+        # ── 限速（主线 + 侧线均有定义） ────────────────────────
         td.speed_limits = [
-            SpeedLimit(1, 0.0, 400.0, 22.0),
-            SpeedLimit(1, 400.0, 758.0, 15.0),
-            SpeedLimit(2, 0.0, 300.0, 15.0),
-            SpeedLimit(2, 300.0, 850.0, 22.0),
-            SpeedLimit(3, 0.0, 200.0, 12.0),
-            SpeedLimit(3, 200.0, 750.0, 22.0),
-            SpeedLimit(4, 0.0, 350.0, 15.0),
-            SpeedLimit(4, 350.0, 700.0, 22.0),
-            SpeedLimit(5, 0.0, 600.0, 22.0),
-            SpeedLimit(6, 0.0, 420.0, 15.0),
-            SpeedLimit(7, 0.0, 380.0, 15.0),
+            SpeedLimit(1, 0.0, 250.0, 22.0),
+            SpeedLimit(2, 0.0, 250.0, 22.0),
+            SpeedLimit(3, 0.0, 80.0, 12.0),
+            SpeedLimit(3, 80.0, 250.0, 22.0),
+            SpeedLimit(4, 0.0, 250.0, 22.0),
+            # 侧线限速较低
+            SpeedLimit(5, 0.0, 150.0, 10.0),
+            SpeedLimit(6, 0.0, 150.0, 10.0),
+            SpeedLimit(7, 0.0, 120.0, 10.0),
+            SpeedLimit(8, 0.0, 120.0, 10.0),
         ]
 
+        # ── 坡度 ──────────────────────────────────────────────
         td.gradients = [
-            Gradient(1, 0.0, 200.0, 0.0),
-            Gradient(1, 200.0, 350.0, 5.0),
-            Gradient(1, 350.0, 500.0, -3.0),
-            Gradient(2, 0.0, 200.0, 0.0),
-            Gradient(2, 200.0, 350.0, 8.0),
-            Gradient(2, 350.0, 500.0, 0.0),
-            Gradient(3, 0.0, 200.0, -5.0),
-            Gradient(3, 200.0, 500.0, 0.0),
-            Gradient(4, 0.0, 200.0, 3.0),
-            Gradient(4, 200.0, 500.0, 0.0),
+            Gradient(1, 0.0, 150.0, 0.0),
+            Gradient(1, 150.0, 250.0, 5.0),
+            Gradient(2, 0.0, 150.0, -3.0),
+            Gradient(2, 150.0, 250.0, 0.0),
+            Gradient(3, 0.0, 250.0, 8.0),
+            Gradient(4, 0.0, 250.0, -5.0),
         ]
 
-        # 演示信号机用于本地闭塞和红黄绿三态展示。
+        # ── 信号机 ────────────────────────────────────────────
         td.signals = [
-            Signal("S01", direction="up", seg_id=1, offset=200.0),
-            Signal("S02", direction="up", seg_id=1, offset=600.0),
-            Signal("S03", direction="up", seg_id=2, offset=300.0),
-            Signal("S04", direction="up", seg_id=3, offset=250.0),
-            Signal("S05", direction="up", seg_id=4, offset=300.0),
-            Signal("S06", direction="up", seg_id=5, offset=300.0),
+            Signal("S01", direction="up", seg_id=1, offset=100.0),
+            Signal("S02", direction="up", seg_id=1, offset=220.0),
+            Signal("S03", direction="up", seg_id=2, offset=100.0),
+            Signal("S04", direction="up", seg_id=3, offset=100.0),
+            Signal("S05", direction="up", seg_id=4, offset=100.0),
+            Signal("S06", direction="up", seg_id=4, offset=220.0),
         ]
 
         td.build_coordinates()
         return td
+
+    @staticmethod
+    def create_demo_routes():
+        """创建演示用预定义进路。
+
+        注意：seg7 是 seg3 的 start_lateral（在 seg3 起点岔出），
+        因此从 seg2 末端直接转入 seg7，进路为 [2, 7] 而非 [3, 7]。
+
+        Returns:
+            list[Route]: 6 条进路 ——
+              0: "自动"（空列表，由系统动态算路）
+              1: "主线全程" [1,2,3,4]  站A → 站D
+              2: "站A→侧线1" [1,5]    从 seg1 终点转入侧线 seg5
+              3: "站B→侧线2" [2,6]    从 seg2 终点转入侧线 seg6
+              4: "站C→侧线3" [2,7]    从 seg2 末转入 seg3 起点侧线 seg7
+              5: "站D→侧线4" [4,8]    从 seg4 终点转入侧线 seg8
+        """
+        from src.track.route import Route
+        return [
+            Route(0, "自动", []),
+            Route(1, "主线全程", [1, 2, 3, 4]),
+            Route(2, "站A→侧线1", [1, 5]),
+            Route(3, "站B→侧线2", [2, 6]),
+            Route(4, "站C→侧线3", [2, 7]),
+            Route(5, "站D→侧线4", [4, 8]),
+        ]
 
     # ---- 内部加载方法 ----
     # 每个 sheet 的结构: 前 3 行元数据, 第 3 行(索引2)为表头, 从第 4 行(索引3)起为数据

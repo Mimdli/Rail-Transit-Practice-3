@@ -35,7 +35,7 @@ def test_demo_segment_chain_continuous():
     td = loader.load_demo_data()
     # 仅验证主线区段链连续；侧线从道岔岔出，与主线共享分叉点坐标
     main_segs = sorted(
-        [s for s in td.segments if s.seg_id in (1, 2, 3, 4, 5)],
+        [s for s in td.segments if s.seg_id in (1, 2, 3, 4)],
         key=lambda s: s.abs_start,
     )
     for i in range(len(main_segs) - 1):
@@ -46,16 +46,17 @@ def test_demo_segment_chain_continuous():
 def test_demo_total_length():
     loader = TrackLoader()
     td = loader.load_demo_data()
-    main_segs = [s for s in td.segments if s.seg_id in (1, 2, 3, 4, 5)]
-    expected = sum(s.length for s in main_segs)
-    assert abs(td.total_length() - expected) < 1.0
+    main_segs = [s for s in td.segments if s.seg_id in (1, 2, 3, 4)]
+    main_sum = sum(s.length for s in main_segs)
+    # total_length = 最远 segment 的终点，包含了侧线延伸
+    assert td.total_length() >= main_sum
 
 
 def test_demo_stations_have_positions():
     loader = TrackLoader()
     td = loader.load_demo_data()
     for station in td.stations:
-        assert station.position > 0 or station.name == "GGZ"  # 首站位置为 0
+        assert station.position > 0 or station.name == "站A"  # 首站位置为 0
 
 
 def test_demo_get_speed_limit():
@@ -78,7 +79,7 @@ def test_demo_get_station_at():
     td = loader.load_demo_data()
     station = td.get_station_at(0.0)
     assert station is not None
-    assert station.name == "GGZ"
+    assert station.name == "站A"
 
 
 def test_demo_get_nearest_station():
