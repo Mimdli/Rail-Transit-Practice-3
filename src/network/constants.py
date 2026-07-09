@@ -62,3 +62,19 @@ ATP_DMI_CYCLE_MS: Final[int] = 160  # 160ms 周期
 # API 通信（协议 §3）
 # ============================================================
 API_CYCLE_MS: Final[int] = 500
+
+# ============================================================
+# 视景系统 UDP（协议 §3.2）
+# ============================================================
+VISION_LOCAL_ADDR: Final[str] = "192.168.200.110"     # 仿真系统
+VISION_REMOTE_ADDR: Final[str] = "192.168.200.102"    # 总控
+VISION_REMOTE_PORT: Final[int] = 8303                 # 视景端口
+VISION_CYCLE_MS: Final[int] = 100                     # 100ms 周期
+
+# ============================================================
+# 司机台显示 TCP（协议 § 网络屏 / 信号屏）
+# ============================================================
+CAB_DISPLAY_ADDR: Final[str] = "192.168.200.102"      # 总控
+CAB_NETWORK_SCREEN_PORT: Final[int] = 8888            # 网络屏
+CAB_SIGNAL_SCREEN_PORT: Final[int] = 9999             # 信号屏
+CAB_DISPLAY_CYCLE_MS: Final[int] = 100                # 100ms 周期
