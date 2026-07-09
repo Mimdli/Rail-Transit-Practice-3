@@ -8,6 +8,8 @@ from PyQt5.QtCore import QTimer, Qt
 
 from src.ui.dashboard import Dashboard
 from src.ui.controls import ControlPanel
+from src.ui.interlocking_view import InterlockingViewWidget
+from src.ui.semantic_track_view import SemanticTrackViewWidget
 from src.ui.track_view import TrackViewWidget
 from src.ui.charts import ForcePanel
 from src.vehicle.vehicle_controller import VehicleController
@@ -142,10 +144,14 @@ class MainWindow(QMainWindow):
 
         self.track_view = TrackViewWidget(self.track)
         self.track_view.segment_clicked.connect(self._on_track_clicked)
+        self.semantic_track_view = SemanticTrackViewWidget(self.track)
+        self.interlocking_view = InterlockingViewWidget(self.track)
         self.force_panel = ForcePanel()
 
         self.tabs.addTab(sim_page, "运行仿真")
+        self.tabs.addTab(self.semantic_track_view, "运营线路图")
         self.tabs.addTab(self.track_view, "线路可视化")
+        self.tabs.addTab(self.interlocking_view, "联锁HMI图")
         self.tabs.addTab(self.force_panel, "力学分析")
 
     def _create_data_source_bar(self) -> QWidget:
@@ -223,9 +229,13 @@ class MainWindow(QMainWindow):
         self.dashboard.track_adapter = self.track_adapter
 
         # 重建线路可视化并立即将列车绘制到新线路上
+        self.semantic_track_view.set_track_data(track, self._data_source_label())
         self.track_view.set_track_data(track, self._data_source_label())
+        self.interlocking_view.set_track_data(track, self._data_source_label())
         car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
+        self.semantic_track_view.set_train_position(car_abs, self.controller)
         self.track_view.set_train_position(car_abs, self.controller)
+        self.interlocking_view.set_train_position(car_abs, self.controller)
 
         self.front_train_positions = self._default_front_train_positions()
         self._last_signal_aspects.clear()
@@ -344,7 +354,9 @@ class MainWindow(QMainWindow):
         # ── 更新 UI ───────────────────────────────────────────────
         self.dashboard.refresh(report)
         car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
+        self.semantic_track_view.set_train_position(car_abs, self.controller)
         self.track_view.set_train_position(car_abs, self.controller)
+        self.interlocking_view.set_train_position(car_abs, self.controller)
         self._update_log_display()
 
         # ── 更新力学分析面板 ───────────────────────────────────────
