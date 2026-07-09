@@ -7,6 +7,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.track.loader import TrackLoader
 from src.track.db_loader import DBLoader
 from src.track.data import TrackData, Station, Segment
+from src.track.adapter import TrackDataAdapter
+from src.common.track_position import TrackPosition
 
 
 # ======== 演示数据测试 ========
@@ -49,6 +51,27 @@ def test_demo_total_length():
     main_segs = [s for s in td.segments if s.seg_id in (1, 2, 3, 4, 5)]
     expected = sum(s.length for s in main_segs)
     assert abs(td.total_length() - expected) < 1.0
+
+
+def test_adapter_main_line_advance():
+    """默认岔口走正向邻居（主线）。"""
+    td = TrackLoader().load_demo_data()
+    adapter = TrackDataAdapter(td)
+    pos = adapter.advance_position(TrackPosition(1, 750.0), 20.0)
+    assert pos.segment_id == 2
+    assert abs(pos.offset - 12.0) < 0.1
+
+
+def test_adapter_lateral_branch_advance():
+    """指定岔口路由后可进入侧线并走完全程。"""
+    td = TrackLoader().load_demo_data()
+    adapter = TrackDataAdapter(td)
+    adapter.use_lateral_fork(1)
+    pos = adapter.advance_position(TrackPosition(1, 750.0), 20.0)
+    assert pos.segment_id == 6
+    pos = adapter.advance_position(pos, 420.0 - pos.offset)
+    assert pos.segment_id == 6
+    assert abs(pos.offset - 420.0) < 0.1
 
 
 def test_demo_stations_have_positions():

@@ -131,6 +131,8 @@ class TrackView(QGraphicsView):
         self.setScene(self.scene)
 
         self._branch_levels: dict = {}
+        self._trim_start_px: dict[int, float] = {}
+        self._trim_end_px: dict[int, float] = {}
         self._segment_items: dict[int, SegmentItem] = {}
         self._speed_rects = []
         self._signal_items = []
@@ -180,17 +182,19 @@ class TrackView(QGraphicsView):
 
     # ── 列车位置叠加 ──────────────────────────────────────────
 
-    def _car_y(self, car_abs: float) -> float:
+    def _car_y(self, car_abs: float, seg_id: int = 0) -> float:
         """返回指定绝对位置处车厢应绘制的 Y 坐标。
 
-        根据车厢所在的轨道区段，确定其分支层级（主线=0，道岔分支>=1），
-        使列车绘制在正确的轨道线上。
+        根据车厢所在区段确定分支层级（主线=0，道岔分支>=1）。
+        重叠里程处必须用 seg_id 区分主线/侧线。
         """
-        seg_id = self.td.get_seg_id_at(car_abs)
+        if seg_id <= 0:
+            seg_id = self.td.get_seg_id_at(car_abs)
         level = self._branch_levels.get(seg_id, 0)
         return self._base_y + TRAIN_Y_OFFSET + level * BRANCH_OFFSET
 
-    def set_train_position(self, car_abs_positions: list, controller: VehicleController = None):
+    def set_train_position(self, car_abs_positions: list, controller: VehicleController = None,
+                           car_seg_ids: list = None):
         """更新列车在线路图上的显示位置。
 
         以头车所在的轨道区段确定整列车的 Y 坐标（主线/分支），
@@ -202,7 +206,10 @@ class TrackView(QGraphicsView):
             self._last_train_pos_key = None
             return
 
-        pos_key = tuple(round(p, 1) for p in car_abs_positions)
+        pos_key = tuple(
+            (round(p, 1), car_seg_ids[i] if car_seg_ids and i < len(car_seg_ids) else 0)
+            for i, p in enumerate(car_abs_positions)
+        )
         if pos_key == self._last_train_pos_key:
             return
         self._last_train_pos_key = pos_key
@@ -214,7 +221,8 @@ class TrackView(QGraphicsView):
             return
 
         # 以头车所在区段的分支层级确定整列车 Y 坐标
-        head_y = self._car_y(car_abs_positions[0])
+        head_seg = car_seg_ids[0] if car_seg_ids else 0
+        head_y = self._car_y(car_abs_positions[0], head_seg)
 
         # 从头车到尾车依次绘制
         train_rects = []
@@ -274,9 +282,12 @@ class TrackView(QGraphicsView):
     # ── 分支层级计算 ──────────────────────────────────────────
 
     def _compute_branch_levels(self):
+        """主线正向 BFS 定层级 0，侧向岔出及其延伸段递增层级。"""
         from collections import deque
         td = self.td
         td._seg_map = {s.seg_id: s for s in td.segments}
+        self._branch_levels = {}
+
         referenced = set()
         for s in td.segments:
             for n in (s.start_neighbor, s.end_neighbor):
@@ -290,71 +301,110 @@ class TrackView(QGraphicsView):
         if root_id is None:
             root_id = td.segments[0].seg_id
 
-        visited = set()
+        on_main = set()
         q = deque([root_id])
-        visited.add(root_id)
+        on_main.add(root_id)
         self._branch_levels[root_id] = 0
-
         while q:
             sid = q.popleft()
             seg = td._seg_map.get(sid)
             if not seg:
                 continue
-            cur_level = self._branch_levels.get(sid, 0)
-
+            lvl = self._branch_levels[sid]
             for nid in (seg.start_neighbor, seg.end_neighbor):
                 if nid <= 0 or nid == 65535 or nid not in td._seg_map:
                     continue
-                if nid not in visited:
-                    visited.add(nid)
-                    self._branch_levels[nid] = cur_level
+                if nid not in on_main:
+                    on_main.add(nid)
+                    self._branch_levels[nid] = lvl
                     q.append(nid)
 
+        branch_q = deque()
+        for seg in td.segments:
+            if seg.seg_id not in self._branch_levels:
+                continue
+            pl = self._branch_levels[seg.seg_id]
             for nid in (seg.start_lateral, seg.end_lateral):
                 if nid <= 0 or nid == 65535 or nid not in td._seg_map:
                     continue
-                if nid not in visited:
-                    visited.add(nid)
-                    self._branch_levels[nid] = cur_level + 1
-                    q.append(nid)
-                else:
-                    self._branch_levels[nid] = min(
-                        self._branch_levels.get(nid, 999), cur_level + 1)
+                nl = pl + 1
+                if self._branch_levels.get(nid, -1) < nl:
+                    self._branch_levels[nid] = nl
+                    branch_q.append(nid)
+
+        branch_visited = set()
+        while branch_q:
+            sid = branch_q.popleft()
+            if sid in branch_visited:
+                continue
+            branch_visited.add(sid)
+            seg = td._seg_map.get(sid)
+            if not seg:
+                continue
+            lvl = self._branch_levels.get(sid, 1)
+            for nid in (seg.start_neighbor, seg.end_neighbor):
+                if nid <= 0 or nid == 65535 or nid not in td._seg_map:
+                    continue
+                if nid in on_main and self._branch_levels.get(nid, 0) == 0:
+                    continue
+                if self._branch_levels.get(nid, -1) < lvl:
+                    self._branch_levels[nid] = lvl
+                    branch_q.append(nid)
+
+        for s in td.segments:
+            self._branch_levels.setdefault(s.seg_id, 0)
+
+    def _compute_fork_trims(self, td: TrackData):
+        """侧线区段在岔点处缩进，与斜向连接线对齐。"""
+        self._trim_start_px = {}
+        self._trim_end_px = {}
+        for parent in td.segments:
+            if parent.end_lateral > 0 and parent.end_lateral in td._seg_map:
+                cid = parent.end_lateral
+                self._trim_start_px[cid] = max(
+                    self._trim_start_px.get(cid, 0), float(SWITCH_SLANT_PX))
+            if parent.start_lateral > 0 and parent.start_lateral in td._seg_map:
+                cid = parent.start_lateral
+                self._trim_end_px[cid] = max(
+                    self._trim_end_px.get(cid, 0), float(SWITCH_SLANT_PX))
+
+    def _seg_line_x(self, seg: Segment) -> tuple:
+        x1 = self._x(seg.abs_start) + self._trim_start_px.get(seg.seg_id, 0)
+        x2 = self._x(seg.abs_start + seg.length) - self._trim_end_px.get(seg.seg_id, 0)
+        return x1, x2
 
     def _get_level(self, seg_id: int) -> int:
         return self._branch_levels.get(seg_id, 0)
 
     def _draw_switch_connectors(self, td: TrackData, base_y: float):
-        """绘制主线与道岔分支之间的斜向连接线（道岔 turnout 示意）"""
+        """绘制主线与道岔分支之间的斜向连接线，端点与缩进后的区段对齐。"""
         if not td._seg_map:
             td._seg_map = {s.seg_id: s for s in td.segments}
 
-        pen = QPen(COLOR_BRANCH, 5)
+        pen = QPen(COLOR_BRANCH, LINE_WIDTH)
         pen.setStyle(Qt.SolidLine)
-
-        def _slant_connect(fork_x: float, parent_y: float, child_y: float, at_end: bool):
-            """从主线岔点斜向连接到分支轨道层"""
-            end_x = fork_x + SWITCH_SLANT_PX if at_end else fork_x - SWITCH_SLANT_PX
-            line = self.scene.addLine(fork_x, parent_y, end_x, child_y, pen)
-            line.setZValue(0)
 
         for seg in td.segments:
             parent_level = self._get_level(seg.seg_id)
             parent_y = parent_level * BRANCH_OFFSET + base_y
 
             if seg.start_lateral > 0 and seg.start_lateral in td._seg_map:
-                child_level = self._get_level(seg.start_lateral)
+                child_id = seg.start_lateral
+                child_level = self._get_level(child_id)
                 if child_level > parent_level:
                     fork_x = self._x(seg.abs_start)
                     child_y = child_level * BRANCH_OFFSET + base_y
-                    _slant_connect(fork_x, parent_y, child_y, at_end=False)
+                    child_x, _ = self._seg_line_x(td._seg_map[child_id])
+                    self.scene.addLine(fork_x, parent_y, child_x, child_y, pen).setZValue(0)
 
             if seg.end_lateral > 0 and seg.end_lateral in td._seg_map:
-                child_level = self._get_level(seg.end_lateral)
+                child_id = seg.end_lateral
+                child_level = self._get_level(child_id)
                 if child_level > parent_level:
                     fork_x = self._x(seg.abs_start + seg.length)
                     child_y = child_level * BRANCH_OFFSET + base_y
-                    _slant_connect(fork_x, parent_y, child_y, at_end=True)
+                    child_x, _ = self._seg_line_x(td._seg_map[child_id])
+                    self.scene.addLine(fork_x, parent_y, child_x, child_y, pen).setZValue(0)
 
     # ── 场景构建 ──────────────────────────────────────────────
 
@@ -368,13 +418,15 @@ class TrackView(QGraphicsView):
         scene_w = self._x(total_len) + 200
 
         self._compute_branch_levels()
+        self._compute_fork_trims(td)
         max_level = max(self._branch_levels.values()) if self._branch_levels else 0
         base_y = self._base_y
 
         # ── 区段线段 ──────────────────────────────────────────
         for seg in td.segments:
-            x1 = self._x(seg.abs_start)
-            x2 = self._x(seg.abs_start + seg.length)
+            x1, x2 = self._seg_line_x(seg)
+            if x2 <= x1:
+                continue
             level = self._get_level(seg.seg_id)
             y = level * BRANCH_OFFSET + base_y
 
@@ -387,13 +439,14 @@ class TrackView(QGraphicsView):
 
         # ── 限速区段 ──────────────────────────────────────────
         for sl in td.speed_limits:
-            x1 = self._x(sl.abs_start)
-            x2 = self._x(sl.abs_end)
             seg = td._seg_map.get(sl.seg_id)
             if not seg:
                 continue
             level = self._get_level(sl.seg_id)
             y = level * BRANCH_OFFSET + base_y + 13
+            trim_s = self._trim_start_px.get(sl.seg_id, 0)
+            x1 = max(self._x(sl.abs_start), self._x(seg.abs_start) + trim_s)
+            x2 = self._x(sl.abs_end)
 
             speed = sl.speed_limit
             if speed >= 18:
@@ -558,10 +611,11 @@ class TrackViewWidget(QWidget):
             f"信号: {len(td.signals)}"
         )
 
-    def set_train_position(self, car_abs_positions: list, controller: VehicleController = None):
+    def set_train_position(self, car_abs_positions: list, controller: VehicleController = None,
+                           car_seg_ids: list = None):
         """更新列车在线路图上的位置。"""
         if self.view is not None:
-            self.view.set_train_position(car_abs_positions, controller)
+            self.view.set_train_position(car_abs_positions, controller, car_seg_ids)
 
     def refresh(self):
         """刷新当前线路视图；没有外部数据时回退到数据库加载"""
