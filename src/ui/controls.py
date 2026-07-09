@@ -122,6 +122,22 @@ class ControlPanel(QWidget):
 
         layout.addWidget(setting_group)
 
+        # === 进路选择 ===
+        route_group = QGroupBox("进路选择")
+        route_group.setObjectName("panelGroup")
+        route_layout = QHBoxLayout(route_group)
+        route_layout.setSpacing(8)
+        route_layout.setContentsMargins(8, 14, 8, 8)
+
+        self.route_combo = QComboBox()
+        self.route_combo.setObjectName("dataSourceCombo")
+        self.route_combo.setMinimumWidth(140)
+        self.route_combo.currentIndexChanged.connect(self._on_route_changed)
+        route_layout.addWidget(QLabel("路线:"))
+        route_layout.addWidget(self.route_combo)
+
+        layout.addWidget(route_group)
+
         # === 操作提示 ===
         self.status_label = QLabel("就绪 — 点击「牵引」发车")
         self.status_label.setObjectName("statusHint")
@@ -231,6 +247,37 @@ class ControlPanel(QWidget):
         else:
             self._record_operation("切换为自动模式，无目标车站")
             self.status_label.setText("无目标车站")
+
+    # ── 进路切换 ──────────────────────────────────────────────
+
+    def _on_route_changed(self):
+        """用户通过下拉框手动切换进路。"""
+        idx = self.route_combo.currentIndex()
+        routes = self.auto_drive.available_routes
+        if 0 <= idx < len(routes):
+            route = routes[idx]
+            self.auto_drive.set_route(route)
+            if route.is_auto:
+                self.status_label.setText("进路: 自动（系统算路）")
+                # 如果正在自动驾驶中，用当前 target 重新算路
+                if (self.controller.running_mode == RunningMode.AUTOMATIC
+                        and self.auto_drive.target_position is not None):
+                    self.auto_drive.set_target(self.auto_drive.target_position)
+            else:
+                self.status_label.setText(f"进路: {route.name}")
+
+    def populate_routes(self, routes):
+        """填充进路下拉框。
+
+        Args:
+            routes: Route 列表，第一个应是"自动"模式。
+        """
+        self.route_combo.blockSignals(True)
+        self.route_combo.clear()
+        for r in routes:
+            label = r.name if not r.is_auto else "自动（系统算路）"
+            self.route_combo.addItem(label, r.route_id)
+        self.route_combo.blockSignals(False)
 
     # ── 日志 ──────────────────────────────────────────────────
 
