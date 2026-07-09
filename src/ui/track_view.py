@@ -40,7 +40,8 @@ COLOR_TRAILER_CAR = QColor(100, 116, 139, 200)  # 拖车：灰色
 COLOR_TRAIN_BORDER = QColor(30, 64, 175, 220)
 
 SCALE = 0.22          # 米 → 像素
-BRANCH_OFFSET = 60    # 分支偏移高度 (px)
+BRANCH_OFFSET = 85    # 分支偏移高度 (px)
+DIAG_X = 55           # 道岔斜线水平分量 (px)
 LINE_WIDTH = 9
 HOVER_WIDTH = 14
 TRAIN_HEIGHT = 18     # 列车矩形高度 (px)
@@ -57,7 +58,13 @@ class SegmentItem(QGraphicsLineItem):
         self.level = level
         self._is_branch = level > 0
 
-        self._default_pen = QPen(COLOR_BRANCH if self._is_branch else COLOR_MAIN_LINE, LINE_WIDTH)
+        if self._is_branch:
+            pen = QPen(COLOR_BRANCH, LINE_WIDTH)
+            pen.setStyle(Qt.DashLine)
+            pen.setDashPattern([8, 6])
+            self._default_pen = pen
+        else:
+            self._default_pen = QPen(COLOR_MAIN_LINE, LINE_WIDTH)
         self._hover_pen = QPen(COLOR_HOVER, HOVER_WIDTH)
         self.setPen(self._default_pen)
         self.setAcceptHoverEvents(True)
@@ -114,6 +121,11 @@ class SegmentItem(QGraphicsLineItem):
 class TrackView(QGraphicsView):
     """轨道线路可视化视图"""
 
+    # 信号：用户点击了某个线路区段
+    #   seg_id: 被点击的区段 ID
+    #   abs_pos: 点击位置对应的线路绝对坐标 (m)
+    segment_clicked = pyqtSignal(int, float)
+
     def __init__(self, track_data: TrackData, parent=None):
         super().__init__(parent)
         self.td = track_data
@@ -137,9 +149,13 @@ class TrackView(QGraphicsView):
 
         # 列车覆盖层（独立管理，方便清除重建）
         self._train_items = []
+        self._target_items = []  # 目标标记（独立管理，不随列车刷新清除）
 
         # 主线轨道 Y 基准坐标（分支线在此基础上叠加 BRANCH_OFFSET）
         self._base_y = 90
+
+        # 点击导航：记录按下位置，用于区分拖拽和点击
+        self._press_pos = None
 
         self._build()
 
@@ -152,6 +168,42 @@ class TrackView(QGraphicsView):
 
     def _x(self, pos_m: float) -> float:
         return pos_m * SCALE
+
+    def _abs_from_scene_x(self, scene_x: float) -> float:
+        """场景 x 坐标 → 线路绝对位置 (m)，对分支段还原 DIAG_X 偏移。"""
+        abs_m = scene_x / SCALE
+        # 检查是否点击在分支段上（偏移过的），还原绝对位置
+        for seg_id, item in self._segment_items.items():
+            line = item.line()
+            x1, x2 = line.x1(), line.x2()
+            if x1 <= scene_x <= x2 and item._is_branch:
+                # 分支段：还原偏移
+                return abs_m - DIAG_X / SCALE
+        return abs_m
+
+    def mousePressEvent(self, event):
+        """记录按下位置，用于判断是否为点击（而非拖拽）。"""
+        self._press_pos = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        """释放鼠标时判断是否为短点击（非拖拽），触发导航。"""
+        if self._press_pos is not None:
+            delta = event.pos() - self._press_pos
+            if delta.manhattanLength() < 4:  # 移动 < 4px 视为点击
+                self._handle_click(event)
+        self._press_pos = None
+        super().mouseReleaseEvent(event)
+
+    def _handle_click(self, event):
+        """处理线路点击：查找被点击的区段，发出导航信号。"""
+        scene_pos = self.mapToScene(event.pos())
+        items = self.scene.items(scene_pos)
+        for item in items:
+            if isinstance(item, SegmentItem):
+                abs_pos = self._abs_from_scene_x(scene_pos.x())
+                self.segment_clicked.emit(item.seg.seg_id, abs_pos)
+                return
 
     def wheelEvent(self, event):
         factor = 1.15
@@ -194,6 +246,11 @@ class TrackView(QGraphicsView):
         # 以头车所在区段的分支层级确定整列车 Y 坐标
         head_y = self._car_y(car_abs_positions[0])
 
+        # 头车在分支上时，列车整体需要 DIAG_X 偏移以对齐分支轨道线
+        head_seg_id = self.td.get_seg_id_at(car_abs_positions[0])
+        head_level = self._branch_levels.get(head_seg_id, 0)
+        x_offset = DIAG_X if head_level > 0 else 0
+
         # 从头车到尾车依次绘制
         train_rects = []
         for i in range(n_cars):
@@ -202,7 +259,7 @@ class TrackView(QGraphicsView):
             car_abs = car_abs_positions[i]
 
             # 车厢矩形：以 car_abs 为前边界（右边界），向左延伸 car_length_px
-            car_x = self._x(car_abs) - car_length_px
+            car_x = self._x(car_abs) - car_length_px + x_offset
 
             # 动车/拖车不同颜色
             if car_config.is_motor:
@@ -247,22 +304,81 @@ class TrackView(QGraphicsView):
             self.scene.removeItem(item)
         self._train_items.clear()
 
+    # ── 目标标记 ──────────────────────────────────────────────
+
+    def set_target_marker(self, abs_pos: float):
+        """在线路上放置目标标记（红色菱形），指示自动驾驶目标位置。
+
+        Args:
+            abs_pos: 目标在线路上的绝对位置 (m)。
+        """
+        self._clear_target_marker()
+        x = self._x(abs_pos)
+        # 用 seg_id 确定 y（目标可能在主线或侧线上）
+        seg_id = self.td.get_seg_id_at(abs_pos)
+        level = self._branch_levels.get(seg_id, 0)
+        # 侧线目标需要加 DIAG_X 偏移
+        if level > 0:
+            fork_x = self._find_fork_x(seg_id)
+            if fork_x is not None:
+                x = fork_x + DIAG_X + self._x(abs_pos - self.td._seg_map[seg_id].abs_start)
+        y = level * BRANCH_OFFSET + self._base_y
+
+        # 红色菱形目标标记
+        from PyQt5.QtGui import QPolygonF
+        s = 7  # 菱形半边长
+        diamond = QPolygonF([
+            QPointF(x, y - s),
+            QPointF(x + s, y),
+            QPointF(x, y + s),
+            QPointF(x - s, y),
+        ])
+        target_item = self.scene.addPolygon(
+            diamond,
+            QPen(QColor(180, 20, 20), 2),
+            QBrush(QColor(255, 70, 70, 200)),
+        )
+        target_item.setZValue(25)
+        target_item.setToolTip(f"🎯 自动驾驶目标 ({abs_pos:.0f}m)")
+        self._target_items.append(target_item)
+
+    def _clear_target_marker(self):
+        """清除目标标记。"""
+        for item in self._target_items:
+            self.scene.removeItem(item)
+        self._target_items.clear()
+
     # ── 分支层级计算 ──────────────────────────────────────────
 
     def _compute_branch_levels(self):
+        """计算每个区段的分支层级（主线=0，侧线=1+）。
+
+        通过 BFS 从主线入口段出发，沿 forward 边传播相同层级，
+        沿 lateral 边递增层级。
+        """
         from collections import deque
         td = self.td
         td._seg_map = {s.seg_id: s for s in td.segments}
-        referenced = set()
-        for s in td.segments:
-            for n in (s.start_neighbor, s.end_neighbor):
-                if n > 0 and n != 65535:
-                    referenced.add(n)
+
+        # 找主线入口段：start_neighbor=0 且有 end_neighbor 的段
         root_id = None
         for s in td.segments:
-            if s.seg_id not in referenced:
+            if s.start_neighbor == 0 and s.end_neighbor > 0 and s.end_neighbor != 65535:
                 root_id = s.seg_id
                 break
+        # 兜底：找第一个不受任何 neighbor 引用的段
+        if root_id is None:
+            all_refs = set()
+            for s in td.segments:
+                for n in (s.start_neighbor, s.end_neighbor,
+                          s.start_lateral, s.end_lateral):
+                    if n > 0 and n != 65535:
+                        all_refs.add(n)
+            for s in td.segments:
+                if s.seg_id not in all_refs:
+                    root_id = s.seg_id
+                    break
+        # 最终兜底
         if root_id is None:
             root_id = td.segments[0].seg_id
 
@@ -300,33 +416,77 @@ class TrackView(QGraphicsView):
     def _get_level(self, seg_id: int) -> int:
         return self._branch_levels.get(seg_id, 0)
 
+    def _find_fork_x(self, branch_seg_id: int) -> float | None:
+        """查找分支段的道岔分岔点在场景中的 x 坐标（像素）。
+
+        遍历所有区段，找到将 branch_seg_id 作为侧向邻居的父段，
+        返回分岔点的场景 x 坐标。start_lateral 岔出在父段起点，
+        end_lateral 岔出在父段终点。
+        """
+        td = self.td
+        if not td._seg_map:
+            td._seg_map = {s.seg_id: s for s in td.segments}
+        for seg in td.segments:
+            if seg.end_lateral == branch_seg_id:
+                return self._x(seg.abs_start + seg.length)
+            if seg.start_lateral == branch_seg_id:
+                return self._x(seg.abs_start)
+        return None
+
     def _draw_switch_connectors(self, td: TrackData, base_y: float):
-        """绘制主线与道岔分支之间的连接线"""
+        """绘制主线与道岔分支之间的斜向连接线（模拟真实道岔分叉角度）。
+
+        对于每个道岔，从分岔点画一条斜线到分支线起点，并在分岔点标记圆点。
+        """
         if not td._seg_map:
             td._seg_map = {s.seg_id: s for s in td.segments}
 
-        pen = QPen(COLOR_BRANCH, 5)
-        pen.setStyle(Qt.SolidLine)
+        connector_pen = QPen(COLOR_BRANCH, 4)
+        connector_pen.setStyle(Qt.SolidLine)
+        connector_pen.setCapStyle(Qt.RoundCap)
+
+        dot_pen = QPen(COLOR_BRANCH.darker(130), 1)
+        dot_brush = QBrush(COLOR_BRANCH)
 
         for seg in td.segments:
             parent_level = self._get_level(seg.seg_id)
             parent_y = parent_level * BRANCH_OFFSET + base_y
 
+            # ── start_lateral：道岔在父段起点 ──────────────────
             if seg.start_lateral > 0 and seg.start_lateral in td._seg_map:
-                child_level = self._get_level(seg.start_lateral)
+                child_id = seg.start_lateral
+                child_level = self._get_level(child_id)
                 if child_level > parent_level:
                     fork_x = self._x(seg.abs_start)
                     child_y = child_level * BRANCH_OFFSET + base_y
-                    line = self.scene.addLine(fork_x, parent_y, fork_x, child_y, pen)
-                    line.setZValue(0)
+                    # 斜线：从分岔点 → 分支线起点
+                    self.scene.addLine(
+                        fork_x, parent_y, fork_x + DIAG_X, child_y, connector_pen
+                    ).setZValue(0)
+                    # 分岔点圆点
+                    dot = self.scene.addEllipse(
+                        fork_x - 4, parent_y - 4, 8, 8, dot_pen, dot_brush
+                    )
+                    dot.setZValue(2)
+                    dot.setToolTip(f"道岔 seg{seg.seg_id}→seg{child_id} (起点岔出)")
 
+            # ── end_lateral：道岔在父段终点 ────────────────────
             if seg.end_lateral > 0 and seg.end_lateral in td._seg_map:
-                child_level = self._get_level(seg.end_lateral)
+                child_id = seg.end_lateral
+                child_level = self._get_level(child_id)
                 if child_level > parent_level:
                     fork_x = self._x(seg.abs_start + seg.length)
                     child_y = child_level * BRANCH_OFFSET + base_y
-                    line = self.scene.addLine(fork_x, parent_y, fork_x, child_y, pen)
-                    line.setZValue(0)
+                    # 斜线：从分岔点 → 分支线起点
+                    self.scene.addLine(
+                        fork_x, parent_y, fork_x + DIAG_X, child_y, connector_pen
+                    ).setZValue(0)
+                    # 分岔点圆点
+                    dot = self.scene.addEllipse(
+                        fork_x - 4, parent_y - 4, 8, 8, dot_pen, dot_brush
+                    )
+                    dot.setZValue(2)
+                    dot.setToolTip(f"道岔 seg{seg.seg_id}→seg{child_id} (终点岔出)")
 
     # ── 场景构建 ──────────────────────────────────────────────
 
@@ -345,10 +505,19 @@ class TrackView(QGraphicsView):
 
         # ── 区段线段 ──────────────────────────────────────────
         for seg in td.segments:
-            x1 = self._x(seg.abs_start)
-            x2 = self._x(seg.abs_start + seg.length)
             level = self._get_level(seg.seg_id)
             y = level * BRANCH_OFFSET + base_y
+
+            if level > 0:
+                # 分支段：从斜线连接器终点开始（岔出点 + DIAG_X 偏移）
+                fork_x = self._find_fork_x(seg.seg_id)
+                if fork_x is not None:
+                    x1 = fork_x + DIAG_X
+                else:
+                    x1 = self._x(seg.abs_start)
+            else:
+                x1 = self._x(seg.abs_start)
+            x2 = x1 + self._x(seg.length)
 
             item = SegmentItem(x1, y, x2, seg, level, self.scene)
             self.scene.addItem(item)
@@ -359,12 +528,21 @@ class TrackView(QGraphicsView):
 
         # ── 限速区段 ──────────────────────────────────────────
         for sl in td.speed_limits:
-            x1 = self._x(sl.abs_start)
-            x2 = self._x(sl.abs_end)
             seg = td._seg_map.get(sl.seg_id)
             if not seg:
                 continue
             level = self._get_level(sl.seg_id)
+            if level > 0:
+                fork_x = self._find_fork_x(sl.seg_id)
+                if fork_x is not None:
+                    x1 = fork_x + DIAG_X + self._x(sl.start_offset)
+                    x2 = fork_x + DIAG_X + self._x(sl.end_offset)
+                else:
+                    x1 = self._x(sl.abs_start)
+                    x2 = self._x(sl.abs_end)
+            else:
+                x1 = self._x(sl.abs_start)
+                x2 = self._x(sl.abs_end)
             y = level * BRANCH_OFFSET + base_y + 13
 
             speed = sl.speed_limit
@@ -462,6 +640,9 @@ class TrackView(QGraphicsView):
 class TrackViewWidget(QWidget):
     """包装 TrackView 的容器组件，包含统计信息"""
 
+    # 转发 TrackView 的 segment_clicked 信号
+    segment_clicked = pyqtSignal(int, float)
+
     def __init__(self, track_data: Optional[TrackData] = None, parent=None):
         super().__init__(parent)
         self.setObjectName("trackViewWidget")
@@ -495,6 +676,7 @@ class TrackViewWidget(QWidget):
             self.view.deleteLater()
 
         self.view = TrackView(self.track_data, self)
+        self.view.segment_clicked.connect(self.segment_clicked.emit)
         layout.addWidget(self.view)
 
         td = self.track_data
@@ -516,6 +698,7 @@ class TrackViewWidget(QWidget):
             self.view.deleteLater()
 
         self.view = TrackView(track_data, self)
+        self.view.segment_clicked.connect(self.segment_clicked.emit)
         layout.addWidget(self.view)
         self.status_bar.setText(self._format_stats(track_data, source_name))
 

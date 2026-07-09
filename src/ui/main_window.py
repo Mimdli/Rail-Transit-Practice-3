@@ -63,6 +63,13 @@ class MainWindow(QMainWindow):
         )
         self.auto_drive = AutoDriveController(self.controller)
 
+        # ── 进路（路线选择） ────────────────────────────────────
+        self.routes = TrackLoader.create_demo_routes()
+        self.auto_drive.set_available_routes(self.routes)
+        # 默认选中"自动"进路
+        auto_route = next((r for r in self.routes if r.is_auto), self.routes[0])
+        self.auto_drive.set_route(auto_route)
+
         # ── 旧版兼容引用（供联锁/日志模块中未迁移的代码使用） ────
         self.vehicle = self.controller  # 兼容别名
 
@@ -110,6 +117,7 @@ class MainWindow(QMainWindow):
             self.controller, self.auto_drive, self.interlock,
             self.track_adapter, self.recorder, show_log=False,
         )
+        self.control_panel.populate_routes(self.routes)
 
         top_content = QWidget()
         top_layout = QHBoxLayout(top_content)
@@ -126,6 +134,7 @@ class MainWindow(QMainWindow):
         sim_layout.addWidget(sim_splitter)
 
         self.track_view = TrackViewWidget(self.track)
+        self.track_view.segment_clicked.connect(self._on_track_clicked)
         self.force_panel = ForcePanel()
 
         self.tabs.addTab(sim_page, "运行仿真")
@@ -218,6 +227,8 @@ class MainWindow(QMainWindow):
         self.power_supply.reset()
         self.data_source_status.setText(self._data_source_summary())
         self.recorder.record("系统", f"切换数据源: {self._data_source_label()}")
+        # 重新连接点击导航信号（track_view 已被重建）
+        self.track_view.segment_clicked.connect(self._on_track_clicked)
         self.dashboard.refresh()
         self.force_panel.clear()
 
@@ -322,6 +333,78 @@ class MainWindow(QMainWindow):
             track_limit * 3.6,
         )
         self.force_panel.set_report(report)
+
+    # ── 点击导航（调试模式） ──────────────────────────────────
+
+    def _on_track_clicked(self, seg_id: int, abs_pos: float):
+        """线路可视化区段点击 → 自动驾驶导航到目标位置。
+
+        自动计算从头车当前位置到目标区段终点的进路，
+        包括侧线段（查找预定义进路或沿主线+侧线组合算路）。
+
+        Args:
+            seg_id: 被点击的区段 ID。
+            abs_pos: 点击位置对应的线路绝对坐标 (m)。
+        """
+        from src.track.route import Route, compute_mainline_route
+
+        # 目标位置：点击区段的终点
+        seg = self.track._seg_map.get(seg_id)
+        if seg is None:
+            return
+        target_abs = seg.abs_start + seg.length
+        target = self.track_adapter.from_absolute(target_abs)
+
+        # 计算进路
+        route = self._compute_route_to_segment(target.segment_id)
+        if route is not None:
+            self.auto_drive.set_route(route)
+            self.control_panel.route_combo.blockSignals(True)
+            # 在下拉框中选中对应进路
+            for i in range(self.control_panel.route_combo.count()):
+                if self.control_panel.route_combo.itemText(i) == route.name:
+                    self.control_panel.route_combo.setCurrentIndex(i)
+                    break
+            self.control_panel.route_combo.blockSignals(False)
+
+        # 设置目标并切换到自动驾驶
+        self.auto_drive.set_target(target)
+        self.controller.set_running_mode(RunningMode.AUTOMATIC)
+        # 在可视化上显示目标标记
+        if self.track_view.view:
+            self.track_view.view.set_target_marker(target_abs)
+        seg_name = f"侧线{seg_id - 4}" if seg_id > 4 else f"主线 seg{seg_id}"
+        self.recorder.record("操作",
+            f"点击导航 → {seg_name} 终点 ({target_abs:.0f}m)",
+            self._head_abs_position(), self.controller.head_speed)
+
+    def _compute_route_to_segment(self, target_seg_id: int):
+        """计算从头车到目标区段的进路。
+
+        优先在预定义进路中查找，若无则尝试主线自动路由。
+        对于侧线目标，查找包含该 seg_id 的预定义侧线进路。
+
+        Returns:
+            Route 或 None（找不到合适进路时使用自动模式）。
+        """
+        from src.track.route import Route
+
+        if not self.controller.states:
+            return None
+
+        # 目标在主线（1-4）→ 自动算路
+        if target_seg_id in (1, 2, 3, 4):
+            return Route(0, "自动", [])
+
+        # 目标在侧线 → 查找预定义进路
+        for r in self.routes:
+            if r.is_auto:
+                continue
+            if r.last_seg_id == target_seg_id:
+                return r
+
+        # 无匹配进路 → 自动模式兜底
+        return Route(0, "自动", [])
 
     def closeEvent(self, event):
         """关闭窗口"""
