@@ -268,7 +268,9 @@ class TrackView(QGraphicsView):
     def _clear_train_overlay(self):
         """清除上次绘制的列车图形。"""
         for item in self._train_items:
-            self.scene.removeItem(item)
+            # 父图元移除后，子标签会自动脱离 scene，避免重复 remove 触发 Qt 警告。
+            if item.scene() is self.scene:
+                self.scene.removeItem(item)
         self._train_items.clear()
 
     # ── 分支层级计算 ──────────────────────────────────────────

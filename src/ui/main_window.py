@@ -72,6 +72,7 @@ class MainWindow(QMainWindow):
         self.power_supply = PowerSupply()
         self.interlock = DoorInterlock(self.controller, self.track, self.track_adapter)
         self.recorder = Recorder()
+        self.recorder.start()
         self.evaluator = Evaluator()
 
         # ── 网络通信（可选，启动时不连接外部） ─────────────────
