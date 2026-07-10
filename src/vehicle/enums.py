@@ -30,6 +30,14 @@ class RunningMode(Enum):
     AUTOMATIC = auto()   # 自动驾驶（ATO）
 
 
+class StationPhase(Enum):
+    """停站阶段 — AutoDriveController 状态机"""
+    CRUISING = auto()     # 巡航/行驶中
+    APPROACHING = auto()  # 制动接近车站
+    DWELL = auto()        # 停站中（门开，等待乘客乘降）
+    DEPARTING = auto()    # 准备发车（门已关，等待发车条件）
+
+
 # ═══════════════════════════════════════════════════════════════
 # 司控器级位
 # ═══════════════════════════════════════════════════════════════
@@ -55,6 +63,34 @@ class LoadLevel(Enum):
     AW1 = 1   # 满座（全部座位坐满）
     AW2 = 2   # 定员（额定载客，设计基准）
     AW3 = 3   # 超载（最大载客）
+
+
+# ═══════════════════════════════════════════════════════════════
+# 车辆运行状态
+# ═══════════════════════════════════════════════════════════════
+
+class VehicleState(Enum):
+    """车辆运行状态 — 状态机驱动
+
+    状态转换规则:
+        INIT → STOPPED          reset_states() / startup() 完成
+        STOPPED → STARTING      start_moving() 命令（需满足联锁）
+        STARTING → MOVING       速度 > 0.01 m/s
+        MOVING → BRAKING        施加制动（brake > 0 且速度在下降）
+        BRAKING → STOPPED       is_stopped（所有车厢速度 < 0.01 m/s）
+        MOVING → COASTING       throttle=0 且 brake=0 且 速度 > 0
+        COASTING → MOVING       重新施加牵引
+        COASTING → BRAKING      施加制动
+        任意状态 → EMERGENCY    emergency_brake() 命令
+        EMERGENCY → STOPPED     is_stopped + 确认
+    """
+    INIT = auto()          # 刚初始化，尚未就绪
+    STOPPED = auto()       # 停止中（所有车静止，保持制动）
+    STARTING = auto()      # 启动中（已释放制动，正在施加牵引）
+    MOVING = auto()        # 运行中（正在加速或匀速）
+    COASTING = auto()      # 惰行中（无牵引无制动）
+    BRAKING = auto()       # 制动中（正在减速）
+    EMERGENCY = auto()     # 紧急制动
 
 
 # ═══════════════════════════════════════════════════════════════
