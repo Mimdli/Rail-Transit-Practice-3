@@ -2,7 +2,8 @@
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGroupBox, QTextEdit,
-    QLabel, QComboBox, QTabWidget, QSplitter
+    QLabel, QComboBox, QTabWidget, QSplitter, QPushButton, QButtonGroup,
+    QApplication,
 )
 from PyQt5.QtCore import QTimer, Qt
 
@@ -34,7 +35,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("轨道交通模拟系统")
-        self.setMinimumSize(1400, 860)
+        self.setMinimumSize(1400, 1080)
+        self.resize(1400, 1080)
 
         # 初始化核心模块
         self._init_modules()
@@ -94,6 +96,11 @@ class MainWindow(QMainWindow):
         self._network_mode: bool = False
         self.network = NetworkManager()
 
+        # ── 时间加速 ────────────────────────────────────────────
+        self.speed_multiplier: int = 1
+        self.fast_forward_active: bool = False
+        self.fast_forward_cancelled: bool = False
+
         self.recorder.record("系统", "系统启动，当前数据源: 演示数据")
 
     def _init_ui(self):
@@ -105,6 +112,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
 
         layout.addWidget(self._create_data_source_bar())
+        layout.addWidget(self._create_speed_control_bar())
 
         self.tabs = QTabWidget()
         self.tabs.setObjectName("mainTabs")
@@ -282,6 +290,60 @@ class MainWindow(QMainWindow):
             f"总长 {self.track.total_length():.0f} m"
         )
 
+    # ── 速度控制栏 ──────────────────────────────────────────────
+
+    def _create_speed_control_bar(self) -> QWidget:
+        """创建仿真速度控制栏（时间加速 + 极速跳站）。"""
+        bar = QWidget()
+        bar.setObjectName("speedControlBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setSpacing(4)
+
+        # 标题
+        title = QLabel("仿真速度")
+        title.setObjectName("speedSectionLabel")
+        layout.addWidget(title)
+
+        # 速度按钮组（互斥）
+        self._speed_button_group = QButtonGroup(self)
+        self._speed_button_group.setExclusive(True)
+        for mult in (1, 2, 5, 10, 20):
+            btn = QPushButton(f"{mult}x")
+            btn.setObjectName("speedButton")
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda checked, m=mult: self._on_speed_multiplier_changed(m))
+            self._speed_button_group.addButton(btn, mult)
+            layout.addWidget(btn)
+            if mult == 1:
+                btn.setChecked(True)
+
+        # 分隔线
+        sep = QLabel("│")
+        sep.setObjectName("speedSeparator")
+        layout.addWidget(sep)
+
+        # 跳到下一站
+        self._fast_forward_button = QPushButton("跳到下一站")
+        self._fast_forward_button.setObjectName("speedBarPrimary")
+        self._fast_forward_button.clicked.connect(self._on_fast_forward)
+        layout.addWidget(self._fast_forward_button)
+
+        # 取消按钮（默认隐藏）
+        self._cancel_button = QPushButton("取消")
+        self._cancel_button.setObjectName("speedBarDanger")
+        self._cancel_button.clicked.connect(self._on_cancel_fast_forward)
+        self._cancel_button.setVisible(False)
+        layout.addWidget(self._cancel_button)
+
+        # 状态标签
+        self._speed_status_label = QLabel("")
+        self._speed_status_label.setObjectName("speedStatusLabel")
+        layout.addWidget(self._speed_status_label)
+
+        layout.addStretch()
+        return bar
+
     # ── 辅助方法 ──────────────────────────────────────────────────
 
     def _head_abs_position(self) -> float:
@@ -312,8 +374,8 @@ class MainWindow(QMainWindow):
     # ── 主更新循环 ──────────────────────────────────────────────
 
     def _update(self):
-        """定时更新"""
-        dt = 0.033  # 30fps 仿真步长
+        """定时更新 — 支持时间加速（Path C）和极速跳站（Path D）。"""
+        dt = 0.033  # 30fps 仿真步长（不变）
 
         # ── 网络模式：从外部系统注入数据 ──────────────────────
         if getattr(self, '_network_mode', False):
@@ -322,61 +384,231 @@ class MainWindow(QMainWindow):
             self._update_log_display()
             return
 
-        # ── 线路条件（头车绝对位置） ──────────────────────────────
+        # ── 确定批处理大小 ────────────────────────────────────
+        if self.fast_forward_active:
+            batch_size = 500
+        else:
+            batch_size = self.speed_multiplier
+
+        report = None
+        head_speed = 0.0
+        track_limit = 0.0
+        effective_limit = 0.0
+
+        for step_i in range(batch_size):
+            # ── 快进取消检查 ──────────────────────────────────
+            if self.fast_forward_cancelled:
+                self.fast_forward_active = False
+                self.fast_forward_cancelled = False
+                self._cancel_button.setVisible(False)
+                self._fast_forward_button.setEnabled(True)
+                self.recorder.record(
+                    "操作", "取消快进",
+                    self._head_abs_position(), self.controller.head_speed,
+                )
+                break
+
+            # ── 线路条件（头车绝对位置） ──────────────────────────
+            head_abs = self._head_abs_position()
+            head_speed = self.controller.head_speed
+
+            # ── 信号系统 ──────────────────────────────────────────
+            self.signal_system.update_aspects_by_occupancy(
+                self.track.signals, self.front_train_positions
+            )
+            self._record_signal_changes()
+
+            # 信号限速
+            track_limit = self.track.get_speed_limit_at(head_abs)
+            effective_limit = self.signal_system.get_effective_speed_limit(
+                head_abs, track_limit, self.track.signals
+            )
+
+            # ── 供电状态影响牵引能力 ──────────────────────────────
+            if not self.power_supply.can_traction():
+                self.controller.set_throttle(0.0)
+
+            # ── 自动驾驶 ──────────────────────────────────────────
+            if self.controller.running_mode == RunningMode.AUTOMATIC:
+                self.auto_drive.step()
+
+            # ── 推进多体动力学仿真 ────────────────────────────────
+            report = self.controller.step(dt)
+            self.power_supply.step(dt)
+            self.recorder.step(dt)
+            self.sim_time += dt
+
+            # ── 运行评价 ──────────────────────────────────────────
+            self.evaluator.update_max_speed(head_speed)
+            self._record_status_snapshot(effective_limit)
+
+            # ── 超速检测 ──────────────────────────────────────────
+            if head_speed > effective_limit + 0.5:
+                self.recorder.record(
+                    "超速",
+                    f"超速: {head_speed * 3.6:.1f} km/h",
+                    head_abs, head_speed,
+                )
+
+            # ── Path D 停止条件 ──────────────────────────────────
+            if self.fast_forward_active and self._check_fast_forward_stop():
+                self.fast_forward_active = False
+                self._cancel_button.setVisible(False)
+                self._fast_forward_button.setEnabled(True)
+                break
+
+            # ── UI 响应性（Path D 专用） ──────────────────────────
+            if self.fast_forward_active and step_i % 50 == 0:
+                QApplication.processEvents()
+
+        # ── UI 刷新（每定时器周期一次） ────────────────────────
+        if report is not None:
+            self.dashboard.refresh(report)
+            car_abs = [self.track_adapter.to_absolute(s.position)
+                       for s in self.controller.states]
+            self.track_view.set_train_position(car_abs, self.controller)
+            self._update_log_display()
+
+            # ── 更新力学分析面板 ───────────────────────────────────
+            self.force_panel.feed(
+                self.sim_time,
+                head_speed * 3.6,
+                report.max_coupler_force / 1000,
+                track_limit * 3.6,
+            )
+            self.force_panel.set_report(report)
+
+        # ── 更新速度状态标签 ──────────────────────────────────
+        self._update_speed_status()
+
+    # ── 时间加速控制 ─────────────────────────────────────────────
+
+    def _on_speed_multiplier_changed(self, multiplier: int):
+        """Path C：切换正常倍速。
+
+        快进中切换倍速会自动退出快进模式。
+        """
+        self.speed_multiplier = multiplier
+        if self.fast_forward_active:
+            self.fast_forward_active = False
+            self.fast_forward_cancelled = False
+            self._cancel_button.setVisible(False)
+            self._fast_forward_button.setEnabled(True)
+            self.recorder.record(
+                "操作", f"切换至 {multiplier}x，退出快进",
+                self._head_abs_position(), self.controller.head_speed,
+            )
+
+    def _on_fast_forward(self):
+        """Path D：极速跳站 —— 自动导航到下一个车站。"""
+        head_abs = self._head_abs_position()
+
+        # 查找前方车站
+        next_station = self.track.get_nearest_station_ahead(head_abs)
+        if next_station is None:
+            self.recorder.record(
+                "操作", "无前方车站可跳转",
+                head_abs, self.controller.head_speed,
+            )
+            return
+
+        # 设置目标并切换到自动驾驶
+        target = self.track_adapter.from_absolute(next_station.position)
+        self.auto_drive.set_target(target)
+        self.controller.set_running_mode(RunningMode.AUTOMATIC)
+
+        self.fast_forward_active = True
+        self.fast_forward_cancelled = False
+        self._cancel_button.setVisible(True)
+        self._fast_forward_button.setEnabled(False)
+
+        self.recorder.record(
+            "操作",
+            f"快进至 {next_station.name} ({next_station.position:.0f}m)",
+            head_abs, self.controller.head_speed,
+        )
+
+    def _on_cancel_fast_forward(self):
+        """取消正在进行的极速跳站。"""
+        self.fast_forward_cancelled = True
+
+    def _check_fast_forward_stop(self) -> bool:
+        """检查 Path D 停止条件。
+
+        Returns:
+            True 如果应停止快进。
+        """
         head_abs = self._head_abs_position()
         head_speed = self.controller.head_speed
+        distance = self.auto_drive.distance_to_target
 
-        # ── 信号系统 ──────────────────────────────────────────────
-        self.signal_system.update_aspects_by_occupancy(
-            self.track.signals, self.front_train_positions
-        )
-        self._record_signal_changes()
+        # 1. 到站
+        if distance is not None and distance <= 1.0:
+            self.recorder.record(
+                "操作", f"已到达目标车站",
+                head_abs, head_speed,
+            )
+            return True
 
-        # 信号限速（使用旧 TrackData 接口，传入绝对位置）
+        # 2. 停稳且足够接近
+        if self.controller.is_stopped and distance is not None and distance < 5.0:
+            self.recorder.record(
+                "操作", "列车已停稳",
+                head_abs, head_speed,
+            )
+            return True
+
+        # 3. 严重超速（> 10.8 km/h over）
         track_limit = self.track.get_speed_limit_at(head_abs)
         effective_limit = self.signal_system.get_effective_speed_limit(
-            head_abs, track_limit, self.track.signals
+            head_abs, track_limit, self.track.signals,
         )
+        if head_speed > effective_limit + 3.0:
+            self.controller.emergency_brake()
+            self.recorder.record(
+                "超速",
+                f"严重超速，快进中止: {head_speed * 3.6:.1f} km/h",
+                head_abs, head_speed,
+            )
+            return True
 
-        # ── 供电状态影响牵引能力 ──────────────────────────────────
-        if not self.power_supply.can_traction():
-            self.controller.set_throttle(0.0)
+        # 4. 线路终点
+        total_len = self.track.total_length()
+        if head_abs >= total_len - 10.0:
+            self.controller.emergency_brake()
+            self.recorder.record(
+                "操作", "已达线路终点，快进中止",
+                head_abs, head_speed,
+            )
+            return True
 
-        # ── 自动驾驶 ──────────────────────────────────────────────
-        if self.controller.running_mode == RunningMode.AUTOMATIC:
-            self.auto_drive.step()
+        # 5. 闯红灯
+        for sig in self.track.signals:
+            aspect = self.signal_system.get_signal_aspect(sig)
+            if (aspect == SignalAspect.RED
+                    and head_abs > sig.position
+                    and head_abs - sig.position < 50):
+                self.recorder.record(
+                    "红灯违规",
+                    f"闯红灯 {sig.signal_id}，快进中止",
+                    head_abs, head_speed,
+                )
+                return True
 
-        # ── 推进多体动力学仿真 ────────────────────────────────────
-        report = self.controller.step(dt)
-        self.power_supply.step(dt)
-        self.recorder.step(dt)
-        self.sim_time += dt
+        return False
 
-        # ── 运行评价 ──────────────────────────────────────────────
-        self.evaluator.update_max_speed(head_speed)
-        self._record_status_snapshot(effective_limit)
-
-        # ── 超速检测 ──────────────────────────────────────────────
-        if head_speed > effective_limit + 0.5:
-            self.recorder.record("超速",
-                f"超速: {head_speed * 3.6:.1f} km/h", head_abs, head_speed)
-
-        # ── 更新 UI ───────────────────────────────────────────────
-        self.dashboard.refresh(report)
-        car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
-        self.semantic_track_view.set_train_position(car_abs, self.controller)
-        self.track_view.set_train_position(car_abs, self.controller)
-        self.interlocking_view.set_train_position(car_abs, self.controller)
-        self._update_log_display()
-
-        # ── 更新力学分析面板 ───────────────────────────────────────
-        self.force_panel.feed(
-            self.sim_time,
-            head_speed * 3.6,
-            report.max_coupler_force / 1000,
-            track_limit * 3.6,
-        )
-        self.force_panel.set_report(report)
+    def _update_speed_status(self):
+        """刷新速度控制栏的状态标签。"""
+        if self.fast_forward_active:
+            dist = self.auto_drive.distance_to_target
+            if dist is not None:
+                self._speed_status_label.setText(f"快进中… 距目标 {dist:.0f} m")
+            else:
+                self._speed_status_label.setText("快进中…")
+        else:
+            self._speed_status_label.setText(
+                f"当前 {self.speed_multiplier}x  |  sim {self.sim_time:.1f}s"
+            )
 
     # ── 网络通信（外部系统模式） ────────────────────────────────
 
@@ -829,6 +1061,77 @@ class MainWindow(QMainWindow):
                 border-color: #dc2626;
                 color: #ffffff;
             }
+            /* ── 速度控制栏（在全局 QPushButton 之后，确保覆盖） ── */
+            #speedControlBar {
+                background: #ffffff;
+                border-bottom: 1px solid #d8dee8;
+            }
+            #speedSectionLabel {
+                color: #1d2939;
+                font-size: 16px;
+                font-weight: 800;
+                margin-right: 12px;
+            }
+            QPushButton#speedButton {
+                min-height: 30px;
+                min-width: 40px;
+                max-width: 52px;
+                border-radius: 5px;
+                border: 1px solid #cbd5e1;
+                background: #f8fafc;
+                color: #475467;
+                font-size: 14px;
+                font-weight: 700;
+                padding: 3px 6px;
+                margin: 0 2px;
+            }
+            QPushButton#speedButton:checked {
+                background: #2563eb;
+                color: #ffffff;
+                border-color: #2563eb;
+            }
+            QPushButton#speedButton:hover:!checked {
+                background: #eef2f6;
+                border-color: #94a3b8;
+            }
+            QPushButton#speedBarPrimary {
+                min-height: 30px;
+                border-radius: 5px;
+                border: 1px solid #2563eb;
+                background: #2563eb;
+                color: #ffffff;
+                font-size: 14px;
+                font-weight: 700;
+                padding: 3px 10px;
+                margin: 0 2px;
+            }
+            QPushButton#speedBarPrimary:hover {
+                background: #1d4ed8;
+            }
+            QPushButton#speedBarDanger {
+                min-height: 30px;
+                border-radius: 5px;
+                border: 1px solid #dc2626;
+                background: #dc2626;
+                color: #ffffff;
+                font-size: 14px;
+                font-weight: 700;
+                padding: 3px 10px;
+                margin: 0 2px;
+            }
+            QPushButton#speedBarDanger:hover {
+                background: #b91c1c;
+            }
+            #speedSeparator {
+                color: #cbd5e1;
+                font-size: 18px;
+                margin: 0 8px;
+            }
+            #speedStatusLabel {
+                color: #475467;
+                font-size: 14px;
+                font-weight: 650;
+            }
             #statusHint {
                 background: #fff7ed;
                 border: 1px solid #fed7aa;
@@ -837,6 +1140,29 @@ class MainWindow(QMainWindow):
                 padding: 10px 12px;
                 font-size: 16px;
                 font-weight: 700;
+            }
+            /* ── 控制面板紧凑按钮（在全局 QPushButton 之后） ── */
+            QPushButton#smallButton {
+                min-height: 26px;
+                min-width: 34px;
+                max-width: 44px;
+                border-radius: 4px;
+                border: 1px solid #cbd5e1;
+                background: #f8fafc;
+                color: #334155;
+                font-size: 12px;
+                font-weight: 700;
+                padding: 1px 3px;
+                margin: 1px;
+            }
+            QPushButton#smallButton:checked {
+                background: #2563eb;
+                color: #ffffff;
+                border-color: #2563eb;
+            }
+            QPushButton#smallButton:hover:!checked {
+                background: #eef2f6;
+                border-color: #94a3b8;
             }
             QTextEdit#logText {
                 background: #111827;

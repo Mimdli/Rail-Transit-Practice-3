@@ -5,13 +5,11 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="653bfbe5-b692-49f4-9a78-6528f7118584" name="更改" comment="">
+      <change beforePath="$PROJECT_DIR$/.idea/Rail-Transit-Practice-3.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/Rail-Transit-Practice-3.iml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/track/loader.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/track/loader.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/ui/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/main_window.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/ui/track_view.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/track_view.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/vehicle/auto_drive.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/vehicle/auto_drive.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_route.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_route.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_track.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_track.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/vehicle/dynamics_pipeline.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/vehicle/dynamics_pipeline.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/vehicle/vehicle_controller.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/vehicle/vehicle_controller.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -73,6 +71,7 @@
       <workItem from="1783502109893" duration="1506000" />
       <workItem from="1783507213776" duration="2960000" />
       <workItem from="1783523516139" duration="3117000" />
+      <workItem from="1783666423543" duration="2617000" />
     </task>
     <servers />
   </component>
@@ -81,6 +80,6 @@
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/Rail_Transit_Practice_3$main.coverage" NAME="main 覆盖结果" MODIFIED="1783510654759" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src" />
-    <SUITE FILE_PATH="coverage/main_py$main.coverage" NAME="main 覆盖结果" MODIFIED="1783574751656" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src" />
+    <SUITE FILE_PATH="coverage/main_py$main.coverage" NAME="main 覆盖结果" MODIFIED="1783669762034" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src" />
   </component>
 </project>
