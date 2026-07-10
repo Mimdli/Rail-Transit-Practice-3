@@ -252,23 +252,24 @@ class Dashboard(QWidget):
 
         # ── 力分量（从 report 取头车数据） ──────────────────────
         if report is not None and report.cars:
-            head = report.cars[0]
-            self.traction_indicator.set_value(f"{head.tractive_force / 1000:.0f}",
-                                              "#2563eb" if head.tractive_force > 1 else "#333")
-            self.brake_indicator.set_value(f"{abs(head.brake_force) / 1000:.0f}",
-                                           "#dc2626" if abs(head.brake_force) > 1 else "#333")
+            total_trac = sum(c.tractive_force for c in report.cars)
+            total_brake = sum(abs(c.brake_force) for c in report.cars)
+            self.traction_indicator.set_value(f"{total_trac / 1000:.0f}",
+                                              "#2563eb" if total_trac > 1 else "#333")
+            self.brake_indicator.set_value(f"{total_brake / 1000:.0f}",
+                                           "#dc2626" if total_brake > 1 else "#333")
 
             # 电空制动拆分
-            e_brake_kn = abs(head.electric_brake_force) / 1000
-            f_brake_kn = abs(head.friction_brake_force) / 1000
+            e_brake_kn = sum(abs(c.electric_brake_force) for c in report.cars) / 1000
+            f_brake_kn = sum(abs(c.friction_brake_force) for c in report.cars) / 1000
             self.electric_brake_label.setText(f"电制动: {e_brake_kn:.0f} kN")
             self.friction_brake_label.setText(f"空制动: {f_brake_kn:.0f} kN")
 
             # 黏着状态
-            if head.traction_limited:
+            if any(c.traction_limited for c in report.cars):
                 self.adhesion_label.setText("黏着: ⚠ 空转!")
                 self.adhesion_label.setStyleSheet("color: #dc2626; font-size: 17px; font-weight: 700;")
-            elif head.brake_limited:
+            elif any(c.brake_limited for c in report.cars):
                 self.adhesion_label.setText("黏着: ⚠ 滑行!")
                 self.adhesion_label.setStyleSheet("color: #dc2626; font-size: 17px; font-weight: 700;")
             else:

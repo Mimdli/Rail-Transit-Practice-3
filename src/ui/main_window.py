@@ -127,6 +127,7 @@ class MainWindow(QMainWindow):
             self.track_adapter, self.recorder, show_log=False,
         )
         self.control_panel.populate_routes(self.routes)
+        self.control_panel.consist_changed.connect(self._on_consist_changed)
 
         top_content = QWidget()
         top_layout = QHBoxLayout(top_content)
@@ -248,6 +249,15 @@ class MainWindow(QMainWindow):
         self.track_view.segment_clicked.connect(self._on_track_clicked)
         self.dashboard.refresh()
         self.force_panel.clear()
+
+    def _on_consist_changed(self, new_consist):
+        """编组变更后更新列车可视化。"""
+        car_abs = [self.track_adapter.to_absolute(s.position)
+                   for s in self.controller.states]
+        self.track_view.set_train_position(car_abs, self.controller)
+        self.dashboard.refresh()
+        self.recorder.record("系统",
+                             f"编组变更为 {len(new_consist)} 车")
 
     def _default_front_train_positions(self) -> list[float]:
         """根据线路长度放置一个演示前车，供闭塞逻辑展示"""

@@ -107,6 +107,26 @@ class VehicleController:
 
     # ── 状态管理 ───────────────────────────────────────────────
 
+    def replace_consist(self, new_consist: 'TrainConsist',
+                        track: 'ITrackQuery' = None):
+        """替换编组配置，保持当前头车位置不变。
+
+        Args:
+            new_consist: 新的编组配置。
+            track: 可选，线路查询接口（用于计算头车位置）。
+        """
+        self.consist = copy.deepcopy(new_consist)
+        if track is not None:
+            self.track = track
+        if self.states:
+            head_pos = self.states[0].position
+            start_seg = head_pos.segment_id
+            start_off = head_pos.offset
+        else:
+            start_seg = 1
+            start_off = 0.0
+        self.reset_states(start_segment_id=start_seg, start_offset=start_off)
+
     def reset_states(self, start_segment_id: int = 1, start_offset: float = 0.0,
                      pre_tension: bool = True):
         """（重新）初始化各节车状态。
