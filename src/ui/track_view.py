@@ -46,6 +46,7 @@ LINE_WIDTH = 9
 HOVER_WIDTH = 14
 TRAIN_HEIGHT = 18     # 列车矩形高度 (px)
 TRAIN_Y_OFFSET = -9   # 列车中心对齐轨道线（TRAIN_HEIGHT/2），实现重叠效果
+SWITCH_SLANT_PX = 30   # 道岔斜线水平偏移 (px)
 
 
 class SegmentItem(QGraphicsLineItem):
@@ -150,6 +151,7 @@ class TrackView(QGraphicsView):
         # 列车覆盖层（独立管理，方便清除重建）
         self._train_items = []
         self._target_items = []  # 目标标记（独立管理，不随列车刷新清除）
+        self._last_train_pos_key = None
         self.follow_train = True  # 视角是否跟随列车
 
         # 主线轨道 Y 基准坐标（分支线在此基础上叠加 BRANCH_OFFSET）
@@ -235,6 +237,17 @@ class TrackView(QGraphicsView):
             car_abs_positions: 每节车的绝对位置列表 (m)，从头车到尾车排列。
             controller: VehicleController 实例（用于获取编组信息）。
         """
+        if controller is None or not car_abs_positions:
+            self._clear_train_overlay()
+            self._last_train_pos_key = None
+            return
+
+        pos_key = tuple(round(p, 1) for p in car_abs_positions)
+        if pos_key == self._last_train_pos_key:
+            return
+        self._last_train_pos_key = pos_key
+
+
         self._clear_train_overlay()
 
         if controller is None or not car_abs_positions:
@@ -302,6 +315,7 @@ class TrackView(QGraphicsView):
     def _clear_train_overlay(self):
         """清除上次绘制的列车图形。"""
         for item in self._train_items:
+            # 父图元移除后，子标签会自动脱离 scene，避免重复 remove 触发 Qt 警告。
             if item.scene() is self.scene:
                 self.scene.removeItem(item)
         self._train_items.clear()

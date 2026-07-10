@@ -4,6 +4,7 @@
   - 车站表 (Sheet 11) → Station
   - 站台表 (Sheet 12) → Platform
   - Seg表  (Sheet 3)  → Segment
+  - 信号机表 (Sheet 9) → Signal
   - 静态限速表 (Sheet 15) → SpeedLimit
   - 坡度表 (Sheet 14) → Gradient
 
@@ -114,6 +115,7 @@ class TrackLoader:
         self._load_platforms(wb)
         self._load_speed_limits(wb)
         self._load_gradients(wb)
+        self._load_signals(wb)
 
         wb.release_resources()
 
@@ -384,7 +386,7 @@ class TrackLoader:
             start_offset = _cm_to_m(row[2])         # 起点偏移 (cm → m) (col 2)
             end_seg = _to_int(row[3])               # 坡度终点所处seg编号 (col 3)
             end_offset = _cm_to_m(row[4])           # 终点偏移 (cm → m) (col 4)
-            grad_val = _to_float(row[11])           # 坡度值 (col 11, ‰)
+            grad_val = _to_float(row[11]) / 10.0    # 坡度值 (0.1‰ → ‰)
             direction = _parse_direction(row[12])   # 倾斜方向 (col 12)
 
             # 对于起终点在不同 seg 的坡度，拆分为两段
@@ -403,3 +405,32 @@ class TrackLoader:
                     gradient=grad_val,
                     direction=direction,
                 ))
+
+    def _load_signals(self, wb):
+        """加载 信号机表 (Sheet 9)"""
+        try:
+            sheet = wb.sheet_by_name("信号机表")
+        except xlrd.biffh.XLRDError:
+            return
+
+        td = self.track_data
+        for r in range(4, sheet.nrows):
+            row = _get_row(sheet, r)
+            signal_id = str(row[1]).strip()
+            if not signal_id:
+                continue
+
+            seg_id = _to_int(row[4])           # 所处Seg编号 (col 4)
+            if seg_id == 0:
+                continue
+
+            # Excel 中偏移量单位为 cm，TrackData 内部统一使用 m。
+            offset = _cm_to_m(row[5])          # 所处Seg偏移量 (col 5)
+            direction = _parse_direction(row[6])  # 防护方向 (col 6)
+
+            td.signals.append(Signal(
+                signal_id=signal_id,
+                direction=direction,
+                seg_id=seg_id,
+                offset=offset,
+            ))

@@ -1,7 +1,9 @@
 """运行事件记录器"""
 
-from dataclasses import dataclass, field
-from typing import List
+import csv
+import os
+from dataclasses import dataclass
+from typing import List, Optional
 from datetime import datetime
 
 
@@ -18,17 +20,28 @@ class LogEvent:
 class Recorder:
     """事件记录器"""
 
-    def __init__(self):
+    def __init__(self, log_dir: str = "logs"):
         self.events: List[LogEvent] = []
         self._start_time: float = 0.0
+        self.log_dir = log_dir
+        self.log_path: Optional[str] = None
+        self._log_file = None
+        self._writer = None
+        self.is_active: bool = False
 
     def start(self):
         """开始记录"""
+        if self.is_active:
+            return
         self.events.clear()
         self._start_time = 0.0
+        self.is_active = True
+        self._open_log_file()
 
     def record(self, event_type: str, description: str, position: float = 0.0, speed: float = 0.0):
         """记录一条事件"""
+        if not self.is_active:
+            return
         event = LogEvent(
             timestamp=self._start_time,
             event_type=event_type,
@@ -37,9 +50,12 @@ class Recorder:
             speed=speed,
         )
         self.events.append(event)
+        self._write_event(event)
 
     def step(self, dt: float):
         """更新时间"""
+        if not self.is_active:
+            return
         self._start_time += dt
 
     def get_events_by_type(self, event_type: str) -> List[LogEvent]:
@@ -67,3 +83,37 @@ class Recorder:
         """清除所有记录"""
         self.events.clear()
         self._start_time = 0.0
+
+    def close(self):
+        """关闭日志文件"""
+        if self._log_file:
+            self._log_file.close()
+            self._log_file = None
+            self._writer = None
+
+    def _build_log_path(self, log_dir: str) -> str:
+        """生成本次运行的日志文件路径"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return os.path.join(log_dir, f"run_{timestamp}.csv")
+
+    def _open_log_file(self):
+        """打开 CSV 日志文件并写入表头"""
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.log_path = self._build_log_path(self.log_dir)
+        self._log_file = open(self.log_path, "w", newline="", encoding="utf-8-sig")
+        self._writer = csv.writer(self._log_file)
+        self._writer.writerow(["timestamp", "event_type", "description", "position_m", "speed_m_s"])
+        self._log_file.flush()
+
+    def _write_event(self, event: LogEvent):
+        """把事件同步写入 CSV，避免异常退出时丢失日志"""
+        if not self._writer or not self._log_file:
+            return
+        self._writer.writerow([
+            f"{event.timestamp:.1f}",
+            event.event_type,
+            event.description,
+            f"{event.position:.3f}",
+            f"{event.speed:.3f}",
+        ])
+        self._log_file.flush()

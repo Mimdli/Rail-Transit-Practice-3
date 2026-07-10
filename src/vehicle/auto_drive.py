@@ -507,4 +507,6 @@ class AutoDriveController:
 
         通过 track.to_absolute 实现跨区段距离计算。
         """
-        return self._track.to_absolute(target) - self._track.to_absolute(current)
+        return self.controller.direction * (
+            self._track.to_absolute(target) - self._track.to_absolute(current)
+        )

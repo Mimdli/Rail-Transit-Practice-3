@@ -84,7 +84,8 @@ class PerCarDynamicsPipeline:
 
     def step(self, consist: TrainConsist, states: List[CarState],
              dt: float, track: ITrackQuery, env: IEnvironmentQuery,
-             throttle: float = 0.0, brake_level: float = 0.0
+             throttle: float = 0.0, brake_level: float = 0.0,
+             direction: int = 1,
              ) -> Tuple[List[CarState], dict]:
         """执行一个外部仿真步。
 
@@ -101,6 +102,7 @@ class PerCarDynamicsPipeline:
             (new_states, summary) — 更新后的状态列表和本步摘要。
         """
         n_cars = len(consist)
+        direction = 1 if direction >= 0 else -1
         if len(states) != n_cars:
             raise ValueError(f"states 数量 ({len(states)}) 与编组 ({n_cars}) 不匹配")
 
@@ -141,12 +143,13 @@ class PerCarDynamicsPipeline:
             # Step 2 — 计算外部力（每微步重新计算，因速度/位置已变化）
             external_forces, t_limited, b_limited, electric_brakes, friction_brakes = \
                 self._precompute_external_forces(
-                    consist, states, track, eff_throttle, eff_brake, adhesion
+                    consist, states, track, eff_throttle, eff_brake, adhesion,
+                    direction,
                 )
 
             # Step 3 — 计算车钩力（每个微步内必须重新计算！）
             coupler_forces = self._calc_all_coupler_forces(
-                consist, states, abs_positions
+                consist, states, abs_positions, direction
             )
 
             # Step 3.5 — 限速软约束（基于力的限速执行，替代硬钳位）
@@ -173,9 +176,9 @@ class PerCarDynamicsPipeline:
                 # 速度不能为负（列车不倒行，除非特殊情况）
                 if car.velocity < 0.0:
                     car.velocity = 0.0
-                # 更新位置
-                abs_positions[i] += car.velocity * dt_phy
+                # velocity 始终表示沿运行方向的非负速度，direction 决定里程增减。
                 old_seg_id = car.position.segment_id
+                abs_positions[i] += direction * car.velocity * dt_phy
                 car.position = track.from_absolute(abs_positions[i], hint_seg_id=old_seg_id)
                 car.acceleration = a
 
@@ -206,7 +209,7 @@ class PerCarDynamicsPipeline:
     # ── 内部方法 ───────────────────────────────────────────────
 
     def _precompute_external_forces(self, consist, states, track,
-                                     throttle, brake, adhesion):
+                                     throttle, brake, adhesion, direction=1):
         """预计算外部力（阻力+牵引力+电空制动）。
 
         黏着限制对总制动力统一施加（通过 calc_brake_force）。
@@ -223,7 +226,8 @@ class PerCarDynamicsPipeline:
         friction_mag_list = []
         for i, car_config in enumerate(consist):
             s = states[i]
-            gradient = track.get_gradient(s.position)
+            # 反向运行时同一物理坡度对列车运行方向的符号相反。
+            gradient = track.get_gradient(s.position) * direction
             is_tunnel = track.get_is_tunnel(s.position)
             curve_radius = track.get_curve_radius(s.position)
 
@@ -246,7 +250,8 @@ class PerCarDynamicsPipeline:
         return (forces, traction_limited_list, brake_limited_list,
                 electric_mag_list, friction_mag_list)
 
-    def _calc_all_coupler_forces(self, consist, states, abs_positions):
+    def _calc_all_coupler_forces(self, consist, states, abs_positions,
+                                 direction=1):
         """计算所有相邻车对之间的车钩力。
 
         abs_positions[i] 是第 i 节车在线路上的绝对里程。
@@ -257,7 +262,8 @@ class PerCarDynamicsPipeline:
         for i in range(n - 1):
             # car i 是前车（更前方，更大 offset），car i+1 是后车
             # Δx = 前车位置 - 后车位置 - 车长（前车长度）
-            delta_x = abs_positions[i] - abs_positions[i + 1] - consist[i].length
+            delta_x = (direction * (abs_positions[i] - abs_positions[i + 1])
+                       - consist[i].length)
             # Δv = v_rear - v_front（方案定义：后方减前方）
             delta_v = states[i + 1].velocity - states[i].velocity
             f = _calc_coupler_force_raw(delta_x, delta_v, self.coupler_config)

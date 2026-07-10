@@ -111,6 +111,8 @@ class VehicleController:
 
         # 运行模式
         self.running_mode: RunningMode = RunningMode.MANUAL
+        # 物理线路方向：1 表示里程递增，-1 表示里程递减。
+        self.direction: int = 1
 
         # 初始化状态
         self.reset_states()
@@ -429,7 +431,7 @@ class VehicleController:
         # 头车 (i=0) 在最前方（最大 offset），后续车依次在后方（递减 offset）
         head_offset = start_offset
         for i, car_config in enumerate(self.consist):
-            offset = head_offset - i * (car_config.length + slack)
+            offset = head_offset - self.direction * i * (car_config.length + slack)
             self.states.append(CarState(
                 position=TrackPosition(segment_id=start_segment_id, offset=offset),
                 velocity=0.0,
@@ -552,7 +554,7 @@ class VehicleController:
         self.states, summary = self.pipeline.step(
             self.consist, self.states, dt,
             self.track, self.env,
-            throttle, brake,
+            throttle, brake, direction=self.direction,
         )
 
         # 更新时钟
@@ -595,7 +597,7 @@ class VehicleController:
             state = self.states[i]
 
             # 计算当前力分量（用于报告）
-            gradient = self.track.get_gradient(state.position)
+            gradient = self.track.get_gradient(state.position) * self.direction
             is_tunnel = self.track.get_is_tunnel(state.position)
             curve_radius = self.track.get_curve_radius(state.position)
             adhesion = self.env.get_adhesion_coefficient(self.states[0].position)

@@ -120,6 +120,7 @@ def test_excel_loader_loads_all_sheets():
     assert len(td.platforms) > 0, "应加载站台数据"
     assert len(td.speed_limits) > 0, "应加载限速数据"
     assert len(td.gradients) > 0, "应加载坡度数据"
+    assert len(td.signals) > 0, "应加载信号机数据"
 
 
 def test_excel_segments_have_length():
@@ -162,6 +163,21 @@ def test_excel_speed_limits_reasonable():
     for sl in td.speed_limits:
         assert 5.0 <= sl.speed_limit <= 30.0, \
             f"限速值异常: {sl.speed_limit:.1f} m/s (Seg {sl.seg_id})"
+
+
+def test_excel_signals_have_coordinates():
+    loader = TrackLoader()
+    xls_path = os.path.join(os.path.dirname(__file__),
+                            "..", "resource", "线路数据(1).xls")
+    if not os.path.exists(xls_path):
+        print("SKIP: 线路数据文件不存在")
+        return
+
+    td = loader.load_from_excel(xls_path)
+    assert len(td.signals) > 0, "应加载信号机数据"
+    for sig in td.signals:
+        assert sig.seg_id > 0, f"信号机 {sig.signal_id} 应有关联 Seg"
+        assert sig.position >= 0.0, f"信号机 {sig.signal_id} 应计算绝对位置"
 
 
 def test_excel_coordinates_continuous():
@@ -270,6 +286,7 @@ if __name__ == "__main__":
         ("excel_segments_have_length", test_excel_segments_have_length),
         ("excel_stations_have_names", test_excel_stations_have_names),
         ("excel_speed_limits_reasonable", test_excel_speed_limits_reasonable),
+        ("excel_signals_have_coordinates", test_excel_signals_have_coordinates),
         ("excel_coordinates_continuous", test_excel_coordinates_continuous),
         ("db_loader_loads_all_tables", test_db_loader_loads_all_tables),
         ("db_loader_matches_excel", test_db_loader_matches_excel),

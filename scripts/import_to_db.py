@@ -50,6 +50,31 @@ def _get_row(sheet, row_idx):
     return [sheet.cell_value(row_idx, c) for c in range(sheet.ncols)]
 
 
+def _parse_direction(hex_val) -> str:
+    """解析方向码: 0x55=down, 0xaa=up"""
+    text = str(hex_val).strip().lower()
+    if text in ("0x55", "85"):
+        return "down"
+    if text in ("0xaa", "170"):
+        return "up"
+    return ""
+
+
+def build_station_by_platform(station_sheet) -> dict[int, int]:
+    """根据车站表建立 platform_id → station_id 映射"""
+    mapping = {}
+    for r in range(4, station_sheet.nrows):
+        row = _get_row(station_sheet, r)
+        station_id = _to_int(row[0])
+        if station_id == 0:
+            continue
+        for c in range(3, min(13, station_sheet.ncols)):
+            platform_id = _to_int(row[c])
+            if platform_id > 0:
+                mapping[platform_id] = station_id
+    return mapping
+
+
 def import_segments(cur, sheet):
     """导入 Seg表"""
     count = 0
@@ -79,7 +104,7 @@ def import_segments(cur, sheet):
 def import_stations(cur, sheet):
     """导入车站表"""
     count = 0
-    for r in range(3, sheet.nrows):
+    for r in range(4, sheet.nrows):
         row = _get_row(sheet, r)
         sid = _to_int(row[0])
         if sid == 0:
@@ -88,17 +113,20 @@ def import_stations(cur, sheet):
         if not name:
             continue
         cur.execute("""
-            INSERT OR IGNORE INTO stations (station_id, name, position)
+            INSERT INTO stations (station_id, name, position)
             VALUES (?, ?, ?)
+            ON CONFLICT(station_id) DO UPDATE SET
+                name = excluded.name
         """, (sid, name, 0.0))
         count += 1
     return count
 
 
-def import_platforms(cur, sheet):
+def import_platforms(cur, sheet, station_by_platform=None):
     """导入站台表"""
+    station_by_platform = station_by_platform or {}
     count = 0
-    for r in range(3, sheet.nrows):
+    for r in range(4, sheet.nrows):
         row = _get_row(sheet, r)
         pid = _to_int(row[0])
         if pid == 0:
@@ -106,13 +134,32 @@ def import_platforms(cur, sheet):
         pos = _parse_km(row[1])
         seg_id = _to_int(row[2])
         direction = "down" if str(row[3]).strip().lower() in ("0x55", "85") else "up"
+        station_id = station_by_platform.get(pid, 0)
         cur.execute("""
-            INSERT OR IGNORE INTO platforms
+            INSERT INTO platforms
             (platform_id, position, seg_id, direction, station_id)
             VALUES (?, ?, ?, ?, ?)
-        """, (pid, pos, seg_id, direction, 0))
+            ON CONFLICT(platform_id) DO UPDATE SET
+                position = excluded.position,
+                seg_id = excluded.seg_id,
+                direction = excluded.direction,
+                station_id = excluded.station_id
+        """, (pid, pos, seg_id, direction, station_id))
         count += 1
     return count
+
+
+def update_station_positions(cur):
+    """用所属站台的最小非零公里标回填车站位置"""
+    cur.execute("""
+        UPDATE stations
+        SET position = COALESCE((
+            SELECT MIN(platforms.position)
+            FROM platforms
+            WHERE platforms.station_id = stations.station_id
+              AND platforms.position > 0
+        ), position)
+    """)
 
 
 def import_speed_limits(cur, sheet):
@@ -148,7 +195,7 @@ def import_gradients(cur, sheet):
         start_cm = _to_float(row[2])
         end_seg = _to_int(row[3])
         end_cm = _to_float(row[4])
-        grad_val = _to_float(row[11])
+        grad_val = _to_float(row[11]) / 10.0
         direction = "down" if str(row[12]).strip().lower() in ("0x55", "85") else "up"
 
         # 起终点在同一 seg
@@ -160,9 +207,15 @@ def import_gradients(cur, sheet):
 
         for seg_id, s_off, e_off in segs:
             cur.execute("""
-                INSERT OR IGNORE INTO gradients
+                INSERT INTO gradients
                 (gradient_id, seg_id, start_offset, end_offset, gradient, direction)
                 VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(gradient_id) DO UPDATE SET
+                    seg_id = excluded.seg_id,
+                    start_offset = excluded.start_offset,
+                    end_offset = excluded.end_offset,
+                    gradient = excluded.gradient,
+                    direction = excluded.direction
             """, (count, seg_id, s_off / 100.0, e_off / 100.0, grad_val, direction))
             count += 1
     return count
@@ -171,7 +224,7 @@ def import_gradients(cur, sheet):
 def import_signals(cur, sheet):
     """导入信号机表"""
     count = 0
-    for r in range(3, sheet.nrows):
+    for r in range(4, sheet.nrows):
         row = _get_row(sheet, r)
         idx = _to_int(row[0])
         if idx == 0:
@@ -179,14 +232,23 @@ def import_signals(cur, sheet):
         name = str(row[1]).strip()
         if not name:
             continue
-        seg_id = _to_int(row[2])
-        offset_cm = _to_float(row[3])
-        sig_type = str(row[4]).strip()
-        direction = str(row[5]).strip()
+        sig_type = str(_to_int(row[2])).strip()
+        seg_id = _to_int(row[4])
+        if seg_id == 0:
+            continue
+        offset_cm = _to_float(row[5])
+        direction = _parse_direction(row[6])
+
+        # 同名信号机按 Excel 最新数据更新，避免旧列号导入造成错位。
         cur.execute("""
-            INSERT OR IGNORE INTO signals
+            INSERT INTO signals
             (signal_id, seg_id, offset, signal_type, direction)
             VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(signal_id) DO UPDATE SET
+                seg_id = excluded.seg_id,
+                offset = excluded.offset,
+                signal_type = excluded.signal_type,
+                direction = excluded.direction
         """, (name, seg_id, offset_cm / 100.0, sig_type, direction))
         count += 1
     return count
@@ -210,6 +272,10 @@ def main():
     sheet_map = {s: wb.sheet_by_name(s) for s in wb.sheet_names()}
 
     # 导入线路拓扑
+    station_by_platform = {}
+    if "车站表" in sheet_map:
+        station_by_platform = build_station_by_platform(sheet_map["车站表"])
+
     if "Seg表" in sheet_map:
         n = import_segments(cur, sheet_map["Seg表"])
         print(f"segments: {n} 条")
@@ -217,7 +283,8 @@ def main():
         n = import_stations(cur, sheet_map["车站表"])
         print(f"stations: {n} 条")
     if "站台表" in sheet_map:
-        n = import_platforms(cur, sheet_map["站台表"])
+        n = import_platforms(cur, sheet_map["站台表"], station_by_platform)
+        update_station_positions(cur)
         print(f"platforms: {n} 条")
     if "静态限速表" in sheet_map:
         n = import_speed_limits(cur, sheet_map["静态限速表"])
