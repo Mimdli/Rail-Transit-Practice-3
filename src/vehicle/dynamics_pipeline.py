@@ -32,23 +32,28 @@ class PerCarDynamicsPipeline:
 
     七步闭环（每个微步内）:
         1. 查询线路（每节车当前位置的限速/坡度/隧道）
-        2. 聚合单车外力（复用预计算的外部力）
-        3. 计算车钩力（每个微步内必须重新计算！）
-        4. 聚合单车合力
-        5. 积分更新状态（使用微步长 dt_phy）
-        6. 限速裁剪
+        2. 聚合单车外力（牵引/制动/阻力）
+        3. 限速软约束（基于力的超速惩罚，替代硬钳位）
+        4. 计算车钩力（每个微步内必须重新计算！）
+        5. 聚合单车合力
+        6. 积分更新状态（使用微步长 dt_phy）
         7. （循环结束后）生成报告
     """
 
     DT_PHY_MAX = 0.001  # 微步长上限（秒），硬约束，不可调大
 
     def __init__(self, coupler_config: CouplerConfig = None,
-                 tau_traction: float = 0.3, tau_brake: float = 0.5):
+                 tau_traction: float = 0.3, tau_brake: float = 0.5,
+                 speed_limit_tau: float = 1.0):
         """
         Args:
             coupler_config: 车钩参数配置，默认使用 DEFAULT_COUPLER_CONFIG。
             tau_traction: 牵引作动时间常数 (s)，模拟电机建磁迟滞，典型值 0.3s。
             tau_brake: 制动作动时间常数 (s)，模拟气缸充气迟滞，典型值 0.5s。
+            speed_limit_tau: 限速软约束时间常数 (s)。
+                当某节车超速时，施加制动力使其在 ~3τ 内收敛到限速。
+                默认 1.0s：超速 5m/s → a≈-5m/s² → F≈265kN（单节车，不超车钩极限）。
+                设为 0 可恢复硬钳位行为（不推荐）。
         """
         self.coupler_config = coupler_config or DEFAULT_COUPLER_CONFIG
         self.step_counter: int = 0
@@ -58,6 +63,9 @@ class PerCarDynamicsPipeline:
         self.filtered_brake: float = 0.0
         self.tau_traction: float = tau_traction
         self.tau_brake: float = tau_brake
+
+        # 限速软约束（基于力的限速执行，替代硬钳位）
+        self.speed_limit_tau: float = speed_limit_tau
 
     def reset_filters(self, throttle: bool = True, brake: bool = True):
         """重置 PT1 滤波器状态，用于驾驶指令突变时快速响应。
@@ -141,6 +149,15 @@ class PerCarDynamicsPipeline:
                 consist, states, abs_positions
             )
 
+            # Step 3.5 — 限速软约束（基于力的限速执行，替代硬钳位）
+            # 硬钳位（直接修改速度）会导致车钩力突变：头车进入低限速区
+            # 时速度被瞬间砍掉，后车仍在高速区，Δv 巨大 → 阻尼力拉满车钩。
+            # 改为施加与超速量成比例的制动力，力经车钩传递使全车平滑减速。
+            if self.speed_limit_tau > 0:
+                self._apply_speed_limit_forces(
+                    external_forces, speed_limits, consist, states
+                )
+
             # Step 4 — 聚合单车合力
             net_forces = self._calc_net_forces(
                 external_forces, coupler_forces, n_cars
@@ -161,12 +178,6 @@ class PerCarDynamicsPipeline:
                 old_seg_id = car.position.segment_id
                 car.position = track.from_absolute(abs_positions[i], hint_seg_id=old_seg_id)
                 car.acceleration = a
-
-            # Step 6 — 限速裁剪
-            for i in range(n_cars):
-                limit = speed_limits[i]
-                if states[i].velocity > limit:
-                    states[i].velocity = limit
 
         # ── Step 7 — 生成摘要 ──────────────────────────────────
         # 微步循环中最后一步的车钩力和合力（用于 ForceReport）
@@ -265,4 +276,35 @@ class PerCarDynamicsPipeline:
             if i < n_cars - 1:
                 net[i] -= coupler_forces[i]
         return net
+
+    def _apply_speed_limit_forces(self, external_forces, speed_limits,
+                                   consist, states):
+        """限速软约束：对超速车厢施加与超速量成比例的制动力。
+
+        替代 Step 6 的硬钳位（直接修改速度值）。力通过车钩模型传递，
+        使全车在进入低限速区时平滑减速，而非单节车速度被瞬间截断。
+
+        物理模型:
+            F_limit = -m_eff × max(0, v - v_limit) / τ
+
+        其中 τ = speed_limit_tau 控制约束强度：
+            - τ = 1.0s → 超速 5m/s 时 a ≈ -5 m/s², F ≈ 265 kN（不超车钩极限）
+            - τ = 0.5s → 更激进，可能接近车钩极限但响应更快
+            - τ = 2.0s → 更柔和，允许暂时超速但平稳过渡
+
+        Args:
+            external_forces: 每节车的外部力列表（原地修改）。
+            speed_limits: 每节车当前位置的限速 (m/s)。
+            consist: 列车编组配置。
+            states: 各节车当前状态。
+        """
+        for i, car_config in enumerate(consist):
+            limit = speed_limits[i]
+            v = states[i].velocity
+            if v > limit:
+                overshoot = v - limit
+                effective_mass = car_config.mass * car_config.rotary_mass_factor
+                # 力方向与运动方向相反（制动力），通过力模型而非直接改速度
+                f_limit = -effective_mass * overshoot / self.speed_limit_tau
+                external_forces[i] += f_limit
 
