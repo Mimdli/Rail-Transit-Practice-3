@@ -65,8 +65,8 @@ class ControlPanel(QWidget):
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(6)
-        layout.setContentsMargins(10, 12, 12, 12)
+        layout.setSpacing(5)
+        layout.setContentsMargins(8, 8, 10, 8)
         self.setObjectName("controlPanel")
 
         # === 驾驶控制（2×2 网格，紧凑布局） ===
@@ -74,9 +74,9 @@ class ControlPanel(QWidget):
         drive_group.setObjectName("panelGroup")
         drive_grid = QGridLayout(drive_group)
         drive_grid.setSpacing(5)
-        drive_grid.setContentsMargins(8, 14, 8, 8)
+        drive_grid.setContentsMargins(8, 12, 8, 7)
 
-        btn_traction = QPushButton("牵引 (FULL)")
+        btn_traction = QPushButton("牵引")
         btn_traction.setObjectName("primaryButton")
         btn_traction.clicked.connect(self._on_traction)
         drive_grid.addWidget(btn_traction, 0, 0)
@@ -102,7 +102,7 @@ class ControlPanel(QWidget):
         door_group.setObjectName("panelGroup")
         door_layout = QHBoxLayout(door_group)
         door_layout.setSpacing(5)
-        door_layout.setContentsMargins(8, 14, 8, 8)
+        door_layout.setContentsMargins(8, 12, 8, 7)
 
         for text, slot, obj_name in [
             ("开左门", self._on_open_left_door, ""),
@@ -121,8 +121,8 @@ class ControlPanel(QWidget):
         setting_group = QGroupBox("列车设置")
         setting_group.setObjectName("panelGroup")
         setting_layout = QHBoxLayout(setting_group)
-        setting_layout.setSpacing(8)
-        setting_layout.setContentsMargins(8, 14, 8, 8)
+        setting_layout.setSpacing(6)
+        setting_layout.setContentsMargins(8, 12, 8, 7)
 
         self.load_combo = QComboBox()
         self.load_combo.setObjectName("dataSourceCombo")
@@ -149,8 +149,8 @@ class ControlPanel(QWidget):
         route_group = QGroupBox("进路选择")
         route_group.setObjectName("panelGroup")
         route_layout = QHBoxLayout(route_group)
-        route_layout.setSpacing(8)
-        route_layout.setContentsMargins(8, 14, 8, 8)
+        route_layout.setSpacing(6)
+        route_layout.setContentsMargins(8, 12, 8, 7)
 
         self.route_combo = QComboBox()
         self.route_combo.setObjectName("dataSourceCombo")
@@ -165,8 +165,8 @@ class ControlPanel(QWidget):
         consist_group = QGroupBox("编组配置")
         consist_group.setObjectName("panelGroup")
         consist_layout = QVBoxLayout(consist_group)
-        consist_layout.setSpacing(4)
-        consist_layout.setContentsMargins(8, 14, 8, 8)
+        consist_layout.setSpacing(5)
+        consist_layout.setContentsMargins(8, 12, 8, 7)
 
         # 预设按钮行
         preset_hlayout = QHBoxLayout()
@@ -214,7 +214,7 @@ class ControlPanel(QWidget):
         layout.addWidget(consist_group)
 
         # === 操作提示 ===
-        self.status_label = QLabel("就绪 — 点击「牵引」发车")
+        self.status_label = QLabel("就绪")
         self.status_label.setObjectName("statusHint")
         layout.addWidget(self.status_label)
 

@@ -21,8 +21,8 @@ class DispatchLineView(QGraphicsView):
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         self.setRenderHint(QPainter.Antialiasing, True)
-        self.setMinimumHeight(280)
-        self.setMaximumHeight(330)
+        self.setMinimumHeight(220)
+        self.setMaximumHeight(260)
         self.setObjectName("dispatchLineView")
 
     def set_manager(self, manager: DispatchManager):
@@ -42,12 +42,12 @@ class DispatchLineView(QGraphicsView):
         )
         width = max(self.viewport().width() - 30, 900)
         left, right = 90.0, width - 70.0
-        down_y, up_y = 145.0, 215.0
+        down_y, up_y = 120.0, 180.0
 
-        self._add_text("全线运行态势", left, 18, 16, QColor("#172033"), True)
+        self._add_text("全线运行态势", left, 16, 15, QColor("#172033"), True)
         self._add_text(
             "双线实时显示 · 灰色空闲 · 橙色锁闭 · 红色占用",
-            left, 48, 10, QColor("#475467"), False,
+            left, 42, 9, QColor("#475467"), False,
         )
         self._add_text("下行 →", 22, down_y - 8, 10, QColor("#2563eb"), True)
         self._add_text("上行 ←", 22, up_y - 8, 10, QColor("#0f766e"), True)
@@ -74,7 +74,7 @@ class DispatchLineView(QGraphicsView):
             x = left + station.position / total * (right - left)
             self._scene.addLine(x, down_y - 20, x, up_y + 20,
                                 QPen(QColor("#334155"), 2))
-            self._add_text(station.name, x - 24, 88, 10,
+            self._add_text(station.name, x - 24, 72, 9,
                            QColor("#1d2939"), True)
 
         palette = ["#2563eb", "#7c3aed", "#0891b2", "#0f766e", "#9333ea"]
@@ -93,7 +93,7 @@ class DispatchLineView(QGraphicsView):
                 f"{runtime.train_id} {runtime.speed_kmh:.0f}",
                 x + 12, label_y, 9, color, True)
 
-        self._scene.setSceneRect(0, 0, width, 290)
+        self._scene.setSceneRect(0, 0, width, 230)
 
     def resizeEvent(self, event):  # noqa: N802 - Qt API
         super().resizeEvent(event)
@@ -127,8 +127,8 @@ class DispatchView(QWidget):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
 
         header = QHBoxLayout()
         title = QLabel("调度中心")
@@ -145,7 +145,9 @@ class DispatchView(QWidget):
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self._build_command_panel())
         splitter.addWidget(self._build_train_table())
-        splitter.setSizes([360, 980])
+        splitter.setSizes([320, 1040])
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, False)
         root.addWidget(splitter, stretch=1)
 
         self.feedback = QLabel("就绪 — 添加列车并设置交路后即可发车")
@@ -154,10 +156,10 @@ class DispatchView(QWidget):
 
     def _build_command_panel(self):
         panel = QWidget()
-        panel.setMaximumWidth(410)
+        panel.setMaximumWidth(360)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 8, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
 
         add_group = QGroupBox("列车编组")
         form = QFormLayout(add_group)
@@ -225,7 +227,7 @@ class DispatchView(QWidget):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(36)
+        self.table.verticalHeader().setDefaultSectionSize(32)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         for column, width in enumerate((70, 92, 64, 92, 100, 90, 150)):

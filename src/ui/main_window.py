@@ -9,7 +9,6 @@ from PyQt5.QtCore import QTimer, Qt
 
 from src.ui.dashboard import Dashboard
 from src.ui.controls import ControlPanel
-from src.ui.interlocking_view import InterlockingViewWidget
 from src.ui.semantic_track_view import SemanticTrackViewWidget
 from src.ui.track_view import TrackViewWidget
 from src.ui.charts import ForcePanel
@@ -38,7 +37,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("轨道交通模拟系统")
-        self.setMinimumSize(1400, 860)
+        self.setMinimumSize(1360, 820)
 
         # 初始化核心模块
         self._init_modules()
@@ -156,12 +155,13 @@ class MainWindow(QMainWindow):
         control_scroll.setWidgetResizable(True)
         control_scroll.setFrameShape(QFrame.NoFrame)
         control_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        control_scroll.setMinimumWidth(320)
         control_scroll.setWidget(self.control_panel)
         top_layout.addWidget(control_scroll, stretch=2)
 
         sim_splitter.addWidget(top_content)
         sim_splitter.addWidget(self._create_log_panel())
-        sim_splitter.setSizes([640, 180])
+        sim_splitter.setSizes([690, 150])
         sim_splitter.setCollapsible(0, False)
         sim_splitter.setCollapsible(1, True)
         sim_layout.addWidget(sim_splitter)
@@ -169,7 +169,6 @@ class MainWindow(QMainWindow):
         self.track_view = TrackViewWidget(self.track)
         self.track_view.segment_clicked.connect(self._on_track_clicked)
         self.semantic_track_view = SemanticTrackViewWidget(self.track)
-        self.interlocking_view = InterlockingViewWidget(self.track)
         self.force_panel = ForcePanel()
         self.dispatch_view = DispatchView(self.dispatch)
         self.dispatch_view.operation_finished.connect(
@@ -179,7 +178,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.dispatch_view, "调度中心")
         self.tabs.addTab(self.semantic_track_view, "运营线路图")
         self.tabs.addTab(self.track_view, "线路可视化")
-        self.tabs.addTab(self.interlocking_view, "联锁HMI图")
         self.tabs.addTab(self.force_panel, "力学分析")
 
     def _create_train_control_bar(self) -> QWidget:
@@ -187,8 +185,8 @@ class MainWindow(QMainWindow):
         bar = QWidget()
         bar.setObjectName("trainControlBar")
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(14, 8, 14, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 6, 16, 6)
+        layout.setSpacing(8)
         label = QLabel("当前受控列车")
         label.setObjectName("dataSourceTitle")
         self.active_train_combo = QComboBox()
@@ -208,8 +206,8 @@ class MainWindow(QMainWindow):
         bar = QWidget()
         bar.setObjectName("dataSourceBar")
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(16, 10, 16, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 7, 16, 6)
+        layout.setSpacing(8)
 
         title = QLabel("线路数据源")
         title.setObjectName("dataSourceTitle")
@@ -232,7 +230,7 @@ class MainWindow(QMainWindow):
         bar = QWidget()
         bar.setObjectName("speedControlBar")
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setContentsMargins(16, 6, 16, 7)
         layout.setSpacing(6)
 
         title = QLabel("仿真速度")
@@ -420,7 +418,6 @@ class MainWindow(QMainWindow):
         # 重建线路可视化并立即将列车绘制到新线路上
         self.semantic_track_view.set_track_data(track, self._data_source_label())
         self.track_view.set_track_data(track, self._data_source_label())
-        self.interlocking_view.set_track_data(track, self._data_source_label())
         if hasattr(self, "dispatch_view"):
             self.dispatch_view.set_manager(self.dispatch)
         self.active_train_id = "1车"
@@ -428,7 +425,6 @@ class MainWindow(QMainWindow):
         car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
         self.semantic_track_view.set_train_position(car_abs, self.controller)
         self.track_view.set_train_position(car_abs, self.controller)
-        self.interlocking_view.set_train_position(car_abs, self.controller)
 
         self._last_signal_aspects.clear()
         self._last_status_log_time = -1.0
@@ -498,14 +494,6 @@ class MainWindow(QMainWindow):
         """获取头车当前位置的线路限速 (m/s)。"""
         abs_pos = self._head_abs_position()
         return self.track.get_speed_limit_at(abs_pos)
-
-    # ── 网络模式更新 ──────────────────────────────────────────
-
-    def _network_update_step(self, dt: float):
-        """网络模式下的更新步骤：从外部网络系统获取数据驱动仿真"""
-        # 从网络管理器获取车辆指令并更新控制器状态
-        # TODO: 接入实际网络数据源后补充完整逻辑
-        pass
 
     # ── 主更新循环 ──────────────────────────────────────────────
 
@@ -598,9 +586,6 @@ class MainWindow(QMainWindow):
         self.track_view.set_train_position(car_abs, active_controller)
         self.semantic_track_view.set_dispatch_state(
             self.dispatch.trains.values(), self.dispatch.occupancy.snapshot)
-        self.interlocking_view.set_dispatch_state(
-            self.dispatch.trains.values(), self.signal_system,
-            self.dispatch.occupancy.snapshot, self.dispatch.interlocking.locks)
         self._refresh_train_selector()
         self.dispatch_view.refresh()
         self._update_log_display()
@@ -875,12 +860,14 @@ class MainWindow(QMainWindow):
 
     def _get_door_states(self) -> list[int]:
         """获取6节车门的开关状态"""
+        runtime = self._active_runtime()
+        controller = runtime.controller if runtime else self.controller
+        door_open = controller.left_door_open or controller.right_door_open
         states = []
         for i in range(6):
             state = 0  # 0=关门, 1=开门
-            if hasattr(self, 'door_interlock'):
-                if self.door_interlock.is_door_open():
-                    state = 1
+            if door_open:
+                state = 1
             states.append(state)
         return states
 
@@ -889,7 +876,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, 'track'):
             return 0
         for st in self.track.stations:
-            if abs(st.abs_pos - head_abs) < 50:
+            if abs(st.position - head_abs) < 50:
                 return st.station_id if hasattr(st, 'station_id') else 0
         return 0
 
@@ -899,7 +886,7 @@ class MainWindow(QMainWindow):
             return 0
         next_id = 0
         for st in self.track.stations:
-            if st.abs_pos > head_abs + 20:
+            if st.position > head_abs + 20:
                 next_id = st.station_id if hasattr(st, 'station_id') else 0
                 break
         return next_id
@@ -909,8 +896,8 @@ class MainWindow(QMainWindow):
         if not hasattr(self, 'track'):
             return 0.0
         for st in self.track.stations:
-            if st.abs_pos > head_abs + 20:
-                return st.abs_pos - head_abs
+            if st.position > head_abs + 20:
+                return st.position - head_abs
         return 0.0
 
     def _get_front_signal_state(self) -> int:
@@ -1044,29 +1031,29 @@ class MainWindow(QMainWindow):
                 border: 1px solid #d8dee8;
                 border-radius: 8px;
             }
-            #dataSourceBar {
+            #dataSourceBar, #speedControlBar, #trainControlBar {
                 background: #ffffff;
                 border-bottom: 1px solid #d8dee8;
             }
             #dataSourceTitle {
                 color: #1d2939;
-                font-size: 16px;
+                font-size: 15px;
                 font-weight: 800;
             }
             #dataSourceStatus {
                 color: #475467;
-                font-size: 14px;
+                font-size: 13px;
                 font-weight: 650;
             }
             QComboBox#dataSourceCombo {
-                min-width: 150px;
-                min-height: 34px;
+                min-width: 132px;
+                min-height: 30px;
                 border: 1px solid #cbd5e1;
                 border-radius: 6px;
-                padding: 4px 10px;
+                padding: 3px 9px;
                 background: #f8fafc;
                 color: #172033;
-                font-size: 15px;
+                font-size: 14px;
                 font-weight: 700;
             }
             QTabWidget::pane {
@@ -1076,9 +1063,9 @@ class MainWindow(QMainWindow):
             QTabBar::tab {
                 background: #e5eaf2;
                 color: #475467;
-                padding: 11px 22px;
+                padding: 9px 18px;
                 margin-right: 2px;
-                font-size: 15px;
+                font-size: 14px;
                 font-weight: 700;
             }
             QTabBar::tab:selected {
@@ -1149,10 +1136,10 @@ class MainWindow(QMainWindow):
             }
             QGroupBox {
                 color: #1d2939;
-                font-size: 15px;
+                font-size: 14px;
                 font-weight: 800;
-                margin-top: 10px;
-                padding: 8px 6px 6px 6px;
+                margin-top: 8px;
+                padding: 7px 6px 6px 6px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
@@ -1160,12 +1147,12 @@ class MainWindow(QMainWindow):
                 padding: 0 3px;
             }
             QPushButton {
-                min-height: 44px;
+                min-height: 36px;
                 border-radius: 7px;
                 border: 1px solid #cbd5e1;
                 background: #ffffff;
                 color: #172033;
-                font-size: 16px;
+                font-size: 14px;
                 font-weight: 700;
             }
             QPushButton:hover {
@@ -1188,9 +1175,56 @@ class MainWindow(QMainWindow):
                 color: #ffffff;
             }
             QPushButton#smallButton {
-                min-height: 32px;
+                min-height: 28px;
                 font-size: 14px;
                 padding: 2px 6px;
+            }
+            #speedSectionLabel {
+                color: #1d2939;
+                font-size: 15px;
+                font-weight: 800;
+                margin-right: 8px;
+            }
+            QPushButton#speedButton {
+                min-height: 28px;
+                min-width: 40px;
+                max-width: 48px;
+                border-radius: 5px;
+                background: #f8fafc;
+                color: #475467;
+                font-size: 13px;
+                padding: 2px 6px;
+            }
+            QPushButton#speedButton:checked {
+                background: #2563eb;
+                color: #ffffff;
+                border-color: #2563eb;
+            }
+            QPushButton#speedBarPrimary, QPushButton#speedBarDanger {
+                min-height: 28px;
+                border-radius: 5px;
+                font-size: 13px;
+                padding: 2px 10px;
+            }
+            QPushButton#speedBarPrimary {
+                background: #2563eb;
+                border-color: #2563eb;
+                color: #ffffff;
+            }
+            QPushButton#speedBarDanger {
+                background: #dc2626;
+                border-color: #dc2626;
+                color: #ffffff;
+            }
+            #speedSeparator {
+                color: #cbd5e1;
+                font-size: 16px;
+                margin: 0 6px;
+            }
+            #speedStatusLabel {
+                color: #475467;
+                font-size: 13px;
+                font-weight: 650;
             }
             QLineEdit {
                 min-height: 34px;
@@ -1263,8 +1297,8 @@ class MainWindow(QMainWindow):
                 border-bottom: 0;
                 border-radius: 0;
                 margin: 0;
-                padding: 14px 16px 10px 16px;
-                font-size: 17px;
+                padding: 10px 14px 8px 14px;
+                font-size: 15px;
                 font-weight: 800;
                 color: #1d2939;
             }
@@ -1274,8 +1308,8 @@ class MainWindow(QMainWindow):
         """创建横跨底部的运行日志区域"""
         log_group = QGroupBox("运行日志")
         log_group.setObjectName("bottomLogGroup")
-        log_group.setMinimumHeight(230)
-        log_group.setMaximumHeight(320)
+        log_group.setMinimumHeight(165)
+        log_group.setMaximumHeight(245)
         log_layout = QVBoxLayout(log_group)
         log_layout.setContentsMargins(16, 14, 16, 12)
         log_layout.setSpacing(8)
@@ -1283,7 +1317,7 @@ class MainWindow(QMainWindow):
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setObjectName("logText")
-        self.log_text.setMinimumHeight(180)
+        self.log_text.setMinimumHeight(120)
         log_layout.addWidget(self.log_text)
         return log_group
 
@@ -1322,6 +1356,8 @@ class MainWindow(QMainWindow):
 
     def _record_signal_changes(self):
         """记录信号显示变化，避免日志中重复写入相同状态"""
+        runtime = self._active_runtime()
+        speed = runtime.controller.head_speed if runtime else 0.0
         for sig in self.track.signals:
             aspect = self.signal_system.get_signal_aspect(sig)
             last_aspect = self._last_signal_aspects.get(sig.signal_id)
@@ -1330,7 +1366,7 @@ class MainWindow(QMainWindow):
                     "信号",
                     f"{sig.signal_id} {aspect.value}",
                     sig.position,
-                    self._active_runtime().controller.head_speed,
+                    speed,
                 )
                 self._last_signal_aspects[sig.signal_id] = aspect
 
