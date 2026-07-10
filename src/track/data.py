@@ -31,6 +31,7 @@ class Platform:
     seg_id: int
     direction: str               # "up" / "down"
     station_name: str = ""
+    station_id: int = 0
 
 
 @dataclass
@@ -88,6 +89,7 @@ class TrackData:
         self.speed_limits: List[SpeedLimit] = []
         self.gradients: List[Gradient] = []
         self.signals: List[Signal] = []
+        self.data_warnings: List[str] = []
 
         # 索引
         self._seg_map: Dict[int, Segment] = {}

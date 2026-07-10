@@ -43,6 +43,10 @@ class TrainConsist:
         """判断第 index 节是否为动车。"""
         return self._cars[index].is_motor
 
+    def reverse(self):
+        """换端时按新的头尾方向重排车辆配置。"""
+        self._cars.reverse()
+
     @property
     def total_mass(self) -> float:
         """整列车总质量 (kg)。"""

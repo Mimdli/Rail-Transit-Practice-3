@@ -166,10 +166,17 @@ class AutoDriveController:
             self._apply(ControlLevel.EMERGENCY_BRAKE)
         elif distance < self.stop_distance:
             # 2. 比例减速段
-            target_speed = self.approach_speed * (distance / self.stop_distance)
-            if current_speed > target_speed + 0.5:
+            target_speed = max(
+                0.8,
+                self.approach_speed * (distance / self.stop_distance),
+            )
+            speed_deadband = 0.2
+            # 低速死区可能让列车停在目标前数米；停车未到位时使用低牵引爬行。
+            if current_speed < 0.05 and distance > self.emergency_brake_distance:
+                self._apply(ControlLevel.LOW_TRACTION)
+            elif current_speed > target_speed + speed_deadband:
                 self._apply(ControlLevel.SERVICE_BRAKE)
-            elif current_speed < target_speed - 0.5:
+            elif current_speed < target_speed - speed_deadband:
                 self._apply(ControlLevel.LOW_TRACTION)
             else:
                 self._apply(ControlLevel.COAST)
@@ -251,4 +258,6 @@ class AutoDriveController:
 
         通过 track.to_absolute 实现跨区段距离计算。
         """
-        return self._track.to_absolute(target) - self._track.to_absolute(current)
+        return self.controller.direction * (
+            self._track.to_absolute(target) - self._track.to_absolute(current)
+        )
