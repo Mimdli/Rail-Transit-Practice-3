@@ -75,6 +75,27 @@ def build_semantic_line(track: TrackData) -> SemanticLineModel:
     )
 
 
+def compute_station_route(track: TrackData, start_seg_id: int,
+                          target_station_id: int,
+                          direction: int = 1) -> tuple[int, ...]:
+    """计算当前位置到目标站同方向站台区段的拓扑路径。"""
+    station = next(
+        (item for item in track.stations if item.station_id == target_station_id),
+        None,
+    )
+    if station is None:
+        return ()
+    semantic_station = SemanticStation(
+        station.station_id, station.name, station.position,
+        tuple(station.platform_ids),
+    )
+    platform_direction = "down" if direction >= 0 else "up"
+    targets = _station_platform_segments(
+        track, semantic_station, platform_direction)
+    path = _shortest_path(track, {start_seg_id}, targets)
+    return tuple(path)
+
+
 def _build_stations(track: TrackData) -> list[SemanticStation]:
     positions = [station.position for station in track.stations]
     duplicate_positions = {

@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.signal.system import SignalSystem, SignalAspect, aspect_from_protocol
 from src.track.data import Signal
+from src.track.loader import TrackLoader
 
 
 def test_default_aspect_is_green():
@@ -134,6 +135,36 @@ def test_set_signal_aspect_from_protocol():
     ss.set_signal_aspect_from_protocol("S01", 0x03)
 
     assert ss.get_signal_aspect(signal) == SignalAspect.YELLOW
+
+
+def test_dispatch_lock_and_occupancy_drive_signal_aspects():
+    """进路锁闭开放信号，区段占用使防护信号转红。"""
+    track = TrackLoader().load_demo_data()
+    signals = [
+        Signal("D01", direction="down", seg_id=1, offset=100.0),
+        Signal("D02", direction="down", seg_id=2, offset=100.0),
+    ]
+    track.signals = signals
+    track.build_coordinates()
+    ss = SignalSystem()
+
+    ss.update_from_dispatch(signals, track, {}, {2: "1车"})
+    assert ss.get_signal_aspect(signals[0]) == SignalAspect.YELLOW
+    assert ss.get_signal_aspect(signals[1]) == SignalAspect.RED
+
+    ss.update_from_dispatch(signals, track, {2: frozenset({"2车"})}, {2: "1车"})
+    assert ss.get_signal_aspect(signals[0]) == SignalAspect.RED
+
+
+def test_directional_signal_query_supports_reverse_running():
+    ss = SignalSystem()
+    signals = [
+        Signal("D01", 200.0, "down"),
+        Signal("U01", 100.0, "up"),
+    ]
+
+    assert ss.get_nearest_signal_for_direction(150.0, 1, signals).signal_id == "D01"
+    assert ss.get_nearest_signal_for_direction(150.0, -1, signals).signal_id == "U01"
 
 
 if __name__ == "__main__":

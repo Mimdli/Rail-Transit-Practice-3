@@ -1,6 +1,6 @@
 """单机调度中心：列车命令、运行总览和区段占用显示。"""
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QRectF, Qt, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor, QPainter, QPen
 from PyQt5.QtWidgets import (
     QComboBox, QFormLayout, QGraphicsEllipseItem, QGraphicsScene,
@@ -21,8 +21,8 @@ class DispatchLineView(QGraphicsView):
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         self.setRenderHint(QPainter.Antialiasing, True)
-        self.setMinimumHeight(220)
-        self.setMaximumHeight(260)
+        self.setMinimumHeight(250)
+        self.setMaximumHeight(280)
         self.setObjectName("dispatchLineView")
 
     def set_manager(self, manager: DispatchManager):
@@ -42,7 +42,7 @@ class DispatchLineView(QGraphicsView):
         )
         width = max(self.viewport().width() - 30, 900)
         left, right = 90.0, width - 70.0
-        down_y, up_y = 120.0, 180.0
+        down_y, up_y = 112.0, 190.0
 
         self._add_text("全线运行态势", left, 16, 15, QColor("#172033"), True)
         self._add_text(
@@ -61,39 +61,47 @@ class DispatchLineView(QGraphicsView):
                 QColor("#f59e0b") if lock_owner else QColor("#94a3b8")
             )
             for y in (down_y, up_y):
-                self._scene.addLine(
+                line = self._scene.addLine(
                     x1, y, x2, y,
                     QPen(color, 7, Qt.SolidLine, Qt.RoundCap))
-            if owners or lock_owner:
-                state = (f"LK{segment.seg_id} · {','.join(sorted(owners))} 占用"
-                         if owners else f"LK{segment.seg_id} · {lock_owner} 锁闭")
-                self._add_text(state, (x1 + x2) / 2 - 38, up_y + 18,
-                               8, color, True)
+                if owners:
+                    state = f"LK{segment.seg_id} · {','.join(sorted(owners))} 占用"
+                elif lock_owner:
+                    state = f"LK{segment.seg_id} · {lock_owner} 锁闭"
+                else:
+                    state = f"LK{segment.seg_id} · 空闲"
+                line.setToolTip(state)
 
         for station in sorted(track.stations, key=lambda item: item.position):
             x = left + station.position / total * (right - left)
-            self._scene.addLine(x, down_y - 20, x, up_y + 20,
+            self._scene.addLine(x, down_y - 16, x, up_y + 16,
                                 QPen(QColor("#334155"), 2))
-            self._add_text(station.name, x - 24, 72, 9,
+            self._add_text(station.name, x - 24, 66, 9,
                            QColor("#1d2939"), True)
 
         palette = ["#2563eb", "#7c3aed", "#0891b2", "#0f766e", "#9333ea"]
+        label_rects = []
         for index, runtime in enumerate(self.manager.trains.values()):
             x = left + max(0.0, min(total, runtime.head_abs)) / total * (right - left)
             color = QColor(palette[index % len(palette)])
             direction = runtime.controller.direction
             lane_y = down_y if direction > 0 else up_y
-            marker_y = lane_y - 28 if direction > 0 else lane_y + 12
-            marker = QGraphicsEllipseItem(x - 8, marker_y, 16, 16)
+            marker = QGraphicsEllipseItem(x - 8, lane_y - 8, 16, 16)
             marker.setBrush(QBrush(color))
             marker.setPen(QPen(QColor("#ffffff"), 2))
+            marker.setToolTip(
+                f"{runtime.train_id} · {runtime.direction_label} · "
+                f"{runtime.speed_kmh:.1f} km/h · {runtime.status.value}"
+            )
+            marker.setZValue(3)
             self._scene.addItem(marker)
-            label_y = marker_y - 4 if direction > 0 else marker_y + 18
-            self._add_text(
-                f"{runtime.train_id} {runtime.speed_kmh:.0f}",
-                x + 12, label_y, 9, color, True)
+            # 标签收进双线之间，避免与站名、区段状态共用基线。
+            label_y = 130.0 if direction > 0 else 160.0
+            self._add_train_label(
+                f"{runtime.train_id}  {runtime.speed_kmh:.0f} km/h",
+                x, label_y, color, label_rects, left, right)
 
-        self._scene.setSceneRect(0, 0, width, 230)
+        self._scene.setSceneRect(0, 0, width, 235)
 
     def resizeEvent(self, event):  # noqa: N802 - Qt API
         super().resizeEvent(event)
@@ -108,6 +116,35 @@ class DispatchLineView(QGraphicsView):
         item.setFont(font)
         item.setDefaultTextColor(color)
         item.setPos(x, y)
+        return item
+
+    def _add_train_label(self, text, marker_x, y, color, occupied, left, right):
+        """用轻量标签展示车号与速度，水平避让相邻列车。"""
+        item = self._add_text(text, 0, 0, 8, color, True)
+        bounds = item.boundingRect()
+        label_width = bounds.width() + 12
+        label_height = bounds.height() + 4
+        candidates = [marker_x + 12, marker_x - label_width - 12]
+        for offset in (24, 48, 72, 96):
+            candidates.extend((marker_x + 12 + offset,
+                               marker_x - label_width - 12 - offset))
+
+        chosen = max(left, min(right - label_width, candidates[0]))
+        for candidate in candidates:
+            x = max(left, min(right - label_width, candidate))
+            rect = QRectF(x, y, label_width, label_height)
+            if not any(rect.adjusted(-4, -2, 4, 2).intersects(other)
+                       for other in occupied):
+                chosen = x
+                break
+        rect = QRectF(chosen, y, label_width, label_height)
+        occupied.append(rect)
+
+        background = self._scene.addRect(
+            rect, QPen(QColor("#d0d5dd"), 1), QBrush(QColor("#ffffff")))
+        background.setZValue(1)
+        item.setPos(chosen + 6, y + 1)
+        item.setZValue(2)
 
 
 class DispatchView(QWidget):

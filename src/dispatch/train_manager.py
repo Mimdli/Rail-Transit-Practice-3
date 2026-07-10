@@ -4,6 +4,7 @@ from collections import OrderedDict
 from typing import Iterable, Optional
 
 from src.common.consist import CONSIST_4M2T
+from src.common.track_position import TrackPosition
 from src.track.adapter import TrackDataAdapter
 from src.track.data import TrackData
 from src.track.loader import TrackLoader
@@ -13,6 +14,34 @@ from src.vehicle.environment import MockEnvironment, WeatherType
 from src.vehicle.vehicle_controller import VehicleController
 
 from .models import TrainRuntime, TrainStatus
+
+
+def resolve_station_track_position(track: TrackData, station,
+                                   direction: int) -> TrackPosition:
+    """按运行方向选择车站站台 Seg，避免同里程并行线误落位。"""
+    expected = "down" if direction >= 0 else "up"
+    platforms = [
+        platform for platform in track.platforms
+        if (platform.station_id == station.station_id
+            or platform.platform_id in station.platform_ids)
+    ]
+    platform = next(
+        (item for item in platforms if item.direction.lower() == expected),
+        platforms[0] if platforms else None,
+    )
+    if platform is not None and platform.seg_id in track._seg_map:
+        segment = track._seg_map[platform.seg_id]
+        offset = max(0.0, min(segment.length,
+                              platform.position - segment.abs_start))
+        return TrackPosition(platform.seg_id, offset)
+
+    # 无站台关联的演示数据使用传统里程查询兜底。
+    segment_id = track.get_seg_id_at(station.position)
+    segment = track._seg_map[segment_id]
+    return TrackPosition(
+        segment_id,
+        max(0.0, min(segment.length, station.position - segment.abs_start)),
+    )
 
 
 class TrainManager:
@@ -54,8 +83,10 @@ class TrainManager:
         start_abs = 0.0
         if start_station_id is not None:
             station = self.get_station(start_station_id)
-            start_abs = station.position
-        start = adapter.from_absolute(start_abs)
+            start = resolve_station_track_position(
+                self.track, station, controller.direction)
+        else:
+            start = adapter.from_absolute(start_abs)
         controller.reset_states(start.segment_id, start.offset)
 
         auto_drive = AutoDriveController(controller)
@@ -103,3 +134,8 @@ class TrainManager:
             if station.station_id == station_id:
                 return station
         raise ValueError(f"车站不存在: {station_id}")
+
+    def get_station_track_position(self, station_id: int,
+                                   direction: int = 1) -> TrackPosition:
+        return resolve_station_track_position(
+            self.track, self.get_station(station_id), direction)
