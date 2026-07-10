@@ -158,7 +158,8 @@ class PerCarDynamicsPipeline:
                     car.velocity = 0.0
                 # 更新位置
                 abs_positions[i] += car.velocity * dt_phy
-                car.position = track.from_absolute(abs_positions[i])
+                old_seg_id = car.position.segment_id
+                car.position = track.from_absolute(abs_positions[i], hint_seg_id=old_seg_id)
                 car.acceleration = a
 
             # Step 6 — 限速裁剪

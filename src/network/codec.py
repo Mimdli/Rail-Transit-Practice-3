@@ -264,7 +264,253 @@ def pack_atp_to_dmi(
 
 
 # ============================================================
-# 5. 辅助工具
+# 5. 视景系统 TCMS2VIEW 编解码（协议 §3.2）
+# ============================================================
+
+FX_SIGNAL_MAX = 77    # 北京地铁9号线正线信号机数
+FX_SWITCH_MAX = 29    # 北京地铁9号线正线道岔数
+FX_TRAIN_MAX = 128    # 他车最大数
+
+
+def pack_vision_tcms2view(
+    live_counter: int,
+    signal_states: list[int],
+    switch_states: list[int],
+    speed_mms: int,
+    accel_pct: int,
+    run_state: int,
+    position_mm: int,
+    edge_id: int,
+    direction: int,
+    other_trains: list[dict] = None,
+) -> bytes:
+    """打包视景系统 TCMS2VIEW 报文 (UDP)
+
+    参数:
+        live_counter: 数据报计数，每次+1
+        signal_states: 信号机状态列表 [0x01/0x02/0x04/0x10/...]
+        switch_states: 道岔状态列表 [0x01=定位/0x02=反位]
+        speed_mms: 本车速度 (mm/s)
+        accel_pct: 本车加速度百分比 (0~100)
+        run_state: 运行工况 0x11牵引/0x12制动/0x13惰行
+        position_mm: 本车位置相对于起点道岔位移 (mm)
+        edge_id: 本车所在边号（区段号）
+        direction: 运行方向 1=正方向, -1=反方向
+        other_trains: 他车列表 [{dist, edge, dir, speed_cms}, ...]
+    """
+    buf = bytearray()
+
+    # LiveCounter (int, 4B)
+    buf.extend(struct.pack("<i", live_counter))
+
+    # Signal_num + SignalStates
+    sig_count = min(len(signal_states), FX_SIGNAL_MAX)
+    buf.append(sig_count & 0xFF)
+    for i in range(FX_SIGNAL_MAX):
+        if i < sig_count:
+            buf.append(signal_states[i] & 0xFF)
+        else:
+            buf.append(0x00)
+
+    # Switch_num + SwitchStates
+    sw_count = min(len(switch_states), FX_SWITCH_MAX)
+    buf.append(sw_count & 0xFF)
+    for i in range(FX_SWITCH_MAX):
+        if i < sw_count:
+            buf.append(switch_states[i] & 0xFF)
+        else:
+            buf.append(0x00)
+
+    # 本车信息
+    buf.extend(struct.pack("<i", speed_mms))         # Speed, mm/s
+    buf.extend(struct.pack("<h", 0))                  # DwellTime, 预留
+    buf.append(run_state & 0xFF)                      # RunState
+    buf.append(accel_pct & 0xFF)                      # Accel 0~100
+    buf.extend(struct.pack("<i", position_mm))        # SectionDistance, mm
+    buf.extend(struct.pack("<h", edge_id))            # EdgeID
+    buf.append(direction & 0xFF)                      # SectionDirection
+
+    # 他车信息
+    others = other_trains or []
+    other_count = min(len(others), FX_TRAIN_MAX)
+    buf.append(other_count & 0xFF)
+
+    for i in range(FX_TRAIN_MAX):
+        if i < other_count:
+            t = others[i]
+            buf.extend(struct.pack("<i", t.get("dist", 0)))
+        else:
+            buf.extend(struct.pack("<i", 0))
+
+    for i in range(FX_TRAIN_MAX):
+        if i < other_count:
+            t = others[i]
+            buf.extend(struct.pack("<h", t.get("edge", 0)))
+        else:
+            buf.extend(struct.pack("<h", 0))
+
+    for i in range(FX_TRAIN_MAX):
+        if i < other_count:
+            t = others[i]
+            buf.append(t.get("dir", 0) & 0xFF)
+        else:
+            buf.append(0x00)
+
+    for i in range(FX_TRAIN_MAX):
+        if i < other_count:
+            t = others[i]
+            buf.extend(struct.pack("<h", t.get("speed_cms", 0)))
+        else:
+            buf.extend(struct.pack("<h", 0))
+
+    return bytes(buf)
+
+
+# ============================================================
+# 6. 司机台信号屏 编解码（66 bytes, TCP, 协议 § 信号屏）
+# ============================================================
+
+def pack_signal_screen(
+    speed: float,
+    acceleration: float,
+    speed_limit: float,
+    mode: int = 5,
+    run_dir: int = 0,
+    curr_station: int = 0,
+    next_station: int = 0,
+    end_station: int = 0,
+    pull_switch: int = 0,
+    pull_state: int = 0,
+    brake_state: int = 0,
+    urgency_stop: int = 0,
+    event_id: int = 0,
+    sig_state: int = 0,
+    train_no: int = 0,
+    next_station_dist: float = 0.0,
+    timestamp_ms: int = 0,
+) -> bytes:
+    """打包信号屏报文 (TCP → 总控:9999)
+
+    协议总长 68 字节（文档66字节，实际字段布局为68）。
+    """
+    buf = bytearray(68)
+    struct.pack_into("<I", buf, 0, 0x55AA55AA)       # _uIdentify
+    struct.pack_into("<H", buf, 4, 68)                 # _uTotalLen
+    struct.pack_into("<H", buf, 6, 68 - 8)             # _uDataLen
+    struct.pack_into("<Q", buf, 8, timestamp_ms)       # _timestamp
+    struct.pack_into("<H", buf, 16, 0)                 # _uVerifyType
+    struct.pack_into("<H", buf, 18, 0)                 # _uVerifyCode
+    struct.pack_into("<H", buf, 20, 0)                 # _uProtocolID
+    struct.pack_into("<H", buf, 22, 1)                 # _uMsgID
+    # 时间 (24-35)
+    import time as _time
+    t = _time.localtime(_time.time())
+    struct.pack_into("<H", buf, 24, t.tm_year)
+    struct.pack_into("<H", buf, 26, t.tm_mon)
+    struct.pack_into("<H", buf, 28, t.tm_mday)
+    struct.pack_into("<H", buf, 30, t.tm_hour)
+    struct.pack_into("<H", buf, 32, t.tm_min)
+    struct.pack_into("<H", buf, 34, t.tm_sec)
+    # 站信息 (36-43)
+    struct.pack_into("<B", buf, 36, curr_station & 0xFF)
+    struct.pack_into("<B", buf, 37, next_station & 0xFF)
+    struct.pack_into("<B", buf, 38, end_station & 0xFF)
+    struct.pack_into("<b", buf, 39, 1)                 # CMState
+    struct.pack_into("<b", buf, 40, 1)                 # MMState
+    struct.pack_into("<b", buf, 41, 1)                 # CTCState
+    struct.pack_into("<b", buf, 42, run_dir & 0xFF)    # RunDir
+    struct.pack_into("<B", buf, 43, 0)                 # Reserve
+    # 数据字段 (44-67)
+    struct.pack_into("<f", buf, 44, speed)             # _nSpeed
+    struct.pack_into("<f", buf, 48, acceleration)      # _fAcceleration
+    struct.pack_into("<H", buf, 52, pull_switch & 0xFFFF)  # _nPullSwitch
+    struct.pack_into("<H", buf, 54, int(speed_limit))       # _fSpeedLimit (WORD)
+    struct.pack_into("<B", buf, 56, mode & 0xFF)            # _nMode
+    struct.pack_into("<B", buf, 57, pull_state & 0xFF)      # _nPullState
+    struct.pack_into("<B", buf, 58, brake_state & 0xFF)     # _nBrakeState
+    struct.pack_into("<B", buf, 59, urgency_stop & 0xFF)    # _nUrgencyStopState
+    struct.pack_into("<B", buf, 60, event_id & 0xFF)        # _nEventID
+    struct.pack_into("<B", buf, 61, sig_state & 0xFF)       # _nSigState
+    struct.pack_into("<H", buf, 62, train_no & 0xFFFF)      # _nTrainNo
+    struct.pack_into("<f", buf, 64, next_station_dist)      # _fNextStationDist
+    return bytes(buf)
+
+
+# ============================================================
+# 7. 司机台网络屏 编解码（572 bytes, TCP, 协议 § 网络屏）
+# ============================================================
+
+def pack_network_screen(
+    speed: float = 0.0,
+    acceleration: float = 0.0,
+    position_m: float = 0.0,
+    speed_limit: float = 0.0,
+    run_mode: int = 0,
+    run_dir: int = 0,
+    power_pull: int = 0,
+    net_pressure: int = 0,
+    curr_station: int = 0,
+    next_station: int = 0,
+    end_station: int = 0,
+    power_state: int = 0,
+    door_states: list[int] = None,
+    has_power: bool = True,
+    timestamp_ms: int = 0,
+) -> bytes:
+    """打包网络屏 572字节报文 (TCP → 总控:8888)
+
+    只填充需要的关键字段，其余填充默认值。
+    """
+    buf = bytearray(572)
+    # 固定头
+    struct.pack_into("<I", buf, 0, 0x55AA55AA)       # _uIdentify
+    struct.pack_into("<H", buf, 4, 572)                # _uTotalLen
+    struct.pack_into("<H", buf, 6, 572 - 8)            # _uDataLen
+    struct.pack_into("<Q", buf, 8, timestamp_ms)       # _timestamp
+    struct.pack_into("<H", buf, 16, 0)                 # _uVerifyType
+    struct.pack_into("<H", buf, 18, 0)                 # _uVerifyCode
+    struct.pack_into("<H", buf, 20, 0)                 # _uProtocolID
+    struct.pack_into("<H", buf, 22, 2)                 # _uMsgID
+    # 时间 (24-35)
+    import time as _time
+    t = _time.localtime(_time.time())
+    struct.pack_into("<H", buf, 24, t.tm_year)
+    struct.pack_into("<H", buf, 26, t.tm_mon)
+    struct.pack_into("<H", buf, 28, t.tm_mday)
+    struct.pack_into("<H", buf, 30, t.tm_hour)
+    struct.pack_into("<H", buf, 32, t.tm_min)
+    struct.pack_into("<H", buf, 34, t.tm_sec)
+    # 站信息 (36-38)
+    struct.pack_into("<B", buf, 36, curr_station & 0xFF)
+    struct.pack_into("<B", buf, 37, next_station & 0xFF)
+    struct.pack_into("<B", buf, 38, end_station & 0xFF)
+    # 电源状态 / 速度 / 加速度 / 牵引力 / 网压 (39-51)
+    struct.pack_into("<B", buf, 39, power_state & 0xFF)
+    struct.pack_into("<f", buf, 40, speed)
+    struct.pack_into("<f", buf, 44, acceleration)
+    struct.pack_into("<H", buf, 48, power_pull & 0xFFFF)
+    struct.pack_into("<H", buf, 50, net_pressure & 0xFFFF)
+    # 限速 / 级位 / 模式 (52-55)
+    struct.pack_into("<H", buf, 52, int(speed_limit))
+    struct.pack_into("<B", buf, 54, 0)                 # _nLevelPos
+    struct.pack_into("<B", buf, 55, run_mode & 0xFF)
+    # 母线电压 (56-57)
+    struct.pack_into("<H", buf, 56, 750 if has_power else 0)  # _nMasterV
+    # 方向 / 司机室 (58-59)
+    struct.pack_into("<B", buf, 58, run_dir & 0xFF)
+    struct.pack_into("<B", buf, 59, 0x11)              # 司机室: TC1激活+TC2未激活
+    # 门状态 (60-83, 24 bytes for 6 cars × 4 bytes)
+    if door_states:
+        for i, ds in enumerate(door_states[:6]):
+            struct.pack_into("<I", buf, 60 + i * 4, ds & 0xFFFFFFFF)
+    # 载客率 (168-173)
+    struct.pack_into("<B", buf, 168, 50)               # 50% 载客率
+
+    return bytes(buf)
+
+
+# ============================================================
+# 8. 辅助工具
 # ============================================================
 
 def double_to_cms(value: float) -> int:
