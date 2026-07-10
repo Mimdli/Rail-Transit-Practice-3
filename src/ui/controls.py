@@ -21,6 +21,7 @@ from src.common.consist import TrainConsist, CONSIST_4M2T, CONSIST_6M0T, CONSIST
 from src.common.car_config import MOTOR_CAR_CONFIG, TRAILER_CAR_CONFIG
 from src.door.interlock import DoorInterlock
 from src.logger.recorder import Recorder
+from src.dispatch.models import TrainStatus
 
 
 class ControlPanel(QWidget):
@@ -45,7 +46,22 @@ class ControlPanel(QWidget):
         self._displayed_event_count = 0
         self._car_type_buttons = []
         self._car_count = 6
+        self.runtime = None
         self._init_ui()
+
+    def bind_runtime(self, controller: VehicleController,
+                     auto_drive: AutoDriveController,
+                     interlock: DoorInterlock,
+                     track_adapter: ITrackQuery,
+                     train_id: str, runtime=None):
+        """把驾驶按钮切换到指定调度列车。"""
+        self.controller = controller
+        self.auto_drive = auto_drive
+        self.interlock = interlock
+        self.track_adapter = track_adapter
+        self.runtime = runtime
+        self.populate_routes(auto_drive.available_routes)
+        self.status_label.setText(f"当前控制：{train_id} · {controller.running_mode.value}")
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -221,23 +237,27 @@ class ControlPanel(QWidget):
     # ── 驾驶操作 ──────────────────────────────────────────────
 
     def _on_traction(self):
+        self._activate_direct_control()
         self.controller.set_throttle(1.0)
         self.controller.set_brake(0.0)
         self._record_operation("牵引 (FULL)")
         self.status_label.setText("牵引中")
 
     def _on_coast(self):
+        self._activate_direct_control()
         self.controller.coast()
         self._record_operation("惰行")
         self.status_label.setText("惰行中")
 
     def _on_service_brake(self):
+        self._activate_direct_control()
         self.controller.set_throttle(0.0)
         self.controller.set_brake(0.4)
         self._record_operation("常用制动")
         self.status_label.setText("制动中")
 
     def _on_emergency_brake(self):
+        self._activate_direct_control()
         self.controller.emergency_brake()
         self._record_operation("按下紧急制动按钮", event_type="紧急制动")
         self.status_label.setText("⚠ 紧急制动！")
@@ -287,17 +307,28 @@ class ControlPanel(QWidget):
     # ── 模式切换 ──────────────────────────────────────────────
 
     def _on_manual_mode(self):
+        self._activate_direct_control()
         self.controller.set_running_mode(RunningMode.MANUAL)
         self.controller.coast()
         self._record_operation("切换为手动模式")
         self.status_label.setText("切换为手动模式")
 
     def _on_auto_mode(self):
+        self._activate_direct_control()
         self.controller.set_running_mode(RunningMode.AUTOMATIC)
         head_abs = 0.0
         if self.controller.states:
             head_abs = self.track_adapter.to_absolute(self.controller.states[0].position)
-        next_station = self.interlock.track.get_nearest_station_ahead(head_abs)
+        direction = self.controller.direction
+        stations = [
+            station for station in self.interlock.track.stations
+            if direction * (station.position - head_abs) > 5.0
+        ]
+        next_station = min(
+            stations,
+            key=lambda station: direction * (station.position - head_abs),
+            default=None,
+        )
         if next_station:
             target = self.track_adapter.from_absolute(next_station.position)
             self.auto_drive.set_target(target)
@@ -306,6 +337,17 @@ class ControlPanel(QWidget):
         else:
             self._record_operation("切换为自动模式，无目标车站")
             self.status_label.setText("无目标车站")
+
+    def _activate_direct_control(self):
+        """运行仿真页操作优先，切换为直接驾驶状态。"""
+        if self.runtime is None:
+            return
+        self.runtime.held = False
+        self.runtime.emergency = False
+        self.runtime.blocked_reason = ""
+        self.runtime.status = TrainStatus.MANUAL
+        self.controller.interlock.emergency_brake_required = False
+        self.controller.interlock.traction_permitted = True
 
     # ── 进路切换 ──────────────────────────────────────────────
 

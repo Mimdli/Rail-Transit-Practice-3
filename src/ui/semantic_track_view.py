@@ -51,6 +51,8 @@ class SemanticTrackSceneView(QGraphicsView):
         self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self._station_x: dict[int, float] = {}
         self._train_items: list[QGraphicsRectItem] = []
+        self._dynamic_items: list = []
+        self._link_items: list[tuple] = []
         self._left = 90.0
         self._top = 120.0
         self._station_gap = 190.0
@@ -81,6 +83,8 @@ class SemanticTrackSceneView(QGraphicsView):
         """根据语义模型重建整张运营线路图。"""
         self._scene.clear()
         self._train_items.clear()
+        self._dynamic_items.clear()
+        self._link_items.clear()
         self._station_x.clear()
 
         if not self.track_data:
@@ -119,6 +123,48 @@ class SemanticTrackSceneView(QGraphicsView):
             self._scene.addItem(rect)
             self._train_items.append(rect)
 
+    def set_dispatch_state(self, runtimes: Iterable,
+                           occupancy: dict[int, frozenset[str]]):
+        """动态刷新多列车位置和运营区间占用状态。"""
+        for item in self._train_items:
+            self._scene.removeItem(item)
+        self._train_items.clear()
+        for item in self._dynamic_items:
+            self._scene.removeItem(item)
+        self._dynamic_items.clear()
+
+        occupied_ids = set(occupancy)
+        for link, down_item, up_item in self._link_items:
+            occupied = bool(occupied_ids.intersection(link.seg_ids))
+            down_item.setPen(QPen(
+                QColor("#dc2626") if occupied else self.DOWN_LINE,
+                7.0 if occupied else 5.0, Qt.SolidLine, Qt.RoundCap))
+            up_item.setPen(QPen(
+                QColor("#dc2626") if occupied else self.UP_LINE,
+                7.0 if occupied else 5.0, Qt.SolidLine, Qt.RoundCap))
+
+        lanes: dict[tuple[int, int], int] = {}
+        palette = ("#f59e0b", "#7c3aed", "#0891b2", "#2563eb", "#0f766e")
+        for index, runtime in enumerate(tuple(runtimes)):
+            x = self._x_for_position(runtime.head_abs)
+            direction = runtime.controller.direction
+            base_y = self._down_y if direction > 0 else self._up_y
+            slot_key = (direction, round(x / 70))
+            slot = lanes.get(slot_key, 0)
+            lanes[slot_key] = slot + 1
+            y = base_y + (-30 - slot * 24 if direction > 0 else 18 + slot * 24)
+            color = QColor(palette[index % len(palette)])
+            marker = QGraphicsRectItem(x - 18, y, 36, 16)
+            marker.setBrush(QBrush(color))
+            marker.setPen(QPen(QColor("#ffffff"), 1.5))
+            marker.setZValue(35)
+            self._scene.addItem(marker)
+            label = self._add_text(
+                f"{runtime.train_id}  {runtime.speed_kmh:.0f}km/h",
+                x, y - 21 if direction > 0 else y + 18,
+                8, color, True, center=True)
+            self._dynamic_items.extend((marker, label))
+
     def _layout_stations(self):
         if not self.model:
             return
@@ -148,6 +194,15 @@ class SemanticTrackSceneView(QGraphicsView):
             distance = abs(link.end_pos - link.start_pos)
             label = f"{distance / 1000:.2f} km" if distance > 1.0 else "里程未标定"
             self._add_text(label, mid, (self._down_y + self._up_y) / 2 - 6, 8, self.MUTED, center=True)
+            down_item = self._scene.addLine(
+                start_x, self._down_y, end_x, self._down_y,
+                QPen(self.DOWN_LINE, 5.0, Qt.SolidLine, Qt.RoundCap))
+            up_item = self._scene.addLine(
+                start_x, self._up_y, end_x, self._up_y,
+                QPen(self.UP_LINE, 5.0, Qt.SolidLine, Qt.RoundCap))
+            down_item.setZValue(3)
+            up_item.setZValue(3)
+            self._link_items.append((link, down_item, up_item))
 
     def _draw_direction_line(self, first: float, last: float, y: float, color: QColor,
                              name: str, arrow: str):
@@ -182,8 +237,8 @@ class SemanticTrackSceneView(QGraphicsView):
     def _draw_stations(self):
         if not self.model:
             return
-        top_label_y = self._down_y - 76
-        bottom_label_y = self._up_y + 40
+        top_label_y = self._down_y - 120
+        bottom_label_y = self._up_y + 58
         for index, station in enumerate(self.model.stations):
             x = self._station_x[station.station_id]
             self._scene.addLine(x, self._down_y, x, self._up_y, QPen(self.LINE_SOFT, 1.2, Qt.DashLine))
@@ -248,6 +303,7 @@ class SemanticTrackSceneView(QGraphicsView):
         else:
             item.setPos(x, y + size)
         return item
+        return item
 
 
 class SemanticTrackViewWidget(QWidget):
@@ -286,6 +342,16 @@ class SemanticTrackViewWidget(QWidget):
 
     def set_train_position(self, car_abs_positions: Iterable[float], controller=None):
         self.view.set_train_position(car_abs_positions, controller)
+
+    def set_dispatch_state(self, runtimes: Iterable,
+                           occupancy: dict[int, frozenset[str]]):
+        runtimes = tuple(runtimes)
+        self.view.set_dispatch_state(runtimes, occupancy)
+        occupied = len(occupancy)
+        self.status.setText(
+            f"运营线路图 | 实时列车 {len(runtimes)} | 占用区段 {occupied} | "
+            "红色区间表示当前有列车占用"
+        )
 
     def _refresh_status(self, source_name: str = ""):
         if not self.track_data:

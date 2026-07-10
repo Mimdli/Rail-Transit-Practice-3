@@ -17,6 +17,7 @@ class TrackDataQuery(ITrackQuery):
     def __init__(self, track: TrackData):
         self.track = track
         self.external_speed_limit: Optional[float] = None
+        self._active_route = None
 
     def set_track_data(self, track: TrackData):
         """切换线路数据源"""
@@ -38,6 +39,14 @@ class TrackDataQuery(ITrackQuery):
     def get_curve_radius(self, pos: TrackPosition) -> Optional[float]:
         return None
 
+    def set_active_route(self, route):
+        """保存活动进路，兼容统一线路查询接口。"""
+        self._active_route = route
+
+    def get_active_route(self):
+        """返回当前活动进路。"""
+        return self._active_route
+
     def advance_position(self, pos: TrackPosition, distance: float) -> TrackPosition:
         return self.from_absolute(self.to_absolute(pos) + distance)
 
@@ -47,7 +56,7 @@ class TrackDataQuery(ITrackQuery):
             return seg.abs_start + pos.offset
         return pos.offset
 
-    def from_absolute(self, abs_pos: float) -> TrackPosition:
+    def from_absolute(self, abs_pos: float, hint_seg_id: Optional[int] = None) -> TrackPosition:
         # 允许尾部车辆在发车初始阶段位于线路起点前方，避免编组被强行压缩到 0m。
         if abs_pos < 0:
             first_seg = self.track.segments[0].seg_id if self.track.segments else 1

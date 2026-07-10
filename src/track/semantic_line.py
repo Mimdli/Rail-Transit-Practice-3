@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 from dataclasses import dataclass, field
 
 from src.track.data import TrackData
@@ -58,6 +59,12 @@ def build_semantic_line(track: TrackData) -> SemanticLineModel:
     """
     stations = _build_stations(track)
     links, main_seg_ids = _build_links(track, stations)
+    # 站台区段属于运营主线节点，但不重复计入相邻站间区间。
+    platform_ids = {pid for station in stations for pid in station.platform_ids}
+    main_seg_ids.update(
+        platform.seg_id for platform in track.platforms
+        if platform.platform_id in platform_ids or platform.station_id > 0
+    )
     branches = _build_branches(track, stations, main_seg_ids)
     return SemanticLineModel(
         stations=stations,
@@ -99,14 +106,30 @@ def _build_links(track: TrackData, stations: list[SemanticStation]) -> tuple[lis
     if len(stations) < 2:
         return links, main_seg_ids
 
-    segments = sorted(track.segments, key=lambda s: (s.abs_start, s.seg_id))
     for left, right in zip(stations, stations[1:]):
-        start = min(left.position, right.position)
-        end = max(left.position, right.position)
-        seg_ids = tuple(
-            seg.seg_id for seg in segments
-            if _overlaps(seg.abs_start, seg.abs_start + seg.length, start, end)
-        )
+        paths = []
+        for direction in ("down", "up"):
+            starts = _station_platform_segments(track, left, direction)
+            targets = _station_platform_segments(track, right, direction)
+            path = _shortest_path(track, starts, targets)
+            if path:
+                # 目标站台所在区段属于下一站站场，不计入当前站间区间。
+                paths.append(path[:-1] or path)
+
+        seg_ids = tuple(dict.fromkeys(
+            segment_id for path in paths for segment_id in path
+        ))
+        if not seg_ids:
+            # 数据关联缺失时才使用里程范围兜底，并排除孤立侧线。
+            start = min(left.position, right.position)
+            end = max(left.position, right.position)
+            seg_ids = tuple(
+                segment.seg_id for segment in track.segments
+                if (segment.start_neighbor or segment.end_neighbor)
+                and _overlaps(
+                    segment.abs_start, segment.abs_start + segment.length,
+                    start, end)
+            )
         main_seg_ids.update(seg_ids)
         links.append(
             SemanticLink(
@@ -125,22 +148,29 @@ def _build_branches(
     stations: list[SemanticStation],
     main_seg_ids: set[int],
 ) -> list[SemanticBranch]:
-    branch_candidates = []
-    for seg in sorted(track.segments, key=lambda s: (s.abs_start, s.seg_id)):
-        has_lateral = _valid_neighbor(seg.start_lateral) or _valid_neighbor(seg.end_lateral)
-        if not has_lateral and seg.seg_id in main_seg_ids:
-            continue
-        if has_lateral or seg.seg_id not in main_seg_ids:
-            branch_candidates.append(seg)
+    branch_candidates = {
+        segment.seg_id: segment for segment in track.segments
+        if segment.seg_id not in main_seg_ids
+    }
+    adjacency = _segment_adjacency(track)
+    grouped: list[list] = []
+    remaining = set(branch_candidates)
+    while remaining:
+        root = remaining.pop()
+        component = [branch_candidates[root]]
+        stack = [root]
+        while stack:
+            current = stack.pop()
+            for neighbor, _penalty in adjacency.get(current, ()):
+                if neighbor in remaining:
+                    remaining.remove(neighbor)
+                    component.append(branch_candidates[neighbor])
+                    stack.append(neighbor)
+        grouped.append(component)
+
+    grouped.sort(key=lambda group: min(segment.abs_start for segment in group))
 
     branches: list[SemanticBranch] = []
-    grouped: list[list] = []
-    for seg in branch_candidates:
-        if grouped and abs(seg.abs_start - grouped[-1][-1].abs_start) < 180:
-            grouped[-1].append(seg)
-        else:
-            grouped.append([seg])
-
     for idx, group in enumerate(grouped, start=1):
         anchor = min(seg.abs_start for seg in group)
         nearest_station = _nearest_station(stations, anchor)
@@ -154,6 +184,85 @@ def _build_branches(
             )
         )
     return branches
+
+
+def _station_platform_segments(track: TrackData, station: SemanticStation,
+                               direction: str) -> set[int]:
+    platform_ids = set(station.platform_ids)
+    matches = {
+        platform.seg_id for platform in track.platforms
+        if (platform.platform_id in platform_ids
+            or platform.station_id == station.station_id
+            or platform.station_name == station.name)
+        and platform.direction == direction
+    }
+    if matches:
+        return matches
+    return {
+        platform.seg_id for platform in track.platforms
+        if (platform.platform_id in platform_ids
+            or platform.station_id == station.station_id
+            or platform.station_name == station.name)
+    }
+
+
+def _segment_adjacency(track: TrackData) -> dict[int, list[tuple[int, float]]]:
+    """构建无向拓扑；侧向道岔增加代价，避免主线误走折返线。"""
+    adjacency: dict[int, list[tuple[int, float]]] = {
+        segment.seg_id: [] for segment in track.segments
+    }
+    valid_ids = set(adjacency)
+    for segment in track.segments:
+        for neighbor in (segment.start_neighbor, segment.end_neighbor):
+            if _valid_neighbor(neighbor) and neighbor in valid_ids:
+                adjacency[segment.seg_id].append((neighbor, 0.0))
+                adjacency[neighbor].append((segment.seg_id, 0.0))
+        for neighbor in (segment.start_lateral, segment.end_lateral):
+            if _valid_neighbor(neighbor) and neighbor in valid_ids:
+                adjacency[segment.seg_id].append((neighbor, 500.0))
+                adjacency[neighbor].append((segment.seg_id, 500.0))
+    return adjacency
+
+
+def _shortest_path(track: TrackData, starts: set[int],
+                   targets: set[int]) -> list[int]:
+    if not starts or not targets:
+        return []
+    adjacency = _segment_adjacency(track)
+    lengths = {segment.seg_id: segment.length for segment in track.segments}
+    queue = []
+    best: dict[int, float] = {}
+    previous: dict[int, int] = {}
+    for start in starts:
+        if start in adjacency:
+            best[start] = 0.0
+            heapq.heappush(queue, (0.0, start))
+
+    target = None
+    while queue:
+        cost, current = heapq.heappop(queue)
+        if cost != best.get(current):
+            continue
+        if current in targets:
+            target = current
+            break
+        for neighbor, penalty in adjacency.get(current, ()):
+            new_cost = cost + lengths.get(neighbor, 1.0) + penalty
+            if new_cost < best.get(neighbor, float("inf")):
+                best[neighbor] = new_cost
+                previous[neighbor] = current
+                heapq.heappush(queue, (new_cost, neighbor))
+    if target is None:
+        return []
+
+    path = [target]
+    while path[-1] not in starts:
+        parent = previous.get(path[-1])
+        if parent is None:
+            return []
+        path.append(parent)
+    path.reverse()
+    return path
 
 
 def _infer_branch_role(group: list, station: SemanticStation | None, anchor: float) -> str:

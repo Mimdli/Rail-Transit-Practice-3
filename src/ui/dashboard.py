@@ -60,6 +60,7 @@ class Dashboard(QWidget):
         self.track_adapter = track_adapter
         self.signal_system = signal_system
         self.power_supply = power_supply
+        self.train_id = "1车"
         self._last_report: ForceReport = None
         self.setObjectName("dashboard")
         self._init_ui()
@@ -71,12 +72,12 @@ class Dashboard(QWidget):
 
         # 标题行：名称 + 编组信息
         title_row = QHBoxLayout()
-        title = QLabel("运行状态")
-        title.setObjectName("pageTitle")
+        self.title_label = QLabel("运行状态 · 1车")
+        self.title_label.setObjectName("pageTitle")
         self.consist_label = QLabel(self._consist_text())
         self.consist_label.setObjectName("indicatorLabel")
         self.consist_label.setStyleSheet("color: #667085; font-size: 13px; font-weight: 700; padding-top: 4px;")
-        title_row.addWidget(title)
+        title_row.addWidget(self.title_label)
         title_row.addStretch()
         title_row.addWidget(self.consist_label)
         layout.addLayout(title_row)
@@ -213,6 +214,15 @@ class Dashboard(QWidget):
 
         layout.addStretch()
 
+    def bind_runtime(self, controller: VehicleController,
+                     track_adapter: ITrackQuery, train_id: str):
+        """切换运行仿真页正在监控的列车。"""
+        self.controller = controller
+        self.track_adapter = track_adapter
+        self.train_id = train_id
+        self.title_label.setText(f"运行状态 · {train_id}")
+        self.refresh(controller.last_report)
+
     # ── 刷新 ────────────────────────────────────────────────────
 
     def refresh(self, report: ForceReport = None):
@@ -295,12 +305,19 @@ class Dashboard(QWidget):
         self.mode_label.setText(f"模式: {mode}")
 
         # 信号显示看全线最近前方信号，防护限速仍由信号系统的默认范围控制。
-        next_signal = self.signal_system.get_nearest_signal_ahead(
-            head_abs, self.track.signals, look_ahead=float("inf")
+        direction = ctrl.direction
+        candidates = [
+            signal for signal in self.track.signals
+            if direction * (signal.position - head_abs) > 0
+        ]
+        next_signal = min(
+            candidates,
+            key=lambda signal: direction * (signal.position - head_abs),
+            default=None,
         )
         if next_signal:
             aspect = self.signal_system.get_signal_aspect(next_signal)
-            distance = next_signal.position - head_abs
+            distance = direction * (next_signal.position - head_abs)
             self.signal_label.setText(f"前方信号 {next_signal.signal_id}: {aspect.value} ({distance:.0f} m)")
         else:
             aspect = self.signal_system.get_aspect_at(head_abs, self.track.signals)
@@ -327,9 +344,17 @@ class Dashboard(QWidget):
         station = self.track.get_station_at(head_abs)
         self.station_label.setText(f"当前站: {station.name if station else '区间'}")
 
-        next_station = self.track.get_nearest_station_ahead(head_abs)
+        station_candidates = [
+            station for station in self.track.stations
+            if direction * (station.position - head_abs) > 5.0
+        ]
+        next_station = min(
+            station_candidates,
+            key=lambda station: direction * (station.position - head_abs),
+            default=None,
+        )
         if next_station:
-            dist = next_station.position - head_abs
+            dist = direction * (next_station.position - head_abs)
             self.next_station_label.setText(f"下一站: {next_station.name}")
             self.distance_label.setText(f"下一站距离: {dist:.0f} m")
         else:

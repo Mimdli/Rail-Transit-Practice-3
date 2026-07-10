@@ -53,6 +53,9 @@ class InterlockingSceneView(QGraphicsView):
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self._train_items: list[QGraphicsRectItem] = []
+        self._dynamic_items: list = []
+        self._segment_items: dict[int, list[QGraphicsLineItem]] = {}
+        self._signal_lamps: dict[str, QGraphicsEllipseItem] = {}
         self._total_length = 1.0
         self._left = 80.0
         self._right = 1200.0
@@ -90,6 +93,9 @@ class InterlockingSceneView(QGraphicsView):
         """重建整张HMI图，所有元素来自当前TrackData。"""
         self._scene.clear()
         self._train_items.clear()
+        self._dynamic_items.clear()
+        self._segment_items.clear()
+        self._signal_lamps.clear()
         self._auto_fit_done = False
         self._scene.setBackgroundBrush(QBrush(self.BG))
 
@@ -101,11 +107,11 @@ class InterlockingSceneView(QGraphicsView):
         self._total_length = max(1.0, float(self.track_data.total_length()))
         station_count = max(2, len(self.track_data.stations))
         self._left = 100.0
-        self._right = max(1300.0, self._left + station_count * 220.0)
-        self._up_y = 190.0
-        self._down_y = 330.0
+        self._right = max(1380.0, self._left + (station_count - 1) * 280.0)
+        self._up_y = 230.0
+        self._down_y = 350.0
         width = self._right + 140.0
-        height = 540.0
+        height = 560.0
         self._scene.setSceneRect(QRectF(0, 0, width, height))
 
         self._draw_frame(width)
@@ -136,6 +142,74 @@ class InterlockingSceneView(QGraphicsView):
             rect.setZValue(30)
             self._scene.addItem(rect)
             self._train_items.append(rect)
+
+    def set_dispatch_state(self, runtimes: Iterable, signal_system,
+                           occupancy: dict[int, frozenset[str]],
+                           locks: dict[int, str]):
+        """刷新联锁屏的列车、区段占用、进路锁闭和真实信号显示。"""
+        for item in self._train_items:
+            self._scene.removeItem(item)
+        self._train_items.clear()
+        for item in self._dynamic_items:
+            self._scene.removeItem(item)
+        self._dynamic_items.clear()
+
+        for segment_id, items in self._segment_items.items():
+            if segment_id in occupancy:
+                color, width = self.RED, 6.0
+            elif segment_id in locks:
+                color, width = self.YELLOW, 5.0
+            else:
+                color, width = self.TRACK, 3.2
+            for item in items:
+                item.setPen(QPen(color, width, Qt.SolidLine, Qt.RoundCap))
+
+        if len(self.track_data.segments) <= 30:
+            active_segments = sorted(set(occupancy) | set(locks))
+            last_label_x = -9999.0
+            for segment_id in active_segments[:16]:
+                segment = self.track_data._seg_map.get(segment_id)
+                if segment is None:
+                    continue
+                x = self._x_for(segment.abs_start + segment.length / 2.0)
+                if x - last_label_x < 72:
+                    continue
+                state = "占用" if segment_id in occupancy else "锁闭"
+                color = self.RED if state == "占用" else self.YELLOW
+                label = self._add_text(
+                    f"LK{segment_id} {state}", x,
+                    (self._up_y + self._down_y) / 2 - 8,
+                    color, 7, True, True)
+                self._dynamic_items.append(label)
+                last_label_x = x
+
+        for signal in self.track_data.signals:
+            lamp = self._signal_lamps.get(signal.signal_id)
+            if lamp is None:
+                continue
+            aspect = signal_system.get_signal_aspect(signal).value
+            color = {"红灯": self.RED, "黄灯": self.YELLOW,
+                     "绿灯": self.GREEN}.get(aspect, self.GREY)
+            lamp.setBrush(QBrush(color))
+
+        lanes: dict[tuple[int, int], int] = {}
+        for runtime in tuple(runtimes):
+            direction = runtime.controller.direction
+            point = self._main_point(runtime.head_abs, prefer_up=direction < 0)
+            slot_key = (direction, round(point.x / 80))
+            slot = lanes.get(slot_key, 0)
+            lanes[slot_key] = slot + 1
+            y = point.y + (-54 - slot * 24 if direction < 0 else 42 + slot * 24)
+            rect = QGraphicsRectItem(point.x - 20, y, 40, 16)
+            rect.setBrush(QBrush(self.TRAIN))
+            rect.setPen(QPen(QColor("#ffe18a"), 1.2))
+            rect.setZValue(35)
+            self._scene.addItem(rect)
+            label = self._add_text(
+                f"{runtime.train_id} {runtime.speed_kmh:.0f}", point.x,
+                y - 21 if direction < 0 else y + 19,
+                self.TEXT, 8, True, True)
+            self._dynamic_items.extend((rect, label))
 
     def _x_for(self, abs_pos: float) -> float:
         ratio = min(1.0, max(0.0, abs_pos / self._total_length))
@@ -176,18 +250,14 @@ class InterlockingSceneView(QGraphicsView):
     def _draw_frame(self, width: float):
         pen = QPen(QColor("#474747"), 1.0)
         self._scene.addLine(40, 46, width - 70, 46, pen)
-        self._scene.addLine(40, 478, width - 70, 478, pen)
+        self._scene.addLine(40, 500, width - 70, 500, pen)
         self._add_text(f"{self._total_length / 1000:.3f}Km", 42, 24, self.TEXT, 9)
-        self._add_text("联锁HMI线路示意图", 70, 500, self.YELLOW, 16, True)
-        self._add_text("默认简化显示 / 保留关键站场、道岔与信号", 70, 530, self.TEXT, 10)
+        self._add_text("联锁HMI · 实时占用与进路", 70, 512, self.YELLOW, 15, True)
 
     def _draw_main_tracks(self):
-        main_pen = QPen(self.TRACK, 3.0)
         dim_pen = QPen(self.TRACK_DIM, 1.0)
-        self._scene.addLine(self._left, self._up_y, self._right, self._up_y, main_pen)
-        self._scene.addLine(self._left, self._down_y, self._right, self._down_y, main_pen)
-        self._scene.addLine(self._left, self._up_y - 10, self._right, self._up_y - 10, dim_pen)
-        self._scene.addLine(self._left, self._down_y + 10, self._right, self._down_y + 10, dim_pen)
+        self._scene.addLine(self._left, self._up_y, self._right, self._up_y, dim_pen)
+        self._scene.addLine(self._left, self._down_y, self._right, self._down_y, dim_pen)
 
         for x in self._tick_positions():
             self._scene.addLine(x, self._up_y - 8, x, self._up_y + 8, QPen(QColor("#b8d6dc"), 1.0))
@@ -197,54 +267,49 @@ class InterlockingSceneView(QGraphicsView):
         stations = sorted(self.track_data.stations, key=lambda s: (s.position, s.station_id))
         if not stations:
             return
-        last_label_x = -9999.0
-        top_label_y = 70.0
-        bottom_label_y = 118.0
         for idx, station in enumerate(stations, start=1):
             x = self._x_for(station.position)
-            self._scene.addLine(x, 86, x, 610, QPen(QColor("#555555"), 1.0, Qt.DashLine))
+            self._scene.addLine(x, self._up_y - 18, x, self._down_y + 18,
+                                QPen(QColor("#52646a"), 1.0, Qt.DashLine))
             title = station.name or f"站{idx}"
-            label_x = max(x, last_label_x + 130.0)
-            label_y = top_label_y if idx % 2 else bottom_label_y
-            if abs(label_x - x) > 4:
-                self._scene.addLine(x, 132, label_x, label_y + 20, QPen(QColor("#4c4c4c"), 1.0, Qt.DotLine))
-            self._add_text(title, label_x, label_y, self.GREEN if idx % 2 else self.YELLOW, 14, True, True)
-            self._add_text(f"站{idx}", label_x, label_y + 26, self.TEXT, 8, center=True)
-            last_label_x = label_x
+            self._add_text(title, x, 104, self.TEXT, 13, True, True)
+            self._add_text(f"站{idx}", x, 134, self.GREY, 8, center=True)
 
     def _draw_platforms(self):
         platforms = sorted(self.track_data.platforms, key=lambda p: (p.position, p.platform_id))
         for platform in platforms:
             x = self._x_for(platform.position)
-            y = self._up_y - 74 if platform.direction == "up" else self._down_y + 38
-            rect = QGraphicsRectItem(x - 46, y, 92, 14)
+            y = self._up_y - 32 if platform.direction == "up" else self._down_y + 20
+            rect = QGraphicsRectItem(x - 34, y, 68, 9)
             rect.setBrush(QBrush(self.PLATFORM))
             rect.setPen(QPen(self.GREEN, 2.0))
             self._scene.addItem(rect)
-            label = platform.station_name or f"PSD{platform.platform_id}"
-            if platform.platform_id % 4 == 0:
-                self._add_text(f"PSD{platform.platform_id}", x - 32, y + 18, self.TEXT, 5)
 
     def _draw_sections(self):
         segments = sorted(self.track_data.segments, key=lambda s: (s.abs_start, s.seg_id))
         if not segments:
             return
-        min_gap = max(150.0, (self._right - self._left) / 20.0)
-        last_up = -9999.0
-        last_down = -9999.0
-        for idx, seg in enumerate(segments):
+        for seg in segments:
+            if not (self._valid_neighbor(seg.start_neighbor)
+                    or self._valid_neighbor(seg.end_neighbor)):
+                continue
+            x1 = self._x_for(seg.abs_start)
+            x2 = self._x_for(seg.abs_start + seg.length)
+            items = []
+            for y in (self._up_y, self._down_y):
+                item = self._scene.addLine(
+                    x1, y, x2, y,
+                    QPen(self.TRACK, 3.2, Qt.SolidLine, Qt.RoundCap))
+                item.setZValue(5)
+                items.append(item)
+            self._segment_items[seg.seg_id] = items
             mid = seg.abs_start + seg.length / 2
             x = self._x_for(mid)
-            prefer_up = idx % 2 == 0
-            last = last_up if prefer_up else last_down
-            if x - last < min_gap:
-                continue
-            y = self._up_y - 28 if prefer_up else self._down_y + 14
-            self._add_text(f"LK{seg.seg_id}", x, y, self.GREEN, 6, center=True)
-            if prefer_up:
-                last_up = x
-            else:
-                last_down = x
+            if len(segments) <= 30:
+                self._add_text(
+                    f"LK{seg.seg_id}", x,
+                    (self._up_y + self._down_y) / 2 - 8,
+                    self.GREY, 7, center=True)
 
     def _draw_turnouts(self):
         raw_turnouts = [
@@ -284,7 +349,7 @@ class InterlockingSceneView(QGraphicsView):
             if x - last_x < min_gap:
                 continue
             y = self._up_y - 40 if idx % 2 == 0 else self._down_y + 38
-            color = self.GREEN if idx % 3 else self.RED
+            color = self.GREY
             self._draw_signal(sig.signal_id, x, y, color, above=idx % 2 == 0)
             last_x = x
             drawn += 1
@@ -298,18 +363,15 @@ class InterlockingSceneView(QGraphicsView):
         lamp.setBrush(QBrush(color))
         lamp.setPen(QPen(QColor("#202020"), 1.2))
         self._scene.addItem(lamp)
+        self._signal_lamps[signal_id] = lamp
         if signal_id and len(signal_id) <= 4:
             self._add_text(signal_id, x + 9, y - 8, color, 6)
 
     def _draw_legend(self, width: float):
         x = width - 420
         y = 72
-        entries = [
-            ("中央控", self.GREEN),
-            ("站控", self.GREY),
-            ("紧急站控", self.RED),
-            ("联锁", self.YELLOW),
-        ]
+        entries = [("空闲", self.TRACK), ("占用", self.RED),
+                   ("锁闭", self.YELLOW), ("列车", self.TRAIN)]
         for idx, (label, color) in enumerate(entries):
             cx = x + idx * 95
             lamp = QGraphicsEllipseItem(cx, y, 15, 15)
@@ -374,6 +436,17 @@ class InterlockingViewWidget(QWidget):
 
     def set_train_position(self, car_abs_positions: Iterable[float], controller=None):
         self.view.set_train_position(car_abs_positions, controller)
+
+    def set_dispatch_state(self, runtimes: Iterable, signal_system,
+                           occupancy: dict[int, frozenset[str]],
+                           locks: dict[int, str]):
+        runtimes = tuple(runtimes)
+        self.view.set_dispatch_state(
+            runtimes, signal_system, occupancy, locks)
+        self.status.setText(
+            f"联锁HMI | 列车 {len(runtimes)} | 占用 {len(occupancy)} | "
+            f"锁闭 {len(locks)} | 信号随闭塞状态实时刷新"
+        )
 
     def _refresh_status(self, source_name: str = ""):
         if not self.track_data:
