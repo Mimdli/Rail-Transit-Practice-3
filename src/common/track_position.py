@@ -71,7 +71,7 @@ class ITrackQuery(ABC):
         ...
 
     @abstractmethod
-    def from_absolute(self, abs_pos: float) -> TrackPosition:
+    def from_absolute(self, abs_pos: float, hint_seg_id: Optional[int] = None) -> TrackPosition:
         """从线路绝对里程转换回 TrackPosition。
 
         用于微步积分后将绝对位置还原为区段坐标。
@@ -179,7 +179,7 @@ class MockTrackQuery(ITrackQuery):
                 break
         return offset
 
-    def from_absolute(self, abs_pos: float) -> TrackPosition:
+    def from_absolute(self, abs_pos: float, hint_seg_id: Optional[int] = None) -> TrackPosition:
         """从线路绝对里程转换为 TrackPosition。"""
         remaining = abs_pos
         for seg in self.segments:

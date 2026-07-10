@@ -96,74 +96,102 @@ class TrackData:
     # ---- 构建辅助 ----
 
     def build_coordinates(self):
-        """构建线段坐标：BFS 图遍历，支持主线和道岔分支
+        """构建线段坐标：多起点 BFS 图遍历，支持上下行两条主线
 
         遍历策略:
-          1. 找到根段（没有其他段指向它的 seg_id 作为 forward 邻居）
-          2. BFS 队列，从根段出发
-          3. 对每个段，检查 forward/lateral 邻居，未访问的入队
+          1. 找到所有根段（不被任何其他段的 end_neighbor 引用的段）
+             — 这些是上下行主线的真正起点
+          2. 从每个根段出发 BFS，仅沿正向(end_neighbor/end_lateral)推进
+          3. start_neighbor 是"反向"指针（指向前一个段），不用于遍历推进
           4. 分支段坐标 = 父段.abs_start + 父段.length
+          5. 所有未访问段尝试从它们自己的端头出发遍历
         """
         self._seg_map = {s.seg_id: s for s in self.segments}
         if not self.segments:
             return
 
-        # 收集所有被引用的 seg_id (作为 forward 邻居)
-        referenced = set()
+        # 找到所有根段：不被任何段的 end_neighbor/end_lateral 引用的段
+        # 这些是线路的"起点"（下行线起点、上行线起点、车库线起点等）
+        referenced_as_end = set()
         for s in self.segments:
-            if s.start_neighbor > 0 and s.start_neighbor != 65535:
-                referenced.add(s.start_neighbor)
             if s.end_neighbor > 0 and s.end_neighbor != 65535:
-                referenced.add(s.end_neighbor)
-            if s.start_lateral > 0 and s.start_lateral != 65535:
-                referenced.add(s.start_lateral)
+                referenced_as_end.add(s.end_neighbor)
             if s.end_lateral > 0 and s.end_lateral != 65535:
-                referenced.add(s.end_lateral)
+                referenced_as_end.add(s.end_lateral)
 
-        # 找到根段：自身存在 且 不被任何 forward 引用
-        root_id = None
-        for s in self.segments:
-            if s.seg_id not in referenced:
-                root_id = s.seg_id
-                break
-        if root_id is None:
-            root_id = self.segments[0].seg_id
+        all_ids = set(s.seg_id for s in self.segments)
+        # 候选根段：在 seg_map 中且不被作为正向终点引用
+        root_candidates = [sid for sid in all_ids
+                           if sid not in referenced_as_end
+                           and sid in self._seg_map]
 
-        # BFS 遍历
+        # 按 start_neighbor 排序：start_neighbor=0 的优先（物理起点）
+        root_candidates.sort(
+            key=lambda sid: 0 if self._seg_map[sid].start_neighbor == 0 else 1)
+
         visited = set()
-        q = deque()
-        q.append(root_id)
-        visited.add(root_id)
-        self._seg_map[root_id].abs_start = 0.0
 
-        while q:
-            cur_id = q.popleft()
-            cur = self._seg_map[cur_id]
+        for root_id in root_candidates:
+            if root_id in visited:
+                continue
 
-            # 终点方向（end_neighbor / end_lateral）：分支在父段终点
-            end_child_pos = cur.abs_start + cur.length
-            # 起点方向（start_neighbor / start_lateral）：分支在父段起点
-            start_child_pos = cur.abs_start
+            # BFS 遍历
+            q = deque()
+            q.append(root_id)
+            visited.add(root_id)
+            self._seg_map[root_id].abs_start = 0.0
 
-            # 处理终点方向的邻居
-            for nid in (cur.end_neighbor, cur.end_lateral):
-                if nid <= 0 or nid == 65535:
-                    continue
-                if nid in visited or nid not in self._seg_map:
-                    continue
-                visited.add(nid)
-                self._seg_map[nid].abs_start = end_child_pos
-                q.append(nid)
+            while q:
+                cur_id = q.popleft()
+                cur = self._seg_map[cur_id]
 
-            # 处理起点方向的邻居
-            for nid in (cur.start_neighbor, cur.start_lateral):
-                if nid <= 0 or nid == 65535:
-                    continue
-                if nid in visited or nid not in self._seg_map:
-                    continue
-                visited.add(nid)
-                self._seg_map[nid].abs_start = start_child_pos
-                q.append(nid)
+                # 正向方向（end_neighbor / end_lateral）：子段从父段终点开始
+                end_child_pos = cur.abs_start + cur.length
+                # 侧向分支在起点（start_lateral）：子段从父段起点开始
+                start_child_pos = cur.abs_start
+
+                # 处理终点方向的邻居（正向推进）
+                for nid in (cur.end_neighbor, cur.end_lateral):
+                    if nid <= 0 or nid == 65535:
+                        continue
+                    if nid not in self._seg_map:
+                        continue
+                    if nid not in visited:
+                        visited.add(nid)
+                        self._seg_map[nid].abs_start = end_child_pos
+                        q.append(nid)
+
+                # 处理起点方向的侧向分支（start_lateral，道岔在起点分叉）
+                # 注意：start_neighbor 是反向指针不遍历，避免坐标重叠
+                if cur.start_lateral > 0 and cur.start_lateral != 65535:
+                    nid = cur.start_lateral
+                    if nid in self._seg_map and nid not in visited:
+                        visited.add(nid)
+                        self._seg_map[nid].abs_start = start_child_pos
+                        q.append(nid)
+
+        # 兜底：仍有未访问段 -> 从数据中第一个未访问段开始 BFS（所有邻居类型）
+        if len(visited) < len(self.segments):
+            for s in self.segments:
+                if s.seg_id not in visited:
+                    q = deque([s.seg_id])
+                    visited.add(s.seg_id)
+                    self._seg_map[s.seg_id].abs_start = 0.0
+                    while q:
+                        cur_id = q.popleft()
+                        cur = self._seg_map[cur_id]
+                        end_pos = cur.abs_start + cur.length
+                        for nid in (cur.end_neighbor, cur.end_lateral,
+                                    cur.start_neighbor, cur.start_lateral):
+                            if nid <= 0 or nid == 65535:
+                                continue
+                            if nid not in self._seg_map:
+                                continue
+                            if nid not in visited:
+                                visited.add(nid)
+                                self._seg_map[nid].abs_start = end_pos
+                                q.append(nid)
+                    break
 
         # 映射限速、坡度和信号到绝对位置
         for sl in self.speed_limits:

@@ -118,6 +118,7 @@ class MainWindow(QMainWindow):
             self.track_adapter, self.recorder, show_log=False,
         )
         self.control_panel.populate_routes(self.routes)
+        self.control_panel.consist_changed.connect(self._on_consist_changed)
 
         top_content = QWidget()
         top_layout = QHBoxLayout(top_content)
@@ -232,6 +233,15 @@ class MainWindow(QMainWindow):
         self.dashboard.refresh()
         self.force_panel.clear()
 
+    def _on_consist_changed(self, new_consist):
+        """编组变更后更新列车可视化。"""
+        car_abs = [self.track_adapter.to_absolute(s.position)
+                   for s in self.controller.states]
+        self.track_view.set_train_position(car_abs, self.controller)
+        self.dashboard.refresh()
+        self.recorder.record("系统",
+                             f"编组变更为 {len(new_consist)} 车")
+
     def _default_front_train_positions(self) -> list[float]:
         """根据线路长度放置一个演示前车，供闭塞逻辑展示"""
         total = self.track.total_length()
@@ -279,6 +289,13 @@ class MainWindow(QMainWindow):
     def _update(self):
         """定时更新"""
         dt = 0.033  # 30fps 仿真步长
+
+        # ── 网络模式：从外部系统注入数据 ──────────────────────
+        if getattr(self, '_network_mode', False):
+            self._network_update_step(dt)
+            self.dashboard.refresh()
+            self._update_log_display()
+            return
 
         # ── 线路条件（头车绝对位置） ──────────────────────────────
         head_abs = self._head_abs_position()
@@ -333,6 +350,212 @@ class MainWindow(QMainWindow):
             track_limit * 3.6,
         )
         self.force_panel.set_report(report)
+
+    # ── 网络通信（外部系统模式） ────────────────────────────────
+
+    def _network_update_step(self, dt: float):
+        """网络模式下的仿真步进"""
+        head_abs = self._head_abs_position()
+        head_speed = self.controller.head_speed
+        head_accel = self.controller.states[0].acceleration if self.controller.states else 0.0
+        curr_station = self._find_current_station(head_abs)
+
+        # 1. 车辆UDP：发送本车状态 → 总控
+        self.network.set_vehicle_send_source(lambda: [
+            (head_accel, head_speed, head_abs)
+        ] * 20)
+
+        # 2. 车辆UDP：读取外部平台指令
+        cmds = self.network.vehicle_commands
+        if cmds and len(cmds) > 0:
+            cmd, pct = cmds[0]
+            if cmd == 1:
+                self.controller.set_throttle(float(pct) / 100.0)
+            elif cmd == 2:
+                self.controller.set_brake(float(pct) / 100.0)
+            elif cmd == 0:
+                self.controller.set_throttle(0.0)
+
+        # 3. 信号网关：发送信号/道岔状态
+        switches = []
+        signals = [(s.signal_id, self._aspect_to_protocol(
+            self.signal_system.get_signal_aspect(s))) for s in self.track.signals]
+        self.network.set_signal_send_source(lambda: (switches, signals[:20]))
+
+        # 4. 视景系统：发送 TCMS2VIEW
+        self._feed_vision_data(head_abs, head_speed, head_accel, signals)
+
+        # 5. 司机台显示屏：发送网络屏 + 信号屏数据
+        self._feed_cab_display(head_abs, head_speed, head_accel, curr_station)
+
+        # 6. 推进本地仿真
+        self.controller.step(dt)
+        self.recorder.step(dt)
+        self.sim_time += dt
+
+        # 7. 刷新连接状态
+        self._refresh_connection_status()
+
+    def _feed_vision_data(self, head_abs: float, head_speed: float,
+                          head_accel: float, signal_aspects: list):
+        """为视景系统准备 TCMS2VIEW 数据"""
+        sig_states = [s[1] for s in signal_aspects]
+        sw_states = [0x01] * min(self.track.switches_count if hasattr(self.track, 'switches_count') else 0, 29)
+        speed_mms = int(head_speed * 1000)                     # m/s → mm/s
+        accel_pct = min(100, max(0, int(abs(head_accel) / 1.1 * 100)))
+        run_state = 0x11 if head_accel > 0.01 else (0x12 if head_accel < -0.01 else 0x13)
+        pos_mm = int(head_abs * 1000)
+
+        def _vision_source():
+            return {
+                "signal_states": sig_states,
+                "switch_states": sw_states,
+                "speed_mms": speed_mms,
+                "accel_pct": accel_pct,
+                "run_state": run_state,
+                "position_mm": pos_mm,
+                "edge_id": self._abs_to_edge_id(head_abs),
+                "direction": self._get_run_dir(),
+                "other_trains": self._get_other_trains(),
+            }
+
+        self.network.set_vision_data_source(_vision_source)
+
+    def _feed_cab_display(self, head_abs: float, head_speed: float,
+                          head_accel: float, curr_station: int):
+        """为司机台显示屏准备数据"""
+        track_limit = self.track.get_speed_limit_at(head_abs) if hasattr(self, 'track') else 0
+        effective_limit = self.signal_system.get_effective_speed_limit(
+            head_abs, track_limit, self.track.signals) if hasattr(self, 'track') else track_limit
+
+        net_data = {
+            "speed": head_speed,
+            "acceleration": head_accel,
+            "speed_limit": effective_limit,
+            "run_mode": self.controller.running_mode.value if self.controller.running_mode else 0,
+            "run_dir": self._get_run_dir(),
+            "power_pull": 80 if self.controller.throttle > 0 else 0,
+            "net_pressure": 750 if self.power_supply.can_traction() else 0,
+            "curr_station": curr_station,
+            "next_station": self._find_next_station(head_abs),
+            "end_station": curr_station,
+            "power_state": self.power_supply.status.value if hasattr(self.power_supply, 'status') else 0,
+            "door_states": self._get_door_states(),
+            "has_power": self.power_supply.can_traction(),
+        }
+
+        sig_data = {
+            "speed": head_speed,
+            "acceleration": head_accel,
+            "speed_limit": effective_limit,
+            "mode": 5,  # RM mode default
+            "run_dir": self._get_run_dir(),
+            "curr_station": curr_station,
+            "next_station": self._find_next_station(head_abs),
+            "end_station": curr_station,
+            "pull_switch": 1 if self.controller.throttle > 0 else 0,
+            "pull_state": self.controller.traction_level if hasattr(self.controller, 'traction_level') else 0,
+            "brake_state": self.controller.brake_level if hasattr(self.controller, 'brake_level') else 0,
+            "urgency_stop": 1 if self.controller.emergency_brake else 0,
+            "event_id": 0,
+            "sig_state": self._get_front_signal_state(),
+            "train_no": 1,
+            "next_station_dist": self._distance_to_next_station(head_abs),
+        }
+
+        self.network.set_cab_network_source(lambda: net_data)
+        self.network.set_cab_signal_source(lambda: sig_data)
+
+    def _aspect_to_protocol(self, aspect) -> int:
+        """将内部 SignalAspect 映射为协议灯色码"""
+        from src.signal.system import SignalAspect
+        mapping = {
+            SignalAspect.RED: 0x01,
+            SignalAspect.YELLOW: 0x02,
+            SignalAspect.GREEN: 0x04,
+        }
+        return mapping.get(aspect, 0x00)
+
+    def _get_run_dir(self) -> int:
+        """获取运行方向: 0=上行, 1=下行"""
+        return 0
+
+    def _abs_to_edge_id(self, head_abs: float) -> int:
+        """根据绝对位置获取边号（区段号）"""
+        if hasattr(self, 'track') and hasattr(self.track, '_seg_map'):
+            for sid, seg in self.track._seg_map.items():
+                if seg.abs_start <= head_abs <= seg.abs_start + seg.length:
+                    return sid
+        return 0
+
+    def _get_other_trains(self) -> list:
+        """获取他车信息（当前仅演示数据）"""
+        return []
+
+    def _get_door_states(self) -> list[int]:
+        """获取6节车门的开关状态"""
+        states = []
+        for i in range(6):
+            state = 0  # 0=关门, 1=开门
+            if hasattr(self, 'door_interlock'):
+                if self.door_interlock.is_door_open():
+                    state = 1
+            states.append(state)
+        return states
+
+    def _find_current_station(self, head_abs: float) -> int:
+        """查找当前所在车站ID"""
+        if not hasattr(self, 'track'):
+            return 0
+        for st in self.track.stations:
+            if abs(st.abs_pos - head_abs) < 50:
+                return st.station_id if hasattr(st, 'station_id') else 0
+        return 0
+
+    def _find_next_station(self, head_abs: float) -> int:
+        """查找下一站ID"""
+        if not hasattr(self, 'track'):
+            return 0
+        next_id = 0
+        for st in self.track.stations:
+            if st.abs_pos > head_abs + 20:
+                next_id = st.station_id if hasattr(st, 'station_id') else 0
+                break
+        return next_id
+
+    def _distance_to_next_station(self, head_abs: float) -> float:
+        """距下一站距离 (m)"""
+        if not hasattr(self, 'track'):
+            return 0.0
+        for st in self.track.stations:
+            if st.abs_pos > head_abs + 20:
+                return st.abs_pos - head_abs
+        return 0.0
+
+    def _get_front_signal_state(self) -> int:
+        """获取前方信号机状态"""
+        return 0
+
+    def _refresh_connection_status(self):
+        """刷新连接状态显示"""
+        if not self._network_mode:
+            return
+        self.data_source_status.setText(self._data_source_summary())
+
+    def _setup_network_callbacks(self):
+        """设置网络模块的回调"""
+        def on_vehicle_recv(commands):
+            pass
+        def on_signal_recv(data: bytes):
+            pass
+        def on_plc_recv(data: dict):
+            if "handle_position" in data and self._network_mode:
+                handle = data.get("handle_position", 0)
+                if handle > 0:
+                    self.controller.set_throttle(handle / 127.0)
+        self.network.set_vehicle_recv_callback(on_vehicle_recv)
+        self.network.set_signal_recv_callback(on_signal_recv)
+        self.network.set_plc_recv_callback(on_plc_recv)
 
     # ── 点击导航（调试模式） ──────────────────────────────────
 

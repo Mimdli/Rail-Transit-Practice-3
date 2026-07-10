@@ -24,7 +24,8 @@ from src.track.data import (
 
 
 # 公里标解析: "K0+313.000" → 313.0 m,  "K12+500.000" → 12500.0 m
-_KM_PATTERN = re.compile(r"K(\d+)\+([\d.]+)")
+# 注意: 部分数据使用小写 k，统一处理
+_KM_PATTERN = re.compile(r"[Kk](\d+)\+([\d.]+)")
 
 
 def _parse_km(km_str) -> float:
