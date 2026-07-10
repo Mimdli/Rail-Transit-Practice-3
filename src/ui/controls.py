@@ -9,19 +9,24 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QFrame, QTextEdit, QGroupBox, QComboBox, QGridLayout,
+    QSpinBox,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 
 from src.vehicle.vehicle_controller import VehicleController
 from src.vehicle.auto_drive import AutoDriveController
 from src.vehicle.enums import RunningMode, DoorSide, LoadLevel
 from src.common.track_position import ITrackQuery
+from src.common.consist import TrainConsist, CONSIST_4M2T, CONSIST_6M0T, CONSIST_1M4T
+from src.common.car_config import MOTOR_CAR_CONFIG, TRAILER_CAR_CONFIG
 from src.door.interlock import DoorInterlock
 from src.logger.recorder import Recorder
 
 
 class ControlPanel(QWidget):
     """控制面板 — 驾驶操作按钮"""
+
+    consist_changed = pyqtSignal(object)  # 携带新的 TrainConsist
 
     def __init__(self, controller: VehicleController,
                  auto_drive: AutoDriveController,
@@ -38,6 +43,8 @@ class ControlPanel(QWidget):
         self.show_log = show_log
         self.log_text = None
         self._displayed_event_count = 0
+        self._car_type_buttons = []
+        self._car_count = 6
         self._init_ui()
 
     def _init_ui(self):
@@ -137,6 +144,58 @@ class ControlPanel(QWidget):
         route_layout.addWidget(self.route_combo)
 
         layout.addWidget(route_group)
+
+        # === 编组配置 ===
+        consist_group = QGroupBox("编组配置")
+        consist_group.setObjectName("panelGroup")
+        consist_layout = QVBoxLayout(consist_group)
+        consist_layout.setSpacing(4)
+        consist_layout.setContentsMargins(8, 14, 8, 8)
+
+        # 预设按钮行
+        preset_hlayout = QHBoxLayout()
+        preset_hlayout.setSpacing(4)
+        btn_4m2t = QPushButton("4M2T")
+        btn_4m2t.setObjectName("smallButton")
+        btn_4m2t.clicked.connect(lambda: self._apply_preset(6, [True, False, True, True, False, True]))
+        btn_6m0t = QPushButton("6M0T")
+        btn_6m0t.setObjectName("smallButton")
+        btn_6m0t.clicked.connect(lambda: self._apply_preset(6, [True]*6))
+        btn_1m4t = QPushButton("1M4T")
+        btn_1m4t.setObjectName("smallButton")
+        btn_1m4t.clicked.connect(lambda: self._apply_preset(5, [True]+[False]*4))
+        btn_4m4t = QPushButton("4M4T")
+        btn_4m4t.setObjectName("smallButton")
+        btn_4m4t.clicked.connect(lambda: self._apply_preset(8, [True, False, True, False, False, True, False, True]))
+        for b in (btn_4m2t, btn_6m0t, btn_1m4t, btn_4m4t):
+            preset_hlayout.addWidget(b)
+        consist_layout.addLayout(preset_hlayout)
+
+        # 车厢数 + 按钮行（组合）
+        count_hlayout = QHBoxLayout()
+        count_hlayout.setSpacing(4)
+        count_hlayout.addWidget(QLabel("车厢数:"))
+        self._car_count_spin = QSpinBox()
+        self._car_count_spin.setRange(2, 8)
+        self._car_count_spin.setValue(6)
+        self._car_count_spin.valueChanged.connect(self._on_car_count_changed)
+        count_hlayout.addWidget(self._car_count_spin)
+        count_hlayout.addStretch()
+        consist_layout.addLayout(count_hlayout)
+
+        # 每节车厢的 M/T 按钮行
+        self._car_type_layout = QHBoxLayout()
+        self._car_type_layout.setSpacing(2)
+        self._rebuild_car_type_buttons(6)
+        consist_layout.addLayout(self._car_type_layout)
+
+        # 应用按钮
+        btn_apply = QPushButton("应用编组")
+        btn_apply.setObjectName("primaryButton")
+        btn_apply.clicked.connect(self._on_apply_consist)
+        consist_layout.addWidget(btn_apply)
+
+        layout.addWidget(consist_group)
 
         # === 操作提示 ===
         self.status_label = QLabel("就绪 — 点击「牵引」发车")
@@ -276,6 +335,71 @@ class ControlPanel(QWidget):
             label = r.name if not r.is_auto else "自动（系统算路）"
             self.route_combo.addItem(label, r.route_id)
         self.route_combo.blockSignals(False)
+
+    # ── 编组配置 ───────────────────────────────────────────────
+
+    def _rebuild_car_type_buttons(self, count: int):
+        """重建 M/T 切换按钮行。"""
+        self._car_count = count
+        # 清除旧按钮
+        while self._car_type_layout.count():
+            item = self._car_type_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self._car_type_buttons.clear()
+        # 新建按钮（默认 4M2T 模式）
+        for i in range(count):
+            is_motor = i < count - 2  # 默认后两节为拖车
+            btn = QPushButton("M" if is_motor else "T")
+            btn.setObjectName("smallButton")
+            btn.setCheckable(True)
+            btn.setChecked(is_motor)
+            btn.clicked.connect(lambda checked, idx=i: self._on_toggle_car_type(idx))
+            self._car_type_layout.addWidget(btn)
+            self._car_type_buttons.append(btn)
+
+    def _on_car_count_changed(self, value: int):
+        """车厢数变化时重建按钮行，保留已存在的 M/T 配置。"""
+        old_types = [b.isChecked() for b in self._car_type_buttons]
+        self._rebuild_car_type_buttons(value)
+        # 尽量保留旧配置的前缀
+        for i in range(min(len(old_types), value)):
+            self._car_type_buttons[i].setChecked(old_types[i])
+
+    def _on_toggle_car_type(self, idx: int):
+        """切换第 idx 节车厢的 M/T。"""
+        btn = self._car_type_buttons[idx]
+        btn.setText("M" if btn.isChecked() else "T")
+
+    def _apply_preset(self, count: int, motor_states: list):
+        """应用预设编组。"""
+        self._car_count_spin.blockSignals(True)
+        self._car_count_spin.setValue(count)
+        self._car_count_spin.blockSignals(False)
+        self._car_count = count
+        self._rebuild_car_type_buttons(count)
+        for i, motor in enumerate(motor_states):
+            if i < count:
+                self._car_type_buttons[i].setChecked(motor)
+                self._car_type_buttons[i].setText("M" if motor else "T")
+
+    def _on_apply_consist(self):
+        """根据当前 M/T 配置构建 TrainConsist 并发射信号。"""
+        configs = []
+        for btn in self._car_type_buttons:
+            if btn.isChecked():
+                configs.append(MOTOR_CAR_CONFIG)
+            else:
+                configs.append(TRAILER_CAR_CONFIG)
+        new_consist = TrainConsist(configs)
+        # 在控制器上立即生效
+        self.controller.replace_consist(new_consist, self.track_adapter)
+        # 通知主窗口更新可视化
+        self.consist_changed.emit(new_consist)
+        motor = sum(1 for b in self._car_type_buttons if b.isChecked())
+        trailer = len(self._car_type_buttons) - motor
+        self.status_label.setText(f"编组已更新: {motor}M{trailer}T")
 
     # ── 日志 ──────────────────────────────────────────────────
 

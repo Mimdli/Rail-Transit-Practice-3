@@ -103,11 +103,10 @@ class TrackDataAdapter(ITrackQuery):
         """TrackPosition → 线路绝对里程 (m)。"""
         seg = self._td._seg_map.get(pos.segment_id)
         if seg is None:
-            # 尝试回退：如果 segment_id 不存在，返回 offset 作为绝对位置
             return pos.offset
         return seg.abs_start + pos.offset
 
-    def from_absolute(self, abs_pos: float) -> TrackPosition:
+    def from_absolute(self, abs_pos: float, hint_seg_id: Optional[int] = None) -> TrackPosition:
         """线路绝对里程 → TrackPosition，带道岔消歧。
 
         3 层消歧策略：
@@ -140,7 +139,7 @@ class TrackDataAdapter(ITrackQuery):
                                  offset=abs_pos - seg.abs_start)
         else:
             # 多个候选（道岔重叠区域），按优先级选择
-            chosen = self._disambiguate_candidates(candidates, abs_pos)
+            chosen = self._disambiguate_candidates(candidates, abs_pos, hint_seg_id)
             if chosen is not None:
                 return TrackPosition(segment_id=chosen.seg_id,
                                      offset=abs_pos - chosen.abs_start)
@@ -235,13 +234,15 @@ class TrackDataAdapter(ITrackQuery):
 
         return visited
 
-    def _disambiguate_candidates(self, candidates, abs_pos):
+    def _disambiguate_candidates(self, candidates, abs_pos, hint_seg_id: Optional[int] = None):
         """从多个候选 segment 中选择正确的 segment。
 
         优先级：
           1. 活动进路匹配
-          2. 主线启发式
-          3. 第一个候选（兜底）
+          2. 同一线路偏好（同链段）
+          3. 同链间隙桥接（同链上绝对位置最近的段）
+          4. 主线兜底（选绝对位置最接近的候选）
+          5. 第一个候选（兜底）
         """
         # 优先级 1: 活动进路
         if self._active_route is not None and not self._active_route.is_auto:
@@ -250,10 +251,50 @@ class TrackDataAdapter(ITrackQuery):
                 if seg.seg_id in route_set:
                     return seg
 
-        # 优先级 2: 主线启发式
-        for seg in candidates:
-            if seg.seg_id in self._main_line_seg_ids:
+        # 收集主线候选
+        main_candidates = [seg for seg in candidates
+                           if seg.seg_id in self._main_line_seg_ids]
+        if not main_candidates:
+            return candidates[0]
+
+        # 构建 hint_seg_id 所在链的 ID 集合
+        chain_ids: set[int] = set()
+        if hint_seg_id is not None:
+            last = self._td._seg_map.get(hint_seg_id)
+            if last is not None:
+                chain_ids = {last.seg_id}
+                sid = last.end_neighbor
+                while sid > 0 and sid != 65535 and sid in self._td._seg_map:
+                    chain_ids.add(sid)
+                    sid = self._td._seg_map[sid].end_neighbor
+                sid = last.start_neighbor
+                while sid > 0 and sid != 65535 and sid in self._td._seg_map:
+                    chain_ids.add(sid)
+                    sid = self._td._seg_map[sid].start_neighbor
+
+        # 优先级 2: 同链匹配 — 主线候选在同链上
+        for seg in main_candidates:
+            if seg.seg_id in chain_ids:
                 return seg
 
-        # 优先级 3: 兜底
-        return candidates[0]
+        # 优先级 3: 同链间隙桥接 — 在同链上找绝对位置最接近的段
+        # （处理源数据中线路有微小间隙的情况，避免跳线到另一条线）
+        if chain_ids:
+            best_on_chain = None
+            best_dist = float('inf')
+            for sid in chain_ids:
+                seg = self._td._seg_map.get(sid)
+                if seg is None:
+                    continue
+                mid = seg.abs_start + seg.length / 2
+                dist = abs(abs_pos - mid)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_on_chain = seg
+            if best_on_chain is not None:
+                return best_on_chain
+
+        # 优先级 4: 跨线兜底 — 选绝对位置最接近的候选
+        best = min(main_candidates,
+                   key=lambda s: abs(abs_pos - (s.abs_start + s.length / 2)))
+        return best
