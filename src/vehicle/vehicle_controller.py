@@ -64,7 +64,8 @@ class VehicleController:
                  track: ITrackQuery = None,
                  env: IEnvironmentQuery = None,
                  coupler_config: CouplerConfig = None,
-                 interlock: MockInterlock = None):
+                 interlock: MockInterlock = None,
+                 speed_limit_tau: float = 1.0):
         """
         Args:
             consist: 列车编组配置，默认 CONSIST_4M2T。
@@ -72,6 +73,8 @@ class VehicleController:
             env: 环境数据查询接口。
             coupler_config: 车钩参数。
             interlock: 联锁约束（Mock）。
+            speed_limit_tau: 限速软约束时间常数 (s)，传递给 PerCarDynamicsPipeline。
+                默认 1.0s。设为 0 恢复硬钳位（不推荐）。
         """
         # 深拷贝编组，确保每个控制器实例的车辆配置完全隔离
         self.consist = copy.deepcopy(consist or CONSIST_4M2T)
@@ -79,7 +82,8 @@ class VehicleController:
         self.env = env
         self.interlock = interlock or MockInterlock()
 
-        self.pipeline = PerCarDynamicsPipeline(coupler_config)
+        self.pipeline = PerCarDynamicsPipeline(coupler_config,
+                                               speed_limit_tau=speed_limit_tau)
 
         # 控制指令
         self.throttle: float = 0.0       # 0.0 ~ 1.0
