@@ -205,6 +205,47 @@ def test_hold_emergency_and_restore_commands():
     assert dispatch.trains.require("2车").status == TrainStatus.WAITING
 
 
+def test_hold_and_emergency_cannot_be_bypassed_by_departure():
+    dispatch = _make_dispatch()
+    dispatch.add_train("2车", 1)
+    dispatch.assign_plan("2车", "loop")
+    assert dispatch.depart("2车").ok
+
+    assert dispatch.hold("2车").ok
+    assert not dispatch.depart("2车").ok
+    assert dispatch.release("2车").ok
+    runtime = dispatch.trains.require("2车")
+    assert runtime.status == TrainStatus.WAITING
+    assert runtime.controller.head_speed <= 0.1
+
+    assert dispatch.emergency_stop("2车").ok
+    assert not dispatch.depart("2车").ok
+    assert dispatch.restore("2车").ok
+    assert not dispatch.restore("2车").ok
+
+
+def test_running_train_cannot_depart_twice():
+    dispatch = _make_dispatch()
+    dispatch.add_train("2车", 1)
+    dispatch.assign_plan("2车", "loop")
+    assert dispatch.depart("2车").ok
+    assert not dispatch.depart("2车").ok
+
+
+def test_dispatch_reserved_route_is_vehicle_active_route():
+    dispatch = _make_dispatch()
+    dispatch.add_train("2车", 1)
+    dispatch.assign_plan("2车", "loop")
+    assert dispatch.depart("2车").ok
+    runtime = dispatch.trains.require("2车")
+
+    active_route = runtime.track_adapter.get_active_route()
+    assert active_route is not None
+    assert tuple(active_route.seg_ids) == runtime.reserved_segments
+    assert runtime.auto_drive.target_position.segment_id \
+        == runtime.reserved_segments[-1]
+
+
 def test_terminal_plan_assignment_reverses_direction():
     dispatch = _make_dispatch()
     dispatch.add_train("2车", 4)

@@ -10,6 +10,8 @@ from PyQt5.QtWidgets import (
 )
 
 from src.dispatch.dispatch_manager import DispatchManager, DispatchResult
+from src.dispatch.models import TrainStatus
+from src.track.semantic_line import build_semantic_line
 
 
 class DispatchLineView(QGraphicsView):
@@ -32,14 +34,8 @@ class DispatchLineView(QGraphicsView):
     def refresh(self):
         self._scene.clear()
         track = self.manager.track
-        main_segments = [
-            segment for segment in track.segments
-            if segment.start_neighbor or segment.end_neighbor
-        ] or list(track.segments)
-        total = max(
-            (segment.abs_start + segment.length for segment in main_segments),
-            default=track.total_length() or 1.0,
-        )
+        model = build_semantic_line(track)
+        total = model.total_length or 1.0
         width = max(self.viewport().width() - 30, 900)
         left, right = 90.0, width - 70.0
         down_y, up_y = 112.0, 190.0
@@ -52,30 +48,46 @@ class DispatchLineView(QGraphicsView):
         self._add_text("下行 →", 22, down_y - 8, 10, QColor("#2563eb"), True)
         self._add_text("上行 ←", 22, up_y - 8, 10, QColor("#0f766e"), True)
 
-        for segment in main_segments:
-            x1 = left + segment.abs_start / total * (right - left)
-            x2 = left + (segment.abs_start + segment.length) / total * (right - left)
-            owners = self.manager.occupancy.owners(segment.seg_id)
-            lock_owner = self.manager.interlocking.locked_by(segment.seg_id)
-            color = QColor("#dc2626") if owners else (
-                QColor("#f59e0b") if lock_owner else QColor("#94a3b8")
-            )
+        self._scene.addLine(
+            left, down_y, right, down_y,
+            QPen(QColor("#2457c5"), 5, Qt.SolidLine, Qt.RoundCap))
+        self._scene.addLine(
+            left, up_y, right, up_y,
+            QPen(QColor("#0f766e"), 5, Qt.SolidLine, Qt.RoundCap))
+
+        # 调度态势只按运营区间聚合显示，不铺开原始 Seg。
+        for link in model.links:
+            x1 = left + link.start_pos / total * (right - left)
+            x2 = left + link.end_pos / total * (right - left)
+            owner_set = set().union(*(
+                self.manager.occupancy.owners(segment_id)
+                for segment_id in link.seg_ids
+            )) if link.seg_ids else set()
+            lock_owners = {
+                owner for segment_id in link.seg_ids
+                if (owner := self.manager.interlocking.locked_by(segment_id))
+            }
+            state_color = (QColor("#dc2626") if owner_set else
+                           QColor("#f59e0b") if lock_owners else None)
+            if state_color is None:
+                continue
             for y in (down_y, up_y):
                 line = self._scene.addLine(
                     x1, y, x2, y,
-                    QPen(color, 7, Qt.SolidLine, Qt.RoundCap))
-                if owners:
-                    state = f"LK{segment.seg_id} · {','.join(sorted(owners))} 占用"
-                elif lock_owner:
-                    state = f"LK{segment.seg_id} · {lock_owner} 锁闭"
-                else:
-                    state = f"LK{segment.seg_id} · 空闲"
+                    QPen(state_color, 7, Qt.SolidLine, Qt.RoundCap))
+                state = (f"{','.join(sorted(owner_set))} 占用"
+                         if owner_set else
+                         f"{','.join(sorted(lock_owners))} 锁闭")
                 line.setToolTip(state)
 
         for station in sorted(track.stations, key=lambda item: item.position):
             x = left + station.position / total * (right - left)
             self._scene.addLine(x, down_y - 16, x, up_y + 16,
                                 QPen(QColor("#334155"), 2))
+            for y in (down_y, up_y):
+                self._scene.addEllipse(
+                    x - 5, y - 5, 10, 10,
+                    QPen(QColor("#334155"), 2), QBrush(QColor("#ffffff")))
             self._add_text(station.name, x - 24, 66, 9,
                            QColor("#1d2939"), True)
 
@@ -151,6 +163,7 @@ class DispatchView(QWidget):
     """调度操作页签。"""
 
     operation_finished = pyqtSignal(str, bool)
+    selected_train_changed = pyqtSignal(str)
 
     COLUMNS = ("列车", "状态", "方向", "位置", "速度", "目标站", "交路", "说明")
 
@@ -198,16 +211,23 @@ class DispatchView(QWidget):
         layout.setContentsMargins(0, 0, 8, 0)
         layout.setSpacing(6)
 
-        add_group = QGroupBox("列车编组")
+        add_group = QGroupBox("列车配置")
         form = QFormLayout(add_group)
         self.train_id_edit = QLineEdit()
         self.train_id_edit.setPlaceholderText("例如 2车")
         self.start_station_combo = QComboBox()
+        self.direction_combo = QComboBox()
+        self.direction_combo.addItem("下行", 1)
+        self.direction_combo.addItem("上行", -1)
+        self.platform_hint = QLabel("—")
+        self.platform_hint.setWordWrap(True)
         self.add_button = QPushButton("加车")
         self.add_button.setObjectName("primaryButton")
         self.remove_button = QPushButton("删车")
         form.addRow("列车编号", self.train_id_edit)
+        form.addRow("运行方向", self.direction_combo)
         form.addRow("加入位置", self.start_station_combo)
+        form.addRow("站台位置", self.platform_hint)
         row = QHBoxLayout()
         row.addWidget(self.add_button)
         row.addWidget(self.remove_button)
@@ -224,6 +244,9 @@ class DispatchView(QWidget):
 
         command_group = QGroupBox("调度命令")
         command_layout = QVBoxLayout(command_group)
+        self.current_train_label = QLabel("当前调度对象：未选择")
+        self.current_train_label.setObjectName("dataSourceStatus")
+        command_layout.addWidget(self.current_train_label)
         command_row = QHBoxLayout()
         self.depart_button = QPushButton("发车")
         self.depart_button.setObjectName("primaryButton")
@@ -252,6 +275,10 @@ class DispatchView(QWidget):
         self.release_button.clicked.connect(lambda: self._run_command("release"))
         self.stop_button.clicked.connect(lambda: self._run_command("emergency_stop"))
         self.restore_button.clicked.connect(lambda: self._run_command("restore"))
+        self.start_station_combo.currentIndexChanged.connect(
+            self._update_platform_hint)
+        self.direction_combo.currentIndexChanged.connect(
+            self._update_platform_hint)
         return panel
 
     def _build_train_table(self):
@@ -271,6 +298,7 @@ class DispatchView(QWidget):
             self.table.setColumnWidth(column, width)
         header.setSectionResizeMode(7, QHeaderView.Stretch)
         layout.addWidget(self.table)
+        self.table.itemSelectionChanged.connect(self._update_command_state)
         return group
 
     def set_manager(self, manager: DispatchManager):
@@ -286,6 +314,7 @@ class DispatchView(QWidget):
         self.plan_combo.clear()
         for plan in self.manager.service_plans.values():
             self.plan_combo.addItem(plan.name, plan.plan_id)
+        self._update_platform_hint()
 
     def refresh(self):
         selected = self.selected_train_id()
@@ -328,6 +357,7 @@ class DispatchView(QWidget):
             f"列车 {len(runtimes)}  |  占用区段 {occupied}  |  锁闭区段 {locked}"
         )
         self.line_view.refresh()
+        self._update_command_state()
 
     def selected_train_id(self):
         row = self.table.currentRow()
@@ -337,10 +367,79 @@ class DispatchView(QWidget):
     def _add_train(self):
         train_id = self.train_id_edit.text().strip()
         station_id = self.start_station_combo.currentData()
-        result = self.manager.add_train(train_id, station_id)
+        direction = self.direction_combo.currentData() or 1
+        result = self.manager.add_train(train_id, station_id, direction)
         if result.ok:
             self.train_id_edit.clear()
         self._show_result(result)
+        if result.ok:
+            self._select_train(train_id)
+            self._update_command_state()
+
+    def _select_train(self, train_id: str):
+        """命令成功后把操作焦点固定到对应列车。"""
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None and item.text() == train_id:
+                self.table.selectRow(row)
+                return
+
+    def _update_platform_hint(self):
+        station_id = self.start_station_combo.currentData()
+        if station_id is None:
+            self.platform_hint.setText("—")
+            return
+        direction = self.direction_combo.currentData() or 1
+        try:
+            station = self.manager.trains.get_station(station_id)
+            position = self.manager.trains.get_station_track_position(
+                station_id, direction)
+            label = "下行" if direction > 0 else "上行"
+            self.platform_hint.setText(
+                f"{station.name} · {label}站台 · Seg {position.segment_id}")
+        except (ValueError, KeyError):
+            self.platform_hint.setText("当前站点缺少方向站台数据")
+
+    def _update_command_state(self):
+        train_id = self.selected_train_id()
+        runtime = self.manager.trains.get(train_id) if train_id else None
+        if runtime is None:
+            self.current_train_label.setText("当前调度对象：未选择")
+            for button in (self.assign_button, self.depart_button,
+                           self.hold_button, self.release_button,
+                           self.stop_button, self.restore_button,
+                           self.remove_button):
+                button.setEnabled(False)
+            return
+        self.current_train_label.setText(
+            f"当前调度对象：{runtime.train_id} · "
+            f"{runtime.direction_label} · {runtime.status.value}")
+        self.selected_train_changed.emit(runtime.train_id)
+        status = runtime.status
+        self.assign_button.setEnabled(
+            status in (TrainStatus.WAITING, TrainStatus.COMPLETED))
+        self.depart_button.setEnabled(
+            status == TrainStatus.WAITING and not runtime.held
+            and not runtime.emergency and runtime.service_plan is not None)
+        self.hold_button.setEnabled(
+            status in (TrainStatus.RUNNING, TrainStatus.BLOCKED))
+        self.release_button.setEnabled(status == TrainStatus.HELD)
+        self.stop_button.setEnabled(status != TrainStatus.EMERGENCY_STOP)
+        self.restore_button.setEnabled(
+            status == TrainStatus.EMERGENCY_STOP
+            and runtime.controller.head_speed <= 0.1)
+        self.remove_button.setEnabled(runtime.controller.head_speed <= 0.1)
+        reasons = {
+            self.depart_button: "仅待发且已设置交路的列车可以发车",
+            self.hold_button: "仅运行或进路等待中的列车可以扣车",
+            self.release_button: "列车当前未处于扣车状态",
+            self.stop_button: "列车已经处于紧急停车状态",
+            self.restore_button: "仅紧急停车且完全停稳后可以恢复",
+            self.assign_button: "运行中的列车不能重新设置交路",
+            self.remove_button: "运行中的列车不能删除",
+        }
+        for button, reason in reasons.items():
+            button.setToolTip("" if button.isEnabled() else reason)
 
     def _remove_train(self):
         train_id = self.selected_train_id()

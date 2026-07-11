@@ -7,7 +7,7 @@ from src.track.link_mainline import load_mainline_links, mainline_segment_ids
 from src.track.link_mainline import LinkCoordinateMapper
 from src.common.track_position import TrackPosition
 from src.track.ats_layout import load_ats_layout
-from src.dispatch import DispatchManager, TrainStatus
+from src.dispatch import DispatchManager, ServicePlan, TrainStatus
 
 
 def test_database_missing_station_positions_are_repaired_in_memory():
@@ -134,3 +134,35 @@ def test_database_station_placement_and_separation_use_down_platform_topology():
     assert follower.status == TrainStatus.BLOCKED
     assert "前车" in follower.blocked_reason
     assert follower.controller.brake_level >= 0.85
+
+
+def test_database_station_placement_uses_direction_platforms():
+    track = DBLoader().load_from_db()
+    dispatch = DispatchManager(track)
+    kyl = next(station for station in track.stations if station.name == "KYL")
+
+    assert dispatch.add_train("下行车", kyl.station_id, direction=1).ok
+    assert dispatch.add_train("上行车", kyl.station_id, direction=-1).ok
+    down_seg = dispatch.trains.require(
+        "下行车").controller.states[0].position.segment_id
+    up_seg = dispatch.trains.require(
+        "上行车").controller.states[0].position.segment_id
+
+    assert down_seg == 69
+    assert up_seg != down_seg
+
+
+def test_database_ggz_to_fsp_uses_one_dispatch_route():
+    """GGZ→FSP 的目标、锁闭进路和车辆活动进路必须完全一致。"""
+    track = DBLoader().load_from_db()
+    dispatch = DispatchManager(track)
+    dispatch.add_service_plan(ServicePlan("short", "GGZ → FSP", (1, 2)))
+    assert dispatch.add_train("D01", 1, direction=1).ok
+    assert dispatch.assign_plan("D01", "short").ok
+    assert dispatch.depart("D01").ok
+    runtime = dispatch.trains.require("D01")
+
+    expected = (13, 14, 17, 44, 43, 45, 46, 48, 49, 50, 51)
+    assert runtime.reserved_segments == expected
+    assert runtime.auto_drive.target_position.segment_id == 51
+    assert tuple(runtime.track_adapter.get_active_route().seg_ids) == expected

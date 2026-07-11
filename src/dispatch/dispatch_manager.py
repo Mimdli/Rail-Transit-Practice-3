@@ -9,10 +9,11 @@ from src.track.data import TrackData
 from src.vehicle.enums import DoorSide, RunningMode
 from src.signal.system import SignalAspect
 from src.track.semantic_line import compute_station_route
+from src.track.route import Route
 
 from .interlocking import BlockOccupancyManager, InterlockingService
 from .models import ServicePlan, TrainRuntime, TrainStatus
-from .train_manager import TrainManager
+from .train_manager import TrainManager, resolve_station_track_position
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,10 @@ class DispatchManager:
             return DispatchResult(False, f"列车不存在: {train_id}")
         if plan is None:
             return DispatchResult(False, f"交路不存在: {plan_id}")
+        if runtime.status not in (TrainStatus.WAITING, TrainStatus.COMPLETED,
+                                  TrainStatus.MANUAL):
+            return DispatchResult(
+                False, f"{train_id} 当前为{runtime.status.value}，不能设置交路")
 
         runtime.service_plan = plan
         # 调度交路按站间运行，使用比单点演示更保守的制动窗口。
@@ -131,9 +136,12 @@ class DispatchManager:
             return DispatchResult(False, f"列车不存在: {train_id}")
         if runtime.service_plan is None:
             return DispatchResult(False, "请先设置交路")
-        runtime.held = False
-        runtime.emergency = False
-        runtime.controller.interlock.emergency_brake_required = False
+        if runtime.status != TrainStatus.WAITING:
+            return DispatchResult(False, f"{train_id} 当前为{runtime.status.value}，不能发车")
+        if runtime.held:
+            return DispatchResult(False, f"{train_id} 已扣车，请先解除扣车")
+        if runtime.emergency:
+            return DispatchResult(False, f"{train_id} 处于紧急停车，请先解除紧急状态")
         runtime.controller.interlock.traction_permitted = True
         if runtime.target_station_id is None:
             result = self._prepare_next_leg(runtime)
@@ -148,6 +156,8 @@ class DispatchManager:
         runtime = self.trains.get(train_id)
         if runtime is None:
             return DispatchResult(False, f"列车不存在: {train_id}")
+        if runtime.status not in (TrainStatus.RUNNING, TrainStatus.BLOCKED):
+            return DispatchResult(False, f"{train_id} 当前为{runtime.status.value}，不能扣车")
         runtime.held = True
         runtime.status = TrainStatus.HELD
         runtime.controller.set_throttle(0.0)
@@ -159,15 +169,20 @@ class DispatchManager:
         runtime = self.trains.get(train_id)
         if runtime is None:
             return DispatchResult(False, f"列车不存在: {train_id}")
+        if runtime.status != TrainStatus.HELD or not runtime.held:
+            return DispatchResult(False, f"{train_id} 当前未处于扣车状态")
         runtime.held = False
         runtime.controller.set_brake(0.0)
         runtime.status = TrainStatus.WAITING
-        return self.depart(train_id)
+        self._record("调度", f"{train_id} 解除扣车，等待发车", runtime)
+        return DispatchResult(True, f"{train_id} 已解除扣车，等待发车")
 
     def emergency_stop(self, train_id: str) -> DispatchResult:
         runtime = self.trains.get(train_id)
         if runtime is None:
             return DispatchResult(False, f"列车不存在: {train_id}")
+        if runtime.status == TrainStatus.EMERGENCY_STOP or runtime.emergency:
+            return DispatchResult(False, f"{train_id} 已处于紧急停车状态")
         runtime.emergency = True
         runtime.status = TrainStatus.EMERGENCY_STOP
         runtime.controller.interlock.emergency_brake_required = True
@@ -180,6 +195,10 @@ class DispatchManager:
         runtime = self.trains.get(train_id)
         if runtime is None:
             return DispatchResult(False, f"列车不存在: {train_id}")
+        if runtime.status != TrainStatus.EMERGENCY_STOP or not runtime.emergency:
+            return DispatchResult(False, f"{train_id} 当前未处于紧急停车状态")
+        if runtime.controller.head_speed > 0.1:
+            return DispatchResult(False, f"{train_id} 尚未停稳，不能解除紧急状态")
         runtime.emergency = False
         runtime.controller.interlock.emergency_brake_required = False
         runtime.controller.set_brake(0.0)
@@ -556,10 +575,6 @@ class DispatchManager:
         if not 0 <= next_index < len(plan.station_ids):
             return DispatchResult(False, "交路已到终点")
         target_station = self.trains.get_station(plan.station_ids[next_index])
-        target_position = runtime.track_adapter.from_absolute(target_station.position)
-        runtime.auto_drive.set_target(target_position)
-        runtime.controller.set_running_mode(RunningMode.AUTOMATIC)
-        runtime.target_station_id = target_station.station_id
         start_segment = runtime.controller.states[0].position.segment_id
         runtime.reserved_segments = compute_station_route(
             self.track, start_segment, target_station.station_id,
@@ -568,6 +583,25 @@ class DispatchManager:
             runtime.reserved_segments = self.interlocking.route_between(
                 runtime.head_abs, target_station.position,
                 runtime.controller.direction)
+        if not runtime.reserved_segments:
+            return DispatchResult(False, f"无法生成到 {target_station.name} 的进路")
+
+        target_position = resolve_station_track_position(
+            self.track, target_station, runtime.controller.direction)
+        if runtime.reserved_segments[-1] != target_position.segment_id:
+            runtime.reserved_segments = tuple(runtime.reserved_segments) + (
+                target_position.segment_id,)
+        # 调度保留进路是车辆适配器与自动驾驶的唯一活动进路。
+        runtime.target_station_id = target_station.station_id
+        route = Route(
+            abs(hash((runtime.train_id, target_station.station_id))) % 100000 + 1,
+            f"调度进路 {runtime.train_id} → {target_station.name}",
+            list(runtime.reserved_segments),
+        )
+        runtime.auto_drive.set_route(route)
+        runtime.track_adapter.set_active_route(route)
+        runtime.auto_drive.set_target(target_position)
+        runtime.controller.set_running_mode(RunningMode.AUTOMATIC)
         request = self.interlocking.request_route(
             runtime.train_id, self._route_window(runtime))
         if not request.granted:

@@ -73,10 +73,12 @@ class SemanticTrackSceneView(QGraphicsView):
     DOWN_LINE = QColor("#2457c5")
     UP_LINE = QColor("#0f766e")
 
-    def __init__(self, track_data=None, parent=None):
+    def __init__(self, track_data=None, parent=None,
+                 show_details: bool = False):
         super().__init__(parent)
         self._ensure_fonts()
         self.track_data = track_data
+        self.show_details = show_details
         self.model: SemanticLineModel | None = None
         self._link_mapper: LinkCoordinateMapper | None = None
         self._coord_points: list[float] = []
@@ -97,6 +99,8 @@ class SemanticTrackSceneView(QGraphicsView):
         self._signal_label_items: list = []
         self._signal_items: list[tuple[str, QGraphicsEllipseItem]] = []
         self._branch_items: list[QGraphicsPathItem] = []
+        self._target_items: list = []
+        self.follow_train = True
         self._left = 90.0
         self._top = 120.0
         self._min_station_gap = 150.0
@@ -136,6 +140,7 @@ class SemanticTrackSceneView(QGraphicsView):
         self._signal_label_items.clear()
         self._signal_items.clear()
         self._branch_items.clear()
+        self._target_items.clear()
         self._station_x.clear()
 
         if not self.track_data:
@@ -154,9 +159,11 @@ class SemanticTrackSceneView(QGraphicsView):
 
         self._draw_title()
         self._draw_main_line()
-        self._draw_link_boundaries()
-        self._draw_branch_components()
-        self._draw_signals()
+        # 默认保留全部运营要素，只弱化标注；工程模式再展开边界和编号。
+        if self.show_details:
+            self._draw_link_boundaries()
+        self._draw_branch_components(compact=not self.show_details)
+        self._draw_signals(compact=not self.show_details)
         self._draw_stations()
         self._draw_summary(width)
         self.resetTransform()
@@ -182,13 +189,32 @@ class SemanticTrackSceneView(QGraphicsView):
                     continue
                 link_pos = float(fallback_positions[idx])
             x = self._x_for_position(link_pos)
-            y = self._down_y if idx < 4 else self._up_y
+            direction = controller.direction if controller else 1
+            y = self._down_y if direction > 0 else self._up_y
             rect = QGraphicsRectItem(x - 14, y - 23 - idx * 0.2, 28, 14)
             rect.setBrush(QBrush(self.TRAIN))
             rect.setPen(QPen(QColor("#92400e"), 1.0))
             rect.setZValue(30)
             self._scene.addItem(rect)
             self._train_items.append(rect)
+        if self.follow_train and self._train_items:
+            self.ensureVisible(self._train_items[0], 80, 60)
+
+    def set_target_marker(self, abs_pos: float):
+        """用跨越双线的目标标记表示站点里程，避免猜测 Seg。"""
+        for item in self._target_items:
+            if item.scene() is self._scene:
+                self._scene.removeItem(item)
+        self._target_items.clear()
+        x = self._x_for_position(abs_pos)
+        line = self._scene.addLine(
+            x, self._down_y - 34, x, self._up_y + 34,
+            QPen(QColor("#dc2626"), 1.8, Qt.DashLine))
+        line.setZValue(28)
+        label = self._add_text(
+            "目标", x, self._down_y - 58, 8,
+            QColor("#b91c1c"), True, center=True)
+        self._target_items.extend((line, label))
 
     def set_dispatch_state(self, runtimes: Iterable,
                            occupancy: dict[int, frozenset[str]]):
@@ -256,7 +282,9 @@ class SemanticTrackSceneView(QGraphicsView):
     def _draw_title(self):
         self._add_text("运营线路图", 72, 46, 22, self.TEXT, True)
         self._add_text(
-            "Link 主线 · 公里标近似比例 · Seg/道岔分支叠加",
+            ("Link 主线 · 公里标近似比例 · Seg/道岔分支叠加"
+             if self.show_details else
+             "双线运营模式 · 车站与实时列车"),
             72, 78, 10, self.MUTED)
 
     def _draw_main_line(self):
@@ -326,14 +354,16 @@ class SemanticTrackSceneView(QGraphicsView):
                 self._scene.addLine(
                     end_x, y - 8, end_x, y + 8, QPen(self.TEXT, 1.0))
 
-    def _draw_branch_components(self):
+    def _draw_branch_components(self, compact: bool = False):
         """沿反位 Seg 连通分量绘制完整渡线、折返线和尽头线。"""
         if not self._link_mapper:
             return
         switches, _signals = load_ats_layout()
         components = self._branch_components(switches)
         occupied_lanes: list[list[tuple[float, float]]] = [[], [], []]
-        pen = QPen(self.BRANCH, 2.6, Qt.SolidLine, Qt.RoundCap)
+        branch_color = QColor("#94a3b8") if compact else self.BRANCH
+        pen = QPen(branch_color, 1.8 if compact else 2.6,
+                   Qt.SolidLine, Qt.RoundCap)
         for component_seg_ids, attachments in components:
             points = []
             for switch in attachments:
@@ -425,8 +455,9 @@ class SemanticTrackSceneView(QGraphicsView):
                 f"代表 Seg: {self._format_id_summary(component_seg_ids)}")
             self._scene.addItem(item)
             self._branch_items.append(item)
-            for x, direction, switch in points:
-                self._draw_switch_marker(x, direction, switch)
+            if not compact:
+                for x, direction, switch in points:
+                    self._draw_switch_marker(x, direction, switch)
 
     def _draw_switch_marker(self, x, direction, switch):
         """用统一菱形标出道岔连接点。"""
@@ -502,7 +533,7 @@ class SemanticTrackSceneView(QGraphicsView):
         tail = ", ".join(map(str, ids[-2:]))
         return f"{head} … {tail}（共 {len(ids)} 个）"
 
-    def _draw_signals(self):
+    def _draw_signals(self, compact: bool = False):
         """按信号机所在 Seg 和段内偏移投影到 Link 坐标。"""
         if not self._link_mapper:
             return
@@ -516,8 +547,11 @@ class SemanticTrackSceneView(QGraphicsView):
             y = self._down_y if signal.direction == "down" else self._up_y
             sign = -1 if signal.direction == "down" else 1
             lamp_y = y + sign * 20
-            self._scene.addLine(x, y, x, lamp_y, QPen(self.TEXT, 1.2))
-            lamp = ImmediateTooltipEllipseItem(x - 4, lamp_y - 4, 8, 8)
+            stem_color = self.MUTED if compact else self.TEXT
+            radius = 3 if compact else 4
+            self._scene.addLine(x, y, x, lamp_y, QPen(stem_color, 1.0 if compact else 1.2))
+            lamp = ImmediateTooltipEllipseItem(
+                x - radius, lamp_y - radius, radius * 2, radius * 2)
             lamp.setBrush(QBrush(QColor("#dc2626")))
             lamp.setPen(QPen(self.TEXT, 1.0))
             lamp.setZValue(22)
@@ -527,10 +561,11 @@ class SemanticTrackSceneView(QGraphicsView):
                 f"Link 公里标: {position:.2f} m")
             self._scene.addItem(lamp)
             self._signal_items.append((signal.name, lamp))
-            label = self._add_text(
-                signal.name, x, lamp_y - 18 if sign < 0 else lamp_y + 7,
-                7, self.TEXT, center=True)
-            self._signal_label_items.append(label)
+            if not compact:
+                label = self._add_text(
+                    signal.name, x, lamp_y - 18 if sign < 0 else lamp_y + 7,
+                    7, self.TEXT, center=True)
+                self._signal_label_items.append(label)
 
     def _draw_direction_line(self, first: float, last: float, y: float, color: QColor,
                              name: str, arrow: str):
@@ -584,12 +619,12 @@ class SemanticTrackSceneView(QGraphicsView):
             for signal in signals
         ) if self._link_mapper else 0
         link_count = sum(len(items) for items in load_mainline_links().values())
-        text = (
-            f"车站 {len(self.model.stations)}  |  "
-            f"Link {link_count}  |  "
-            f"正线附近道岔 {switch_count}  |  "
-            f"主线信号机 {signal_count}"
-        )
+        text = (f"车站 {len(self.model.stations)}  |  Link {link_count}  |  "
+                f"道岔 {switch_count}  |  信号机 {signal_count}（简化显示）"
+                if not self.show_details else
+                f"车站 {len(self.model.stations)}  |  Link {link_count}  |  "
+                f"正线附近道岔 {switch_count}  |  "
+                f"主线信号机 {signal_count}")
         self._add_text(text, 72, 494, 10, self.MUTED)
         self._scene.addLine(72, 476, width + 70, 476, QPen(QColor("#d4dce8"), 1.0))
 

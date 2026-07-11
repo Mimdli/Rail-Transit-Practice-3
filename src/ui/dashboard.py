@@ -243,7 +243,8 @@ class Dashboard(QWidget):
         """
         self._last_report = report
         ctrl = self.controller
-        direction = ctrl.direction
+        # 方向统一为正负 1，供前方信号和下一站距离计算使用。
+        direction = 1 if ctrl.direction >= 0 else -1
 
         # ── 头车绝对位置 ───────────────────────────────────────
         head_abs = 0.0
@@ -348,7 +349,8 @@ class Dashboard(QWidget):
         self.route_label.setText(route_text)
 
         # ── 信号 ───────────────────────────────────────────────
-        next_signal = self.signal_system.get_nearest_signal_ahead(head_abs, self.track.signals)
+        next_signal = self.signal_system.get_nearest_signal_for_direction(
+            head_abs, direction, self.track.signals)
         if next_signal:
             aspect = self.signal_system.get_signal_aspect(next_signal)
             distance = direction * (next_signal.position - head_abs)
@@ -376,8 +378,7 @@ class Dashboard(QWidget):
 
         # ── 车站信息 ───────────────────────────────────────────
         station = self.track.get_station_at(head_abs)
-        station_name = station.name.replace("(上行)", "").replace("(下行)", "") if station else '区间'
-        self.station_label.setText(f"当前站: {station_name}")
+        self.station_label.setText(f"当前站: {station.name if station else '区间'}")
 
         station_candidates = [
             station for station in self.track.stations
@@ -390,8 +391,7 @@ class Dashboard(QWidget):
         )
         if next_station:
             dist = direction * (next_station.position - head_abs)
-            next_name = next_station.name.replace("(上行)", "").replace("(下行)", "")
-            self.next_station_label.setText(f"下一站: {next_name}")
+            self.next_station_label.setText(f"下一站: {next_station.name}")
             self.distance_label.setText(f"下一站距离: {dist:.0f} m")
         else:
             self.next_station_label.setText("下一站: 终点")
@@ -461,9 +461,5 @@ class Dashboard(QWidget):
         return "#16a34a"
 
     def _refresh_station_markers(self, total_length: float):
-        names = []
-        for station in self.track.stations:
-            name = station.name.replace("(上行)", "").replace("(下行)", "")
-            side = "⬆" if station.position < 1000 else "⬇"
-            names.append(f"{name}{side} {station.position / total_length * 100:.0f}%")
+        names = [f"{station.name} {station.position / total_length * 100:.0f}%" for station in self.track.stations]
         self.station_markers.setText("  |  ".join(names))

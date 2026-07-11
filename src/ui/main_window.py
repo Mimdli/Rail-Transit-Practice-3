@@ -195,6 +195,8 @@ class MainWindow(QMainWindow):
         self.dispatch_view = DispatchView(self.dispatch)
         self.dispatch_view.operation_finished.connect(
             lambda _message, _ok: self._refresh_train_selector())
+        self.dispatch_view.selected_train_changed.connect(
+            self._select_active_train)
 
         self.tabs.addTab(sim_page, "运行仿真")
         self.tabs.addTab(self.dispatch_view, "调度中心")
@@ -361,6 +363,13 @@ class MainWindow(QMainWindow):
         if train_id:
             self.active_train_id = train_id
             self._bind_active_runtime()
+
+    def _select_active_train(self, train_id: str):
+        """调度表选择与运行仿真的当前受控列车保持一致。"""
+        self._refresh_train_selector()
+        index = self.active_train_combo.findData(train_id)
+        if index >= 0 and self.active_train_combo.currentIndex() != index:
+            self.active_train_combo.setCurrentIndex(index)
 
     def _bind_active_runtime(self):
         runtime = self._active_runtime()
