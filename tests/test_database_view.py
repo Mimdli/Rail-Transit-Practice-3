@@ -3,6 +3,10 @@
 from src.track.db_loader import DBLoader
 from src.track.loader import TrackLoader
 from src.track.semantic_line import build_semantic_line
+from src.track.link_mainline import load_mainline_links, mainline_segment_ids
+from src.track.link_mainline import LinkCoordinateMapper
+from src.common.track_position import TrackPosition
+from src.track.ats_layout import load_ats_layout
 from src.dispatch import DispatchManager, TrainStatus
 
 
@@ -16,14 +20,15 @@ def test_database_missing_station_positions_are_repaired_in_memory():
     assert any("KYL" in warning for warning in track.data_warnings)
 
 
-def test_demo_semantic_links_exclude_lateral_segments():
+def test_demo_semantic_links_follow_current_mainline():
     track = TrackLoader().load_demo_data()
     model = build_semantic_line(track)
 
-    assert [link.seg_ids for link in model.links] == [(1,), (2,), (3,)]
-    branch_ids = {segment_id for branch in model.branches
-                  for segment_id in branch.seg_ids}
-    assert branch_ids == {5, 6, 7, 8}
+    assert len(model.links) == len(model.stations) - 1
+    assert [link.seg_ids for link in model.links] == [
+        (segment.seg_id,) for segment in track.segments[:-1]
+    ]
+    assert not model.branches
 
 
 def test_database_semantic_model_uses_all_thirteen_stations():
@@ -33,6 +38,77 @@ def test_database_semantic_model_uses_all_thirteen_stations():
     assert len(model.stations) == 13
     assert len(model.links) == 12
     assert all(link.seg_ids for link in model.links)
+
+
+def test_mainline_is_built_from_ordered_link_chains():
+    links = load_mainline_links()
+
+    assert len(links["up"]) == 83
+    assert len(links["down"]) == 73
+    assert all(
+        left.end_m == right.start_m
+        for direction in links.values()
+        for left, right in zip(direction, direction[1:])
+    )
+    assert {link.link_id for link in links["up"]} <= mainline_segment_ids()
+    assert {link.link_id for link in links["down"]} <= mainline_segment_ids()
+
+
+def test_seg_position_maps_to_continuous_link_coordinate():
+    track = DBLoader().load_from_db()
+    mapper = LinkCoordinateMapper(track)
+
+    assert mapper.to_link_position(TrackPosition(5, 10.0)) == 40.0
+    assert mapper.to_link_position(TrackPosition(5, 220.68)) == 250.68
+    assert mapper.to_link_position(TrackPosition(6, 0.0)) == 250.68
+
+
+def test_ats_switch_and_signal_layout_matches_source_tables():
+    track = DBLoader().load_from_db()
+    mapper = LinkCoordinateMapper(track)
+    switches, signals = load_ats_layout()
+
+    assert len(switches) == 60
+    assert len(signals) == 157
+    assert all(
+        segment_id in track._seg_map
+        for switch in switches
+        for segment_id in (
+            switch.normal_seg_id,
+            switch.reverse_seg_id,
+            switch.merge_seg_id,
+        )
+    )
+    mainline_signals = [
+        signal for signal in signals
+        if mapper.link_for_segment(signal.seg_id) is not None
+    ]
+    assert len(mainline_signals) == 78
+    assert all(
+        0.0 <= signal.offset_m
+        <= mapper.link_for_segment(signal.seg_id).length_m
+        for signal in mainline_signals
+    )
+
+
+def test_station_markers_use_platform_link_coordinates():
+    track = DBLoader().load_from_db()
+    mapper = LinkCoordinateMapper(track)
+    model = build_semantic_line(track)
+
+    for station in model.stations:
+        platform_segments = {
+            platform.seg_id for platform in track.platforms
+            if (platform.station_id == station.station_id
+                or platform.platform_id in station.platform_ids)
+        }
+        expected = [
+            mapper.midpoint_for_segment(segment_id)
+            for segment_id in platform_segments
+            if mapper.midpoint_for_segment(segment_id) is not None
+        ]
+        assert expected
+        assert station.position == sum(expected) / len(expected)
 
 
 def test_database_station_placement_and_separation_use_down_platform_topology():

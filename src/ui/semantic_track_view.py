@@ -14,11 +14,48 @@ from PyQt5.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
     QLabel,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
 from src.track.semantic_line import SemanticLineModel, build_semantic_line
+from src.track.ats_layout import load_ats_layout
+from src.track.link_mainline import LinkCoordinateMapper, load_mainline_links
+from src.common.track_position import TrackPosition
+
+
+class _ImmediateTooltipMixin:
+    """绕过系统 Tooltip 延迟，在进入图元时立即显示信息。"""
+
+    def set_immediate_tooltip(self, text: str):
+        self._immediate_tooltip = text
+        self.setToolTip(text)
+        self.setAcceptHoverEvents(True)
+
+    def hoverEnterEvent(self, event):
+        QToolTip.showText(event.screenPos(), self._immediate_tooltip)
+        super().hoverEnterEvent(event)
+
+    def hoverMoveEvent(self, event):
+        QToolTip.showText(event.screenPos(), self._immediate_tooltip)
+        super().hoverMoveEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        QToolTip.hideText()
+        super().hoverLeaveEvent(event)
+
+
+class ImmediateTooltipLineItem(_ImmediateTooltipMixin, QGraphicsLineItem):
+    pass
+
+
+class ImmediateTooltipPathItem(_ImmediateTooltipMixin, QGraphicsPathItem):
+    pass
+
+
+class ImmediateTooltipEllipseItem(_ImmediateTooltipMixin, QGraphicsEllipseItem):
+    pass
 
 
 class SemanticTrackSceneView(QGraphicsView):
@@ -41,6 +78,9 @@ class SemanticTrackSceneView(QGraphicsView):
         self._ensure_fonts()
         self.track_data = track_data
         self.model: SemanticLineModel | None = None
+        self._link_mapper: LinkCoordinateMapper | None = None
+        self._coord_points: list[float] = []
+        self._coord_x: list[float] = []
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         self.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
@@ -53,9 +93,15 @@ class SemanticTrackSceneView(QGraphicsView):
         self._train_items: list[QGraphicsRectItem] = []
         self._dynamic_items: list = []
         self._link_items: list[tuple] = []
+        self._link_label_items: list = []
+        self._signal_label_items: list = []
+        self._signal_items: list[tuple[str, QGraphicsEllipseItem]] = []
+        self._branch_items: list[QGraphicsPathItem] = []
         self._left = 90.0
         self._top = 120.0
-        self._station_gap = 190.0
+        self._min_station_gap = 150.0
+        self._max_station_gap = 250.0
+        self._distance_scale = 0.12
         self._down_y = 230.0
         self._up_y = 320.0
         self.rebuild()
@@ -78,6 +124,7 @@ class SemanticTrackSceneView(QGraphicsView):
     def wheelEvent(self, event):  # noqa: N802 - Qt API
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
         self.scale(factor, factor)
+        self._update_detail_visibility()
 
     def rebuild(self):
         """根据语义模型重建整张运营线路图。"""
@@ -85,6 +132,10 @@ class SemanticTrackSceneView(QGraphicsView):
         self._train_items.clear()
         self._dynamic_items.clear()
         self._link_items.clear()
+        self._link_label_items.clear()
+        self._signal_label_items.clear()
+        self._signal_items.clear()
+        self._branch_items.clear()
         self._station_x.clear()
 
         if not self.track_data:
@@ -93,28 +144,44 @@ class SemanticTrackSceneView(QGraphicsView):
             return
 
         self.model = build_semantic_line(self.track_data)
-        station_count = max(2, len(self.model.stations))
-        width = self._left * 2 + (station_count - 1) * self._station_gap
+        self._link_mapper = LinkCoordinateMapper(self.track_data)
+        self._build_coordinate_scale()
+        self._layout_stations()
+        last_x = max(self._station_x.values(), default=self._left + 800.0)
+        width = last_x + self._left
         height = 560.0
         self._scene.setSceneRect(QRectF(0, 0, width + 280, height))
 
         self._draw_title()
-        self._layout_stations()
         self._draw_main_line()
-        self._draw_branches()
+        self._draw_link_boundaries()
+        self._draw_branch_components()
+        self._draw_signals()
         self._draw_stations()
         self._draw_summary(width)
         self.resetTransform()
+        self._update_detail_visibility()
         self.centerOn(self._left + 420, (self._down_y + self._up_y) / 2)
 
     def set_train_position(self, car_abs_positions: Iterable[float], controller=None):
-        """按语义里程投影列车位置，避免被底层 Seg 分支影响。"""
+        """优先按 Seg→Link 公里标投影列车，旧绝对坐标仅作为回退。"""
         for item in self._train_items:
             self._scene.removeItem(item)
         self._train_items.clear()
 
-        for idx, abs_pos in enumerate(list(car_abs_positions or [])[:8]):
-            x = self._x_for_position(float(abs_pos))
+        states = tuple(controller.states[:8]) if controller else ()
+        fallback_positions = list(car_abs_positions or [])[:8]
+        count = max(len(states), len(fallback_positions))
+        for idx in range(count):
+            link_pos = (
+                self._link_mapper.to_link_position(states[idx].position)
+                if self._link_mapper and idx < len(states) else None
+            )
+            if link_pos is None:
+                if idx >= len(fallback_positions):
+                    continue
+                link_pos = float(fallback_positions[idx])
+            x = self._x_for_position(link_pos)
             y = self._down_y if idx < 4 else self._up_y
             rect = QGraphicsRectItem(x - 14, y - 23 - idx * 0.2, 28, 14)
             rect.setBrush(QBrush(self.TRAIN))
@@ -146,7 +213,13 @@ class SemanticTrackSceneView(QGraphicsView):
         lanes: dict[tuple[int, int], int] = {}
         palette = ("#f59e0b", "#7c3aed", "#0891b2", "#2563eb", "#0f766e")
         for index, runtime in enumerate(tuple(runtimes)):
-            x = self._x_for_position(runtime.head_abs)
+            head_state = runtime.controller.states[0] if runtime.controller.states else None
+            link_pos = (
+                self._link_mapper.to_link_position(head_state.position)
+                if self._link_mapper and head_state else None
+            )
+            x = self._x_for_position(
+                link_pos if link_pos is not None else runtime.head_abs)
             direction = runtime.controller.direction
             base_y = self._down_y if direction > 0 else self._up_y
             slot_key = (direction, round(x / 70))
@@ -166,20 +239,33 @@ class SemanticTrackSceneView(QGraphicsView):
             self._dynamic_items.extend((marker, label))
 
     def _layout_stations(self):
+        """按公里标大致比例布局，同时保证短区间仍然清晰可见。"""
         if not self.model:
             return
-        for index, station in enumerate(self.model.stations):
-            self._station_x[station.station_id] = self._left + index * self._station_gap
+        for station in self.model.stations:
+            self._station_x[station.station_id] = self._x_for_position(
+                station.position)
+
+    def _display_interval_width(self, distance_m: float) -> float:
+        """把实际站间距压缩到可读范围，兼顾比例和最小显示宽度。"""
+        return max(
+            self._min_station_gap,
+            min(self._max_station_gap, distance_m * self._distance_scale),
+        )
 
     def _draw_title(self):
         self._add_text("运营线路图", 72, 46, 22, self.TEXT, True)
-        self._add_text("按车站和运营区间抽象展示，工程 Seg 信息收敛到详情层", 72, 78, 10, self.MUTED)
+        self._add_text(
+            "Link 主线 · 公里标近似比例 · Seg/道岔分支叠加",
+            72, 78, 10, self.MUTED)
 
     def _draw_main_line(self):
         if not self.model or len(self.model.stations) < 2:
             return
-        first = self._station_x[self.model.stations[0].station_id]
-        last = self._station_x[self.model.stations[-1].station_id]
+        all_links = [link for links in load_mainline_links().values()
+                     for link in links]
+        first = self._x_for_position(min(link.start_m for link in all_links))
+        last = self._x_for_position(max(link.end_m for link in all_links))
 
         # 上下行分开绘制，避免看起来只有一个方向。
         self._draw_direction_line(first, last, self._down_y, self.DOWN_LINE, "下行", "→")
@@ -190,10 +276,7 @@ class SemanticTrackSceneView(QGraphicsView):
             end_x = self._station_x.get(link.end_station_id)
             if start_x is None or end_x is None:
                 continue
-            mid = (start_x + end_x) / 2
             distance = abs(link.end_pos - link.start_pos)
-            label = f"{distance / 1000:.2f} km" if distance > 1.0 else "里程未标定"
-            self._add_text(label, mid, (self._down_y + self._up_y) / 2 - 6, 8, self.MUTED, center=True)
             down_item = self._scene.addLine(
                 start_x, self._down_y, end_x, self._down_y,
                 QPen(self.DOWN_LINE, 5.0, Qt.SolidLine, Qt.RoundCap))
@@ -202,7 +285,252 @@ class SemanticTrackSceneView(QGraphicsView):
                 QPen(self.UP_LINE, 5.0, Qt.SolidLine, Qt.RoundCap))
             down_item.setZValue(3)
             up_item.setZValue(3)
+            detail = (
+                f"区间: {link.start_station_id} → {link.end_station_id}\n"
+                f"长度: {distance / 1000:.2f} km\n"
+                f"包含 Link: {self._format_id_summary(link.seg_ids)}"
+            )
+            down_item.setToolTip(detail)
+            up_item.setToolTip(detail)
             self._link_items.append((link, down_item, up_item))
+
+    def _draw_link_boundaries(self):
+        """绘制所有 Link 边界；放大后显示编号，悬停可核对完整数据。"""
+        if not self._link_mapper:
+            return
+        for direction, links in load_mainline_links().items():
+            y = self._down_y if direction == "down" else self._up_y
+            color = self.DOWN_LINE if direction == "down" else self.UP_LINE
+            for link in links:
+                if self._link_mapper.link_for_segment(link.link_id) is None:
+                    continue
+                start_x = self._x_for_position(link.start_m)
+                end_x = self._x_for_position(link.end_m)
+                tick = self._scene.addLine(
+                    start_x, y - 8, start_x, y + 8,
+                    QPen(self.TEXT, 1.0))
+                tick.setZValue(12)
+                hit = ImmediateTooltipLineItem(start_x, y, end_x, y)
+                hit.setPen(QPen(
+                    QColor(0, 0, 0, 1), 14.0, Qt.SolidLine, Qt.RoundCap))
+                hit.setZValue(13)
+                hit.set_immediate_tooltip(
+                    f"Link ID: {link.link_id}\n"
+                    f"方向: {'下行' if direction == 'down' else '上行'}\n"
+                    f"起点: {link.start_m:.2f} m\n"
+                    f"终点: {link.end_m:.2f} m\n"
+                    f"长度: {link.length_m:.2f} m")
+                self._scene.addItem(hit)
+            if links:
+                end_x = self._x_for_position(links[-1].end_m)
+                self._scene.addLine(
+                    end_x, y - 8, end_x, y + 8, QPen(self.TEXT, 1.0))
+
+    def _draw_branch_components(self):
+        """沿反位 Seg 连通分量绘制完整渡线、折返线和尽头线。"""
+        if not self._link_mapper:
+            return
+        switches, _signals = load_ats_layout()
+        components = self._branch_components(switches)
+        occupied_lanes: list[list[tuple[float, float]]] = [[], [], []]
+        pen = QPen(self.BRANCH, 2.6, Qt.SolidLine, Qt.RoundCap)
+        for component_seg_ids, attachments in components:
+            points = []
+            for switch in attachments:
+                anchor = self._switch_anchor(
+                    switch.merge_seg_id, switch.normal_seg_id,
+                    switch.reverse_seg_id)
+                reference = (switch.merge_seg_id
+                             if self._link_mapper.link_for_segment(
+                                 switch.merge_seg_id)
+                             else switch.normal_seg_id)
+                direction = self._link_mapper.direction_for_segment(reference)
+                points.append((self._x_for_position(anchor), direction, switch))
+            points.sort(key=lambda item: item[0])
+            min_x, max_x = points[0][0], points[-1][0]
+            directions = {item[1] for item in points}
+            path = QPainterPath()
+            direction_counts = {
+                direction: sum(item[1] == direction for item in points)
+                for direction in directions
+            }
+            if (len(points) == 4
+                    and direction_counts == {"down": 2, "up": 2}):
+                # 标准交叉渡线：上下行各两个岔尖，固定画成 X。
+                down = sorted((item for item in points if item[1] == "down"),
+                              key=lambda item: item[0])
+                up = sorted((item for item in points if item[1] == "up"),
+                            key=lambda item: item[0])
+                path.moveTo(down[0][0], self._down_y)
+                path.lineTo(up[1][0], self._up_y)
+                path.moveTo(up[0][0], self._up_y)
+                path.lineTo(down[1][0], self._down_y)
+                role = "交叉渡线"
+            elif len(points) == 2 and directions == {"down", "up"}:
+                # 单渡线：只保留一条清晰对角线。
+                first, second = points
+                first_y = self._down_y if first[1] == "down" else self._up_y
+                second_y = self._down_y if second[1] == "down" else self._up_y
+                path.moveTo(first[0], first_y)
+                path.lineTo(second[0], second_y)
+                role = "单渡线"
+            elif len(points) >= 2 and directions == {"down", "up"}:
+                # 多接点折返组件固定收敛到两条正线之间。
+                branch_y = (self._down_y + self._up_y) / 2
+                path.moveTo(min_x, branch_y)
+                path.lineTo(max_x, branch_y)
+                for x, direction, _switch in points:
+                    base_y = self._down_y if direction == "down" else self._up_y
+                    path.moveTo(x, base_y)
+                    path.lineTo(x, branch_y)
+                role = "折返线"
+            elif len(points) == 1:
+                # 单入口线路统一放到正线外侧，并以车挡线结束。
+                x, direction, _switch = points[0]
+                base_y = self._down_y if direction == "down" else self._up_y
+                lane = self._claim_branch_lane(x, x + 76, occupied_lanes)
+                sign = -1 if direction == "down" else 1
+                branch_y = base_y + sign * (54 + lane * 24)
+                end_x = x + 76
+                path.moveTo(x, base_y)
+                path.lineTo(x + 30, branch_y)
+                path.lineTo(end_x, branch_y)
+                path.moveTo(end_x, branch_y - 7)
+                path.lineTo(end_x, branch_y + 7)
+                role = "尽头线"
+            else:
+                # 同方向回接作为侧线，始终位于对应正线外侧。
+                direction = points[0][1]
+                lane = self._claim_branch_lane(min_x, max_x, occupied_lanes)
+                base_y = self._down_y if direction == "down" else self._up_y
+                sign = -1 if direction == "down" else 1
+                branch_y = base_y + sign * (54 + lane * 24)
+                path.moveTo(min_x, branch_y)
+                path.lineTo(max_x, branch_y)
+                for x, direction, _switch in points:
+                    base_y = self._down_y if direction == "down" else self._up_y
+                    path.moveTo(x, base_y)
+                    path.lineTo(x, branch_y)
+                role = "侧线"
+
+            item = ImmediateTooltipPathItem(path)
+            item.setPen(pen)
+            item.setZValue(8)
+            switch_text = ", ".join(
+                f"{switch.name}(汇{switch.merge_seg_id}/定{switch.normal_seg_id}/反{switch.reverse_seg_id})"
+                for switch in attachments)
+            item.set_immediate_tooltip(
+                f"{role}\n道岔: {switch_text}\n"
+                f"反位线路: {len(component_seg_ids)} 个 Seg\n"
+                f"代表 Seg: {self._format_id_summary(component_seg_ids)}")
+            self._scene.addItem(item)
+            self._branch_items.append(item)
+            for x, direction, switch in points:
+                self._draw_switch_marker(x, direction, switch)
+
+    def _draw_switch_marker(self, x, direction, switch):
+        """用统一菱形标出道岔连接点。"""
+        y = self._down_y if direction == "down" else self._up_y
+        marker_path = QPainterPath()
+        marker_path.moveTo(x, y - 5)
+        marker_path.lineTo(x + 5, y)
+        marker_path.lineTo(x, y + 5)
+        marker_path.lineTo(x - 5, y)
+        marker_path.closeSubpath()
+        marker = ImmediateTooltipPathItem(marker_path)
+        marker.setBrush(QBrush(self.STATION_FILL))
+        marker.setPen(QPen(self.TEXT, 1.4))
+        marker.setZValue(14)
+        marker.set_immediate_tooltip(
+            f"道岔 {switch.name}\n汇合 Seg: {switch.merge_seg_id}\n"
+            f"定位 Seg: {switch.normal_seg_id}\n"
+            f"反位 Seg: {switch.reverse_seg_id}")
+        self._scene.addItem(marker)
+
+    def _branch_components(self, switches):
+        """把正线道岔的反位 Seg 按非主线拓扑合并为完整线路。"""
+        main_ids = {
+            segment.seg_id for segment in self.track_data.segments
+            if self._link_mapper.link_for_segment(segment.seg_id)
+        }
+        adjacency = {segment.seg_id: set() for segment in self.track_data.segments}
+        for segment in self.track_data.segments:
+            for neighbor in (segment.start_neighbor, segment.start_lateral,
+                             segment.end_neighbor, segment.end_lateral):
+                if neighbor in adjacency and neighbor not in (0, 65535):
+                    adjacency[segment.seg_id].add(neighbor)
+                    adjacency[neighbor].add(segment.seg_id)
+        candidates = [
+            switch for switch in switches
+            if switch.merge_seg_id in main_ids
+            and switch.normal_seg_id in main_ids
+            and switch.reverse_seg_id not in main_ids
+        ]
+        grouped: dict[frozenset[int], list] = {}
+        for switch in candidates:
+            seen = {switch.reverse_seg_id}
+            stack = [switch.reverse_seg_id]
+            while stack:
+                current = stack.pop()
+                for neighbor in adjacency[current]:
+                    if neighbor not in main_ids and neighbor not in seen:
+                        seen.add(neighbor)
+                        stack.append(neighbor)
+            grouped.setdefault(frozenset(seen), []).append(switch)
+        return sorted(grouped.items(), key=lambda item: min(
+            self._switch_anchor(s.merge_seg_id, s.normal_seg_id,
+                                s.reverse_seg_id)
+            for s in item[1]))
+
+    @staticmethod
+    def _claim_branch_lane(min_x, max_x, occupied_lanes) -> int:
+        for lane, spans in enumerate(occupied_lanes):
+            if all(max_x < left - 24 or min_x > right + 24
+                   for left, right in spans):
+                spans.append((min_x, max_x))
+                return lane
+        occupied_lanes[0].append((min_x, max_x))
+        return 0
+
+    @staticmethod
+    def _format_id_summary(values, limit: int = 8) -> str:
+        """悬浮信息只展示少量代表 ID，避免大连通区撑满屏幕。"""
+        ids = sorted(set(values))
+        if len(ids) <= limit:
+            return ", ".join(map(str, ids))
+        head = ", ".join(map(str, ids[:6]))
+        tail = ", ".join(map(str, ids[-2:]))
+        return f"{head} … {tail}（共 {len(ids)} 个）"
+
+    def _draw_signals(self):
+        """按信号机所在 Seg 和段内偏移投影到 Link 坐标。"""
+        if not self._link_mapper:
+            return
+        _switches, signals = load_ats_layout()
+        for signal in signals:
+            position = self._link_mapper.to_link_position(
+                TrackPosition(signal.seg_id, signal.offset_m))
+            if position is None:
+                continue
+            x = self._x_for_position(position)
+            y = self._down_y if signal.direction == "down" else self._up_y
+            sign = -1 if signal.direction == "down" else 1
+            lamp_y = y + sign * 20
+            self._scene.addLine(x, y, x, lamp_y, QPen(self.TEXT, 1.2))
+            lamp = ImmediateTooltipEllipseItem(x - 4, lamp_y - 4, 8, 8)
+            lamp.setBrush(QBrush(QColor("#dc2626")))
+            lamp.setPen(QPen(self.TEXT, 1.0))
+            lamp.setZValue(22)
+            lamp.set_immediate_tooltip(
+                f"信号机: {signal.name}\nSeg: {signal.seg_id}\n"
+                f"偏移: {signal.offset_m:.2f} m\n"
+                f"Link 公里标: {position:.2f} m")
+            self._scene.addItem(lamp)
+            self._signal_items.append((signal.name, lamp))
+            label = self._add_text(
+                signal.name, x, lamp_y - 18 if sign < 0 else lamp_y + 7,
+                7, self.TEXT, center=True)
+            self._signal_label_items.append(label)
 
     def _draw_direction_line(self, first: float, last: float, y: float, color: QColor,
                              name: str, arrow: str):
@@ -217,22 +545,6 @@ class SemanticTrackSceneView(QGraphicsView):
         while x < last - 120:
             self._add_text(arrow, x, y - 12, 12, color, True, center=True)
             x += step
-
-    def _draw_branches(self):
-        if not self.model:
-            return
-        branch_pen = QPen(self.BRANCH, 3.0, Qt.SolidLine, Qt.RoundCap)
-        seen_slots: dict[int, int] = {}
-        for branch in self.model.branches[:28]:
-            x = self._x_for_position(branch.anchor_pos)
-            slot = seen_slots.get(round(x / 120), 0)
-            seen_slots[round(x / 120)] = slot + 1
-            direction = -1 if slot % 2 == 0 else 1
-            base_y = self._down_y if direction < 0 else self._up_y
-            stub_y = base_y + direction * (54 + min(slot, 2) * 24)
-            self._scene.addLine(x, base_y, x + 46, stub_y, branch_pen)
-            self._scene.addLine(x + 46, stub_y, x + 98, stub_y, branch_pen)
-            self._add_text(branch.role, x + 104, stub_y - 7, 8, self.MUTED)
 
     def _draw_stations(self):
         if not self.model:
@@ -259,32 +571,91 @@ class SemanticTrackSceneView(QGraphicsView):
     def _draw_summary(self, width: float):
         if not self.model:
             return
+        switches, signals = load_ats_layout()
+        switch_count = sum(
+            any(self._link_mapper.link_for_segment(segment_id)
+                for segment_id in (switch.normal_seg_id,
+                                   switch.reverse_seg_id,
+                                   switch.merge_seg_id))
+            for switch in switches
+        ) if self._link_mapper else 0
+        signal_count = sum(
+            self._link_mapper.link_for_segment(signal.seg_id) is not None
+            for signal in signals
+        ) if self._link_mapper else 0
+        link_count = sum(len(items) for items in load_mainline_links().values())
         text = (
             f"车站 {len(self.model.stations)}  |  "
-            f"运营区间 {len(self.model.links)}  |  "
-            f"辅助线组 {len(self.model.branches)}  |  "
-            f"底层 Seg {len(self.track_data.segments)}"
+            f"Link {link_count}  |  "
+            f"正线附近道岔 {switch_count}  |  "
+            f"主线信号机 {signal_count}"
         )
         self._add_text(text, 72, 494, 10, self.MUTED)
         self._scene.addLine(72, 476, width + 70, 476, QPen(QColor("#d4dce8"), 1.0))
 
     def _x_for_position(self, position: float) -> float:
-        if not self.model or not self.model.stations:
+        if not self._coord_points:
             return self._left
-        stations = self.model.stations
-        if position <= stations[0].position:
-            return self._station_x[stations[0].station_id]
-        if position >= stations[-1].position:
-            return self._station_x[stations[-1].station_id]
+        if position <= self._coord_points[0]:
+            return self._coord_x[0]
+        if position >= self._coord_points[-1]:
+            return self._coord_x[-1]
+        import bisect
+        index = bisect.bisect_right(self._coord_points, position) - 1
+        left, right = self._coord_points[index:index + 2]
+        ratio = (position - left) / max(1e-9, right - left)
+        return self._coord_x[index] + ratio * (
+            self._coord_x[index + 1] - self._coord_x[index])
 
-        for left, right in zip(stations, stations[1:]):
-            if left.position <= position <= right.position:
-                start_x = self._station_x[left.station_id]
-                end_x = self._station_x[right.station_id]
-                span = max(1.0, right.position - left.position)
-                ratio = (position - left.position) / span
-                return start_x + ratio * (end_x - start_x)
-        return self._left
+    def _build_coordinate_scale(self):
+        """建立全图共享的 Link 公里标→X 分段映射。"""
+        points = {
+            value
+            for links in load_mainline_links().values()
+            for link in links
+            for value in (link.start_m, link.end_m)
+            if self._link_mapper
+            and self._link_mapper.link_for_segment(link.link_id)
+        }
+        if self.model:
+            points.update(station.position for station in self.model.stations)
+        self._coord_points = sorted(points)
+        self._coord_x = [self._left]
+        for left, right in zip(self._coord_points, self._coord_points[1:]):
+            delta = right - left
+            width = max(2.0, min(40.0, delta * self._distance_scale))
+            self._coord_x.append(self._coord_x[-1] + width)
+
+    def _switch_anchor(self, *segment_ids: int) -> float:
+        links = [self._link_mapper.link_for_segment(segment_id)
+                 for segment_id in segment_ids]
+        links = [link for link in links if link is not None]
+        if len(links) == 1:
+            return (links[0].start_m + links[0].end_m) / 2.0
+        candidates = []
+        for left in links:
+            for right in links:
+                if left is right:
+                    continue
+                for a in (left.start_m, left.end_m):
+                    for b in (right.start_m, right.end_m):
+                        candidates.append((abs(a - b), (a + b) / 2.0))
+        return min(candidates)[1]
+
+    def _update_detail_visibility(self):
+        detailed = self.transform().m11() >= 1.55
+        for item in self._signal_label_items:
+            item.setVisible(detailed)
+        for item in self._link_label_items:
+            item.setVisible(False)
+
+    def set_signal_aspects(self, aspects: dict[str, object]):
+        """刷新信号机红黄绿显示，不改变其 Link 投影位置。"""
+        colors = {"红灯": "#dc2626", "黄灯": "#eab308", "绿灯": "#16a34a"}
+        for name, item in self._signal_items:
+            aspect = aspects.get(name)
+            value = getattr(aspect, "value", "红灯")
+            item.setBrush(QBrush(QColor(colors.get(value, "#dc2626"))))
 
     def _add_text(self, text: str, x: float, y: float, size: int, color: QColor,
                   bold: bool = False, center: bool = False):
@@ -344,9 +715,12 @@ class SemanticTrackViewWidget(QWidget):
         self.view.set_train_position(car_abs_positions, controller)
 
     def set_dispatch_state(self, runtimes: Iterable,
-                           occupancy: dict[int, frozenset[str]]):
+                           occupancy: dict[int, frozenset[str]],
+                           signal_aspects: dict[str, object] | None = None):
         runtimes = tuple(runtimes)
         self.view.set_dispatch_state(runtimes, occupancy)
+        if signal_aspects is not None:
+            self.view.set_signal_aspects(signal_aspects)
         occupied = len(occupancy)
         self.status.setText(
             f"运营线路图 | 实时列车 {len(runtimes)} | 占用区段 {occupied} | "

@@ -6,6 +6,7 @@ import heapq
 from dataclasses import dataclass, field
 
 from src.track.data import TrackData
+from src.track.link_mainline import LinkCoordinateMapper, mainline_segment_ids
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,9 @@ def build_semantic_line(track: TrackData) -> SemanticLineModel:
     带侧向邻接但不属于主区间的 Seg 聚类为辅助线，用于避免直接暴露全部工程区段。
     """
     stations = _build_stations(track)
-    links, main_seg_ids = _build_links(track, stations)
+    configured_main_ids = mainline_segment_ids()
+    available_main_ids = configured_main_ids.intersection(track._seg_map)
+    links, main_seg_ids = _build_links(track, stations, available_main_ids)
     # 站台区段属于运营主线节点，但不重复计入相邻站间区间。
     platform_ids = {pid for station in stations for pid in station.platform_ids}
     main_seg_ids.update(
@@ -97,6 +100,7 @@ def compute_station_route(track: TrackData, start_seg_id: int,
 
 
 def _build_stations(track: TrackData) -> list[SemanticStation]:
+    mapper = LinkCoordinateMapper(track)
     positions = [station.position for station in track.stations]
     duplicate_positions = {
         pos for pos in positions
@@ -110,18 +114,34 @@ def _build_stations(track: TrackData) -> list[SemanticStation]:
                 platform.platform_id for platform in track.platforms
                 if abs(platform.position - station.position) < 1.0
             )
+        platform_seg_ids = {
+            platform.seg_id for platform in track.platforms
+            if (platform.platform_id in platform_ids
+                or platform.station_id == station.station_id)
+        }
+        link_positions = [
+            position for segment_id in platform_seg_ids
+            if (position := mapper.midpoint_for_segment(segment_id)) is not None
+        ]
+        # 校对后的 Link 公里标优先；演示数据仍使用原车站位置。
+        position = (sum(link_positions) / len(link_positions)
+                    if link_positions else station.position)
         stations.append(
             SemanticStation(
                 station_id=station.station_id,
                 name=station.name or f"站{station.station_id}",
-                position=station.position,
+                position=position,
                 platform_ids=platform_ids,
             )
         )
     return stations
 
 
-def _build_links(track: TrackData, stations: list[SemanticStation]) -> tuple[list[SemanticLink], set[int]]:
+def _build_links(
+    track: TrackData,
+    stations: list[SemanticStation],
+    allowed_seg_ids: set[int] | None = None,
+) -> tuple[list[SemanticLink], set[int]]:
     links: list[SemanticLink] = []
     main_seg_ids: set[int] = set()
     if len(stations) < 2:
@@ -132,7 +152,7 @@ def _build_links(track: TrackData, stations: list[SemanticStation]) -> tuple[lis
         for direction in ("down", "up"):
             starts = _station_platform_segments(track, left, direction)
             targets = _station_platform_segments(track, right, direction)
-            path = _shortest_path(track, starts, targets)
+            path = _shortest_path(track, starts, targets, allowed_seg_ids)
             if path:
                 # 目标站台所在区段属于下一站站场，不计入当前站间区间。
                 paths.append(path[:-1] or path)
@@ -146,6 +166,7 @@ def _build_links(track: TrackData, stations: list[SemanticStation]) -> tuple[lis
             end = max(left.position, right.position)
             seg_ids = tuple(
                 segment.seg_id for segment in track.segments
+                if (not allowed_seg_ids or segment.seg_id in allowed_seg_ids)
                 if (segment.start_neighbor or segment.end_neighbor)
                 and _overlaps(
                     segment.abs_start, segment.abs_start + segment.length,
@@ -246,10 +267,19 @@ def _segment_adjacency(track: TrackData) -> dict[int, list[tuple[int, float]]]:
 
 
 def _shortest_path(track: TrackData, starts: set[int],
-                   targets: set[int]) -> list[int]:
+                   targets: set[int],
+                   allowed_seg_ids: set[int] | None = None) -> list[int]:
     if not starts or not targets:
         return []
     adjacency = _segment_adjacency(track)
+    if allowed_seg_ids:
+        # 站台段可能位于正线边界；允许起终点接入，但中间只走校对后的 Link 主线。
+        allowed = allowed_seg_ids | starts | targets
+        adjacency = {
+            segment_id: [item for item in neighbors if item[0] in allowed]
+            for segment_id, neighbors in adjacency.items()
+            if segment_id in allowed
+        }
     lengths = {segment.seg_id: segment.length for segment in track.segments}
     queue = []
     best: dict[int, float] = {}

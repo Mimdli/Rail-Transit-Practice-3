@@ -620,7 +620,9 @@ class MainWindow(QMainWindow):
         ]
         self.track_view.set_train_position(car_abs, active_controller)
         self.semantic_track_view.set_dispatch_state(
-            self.dispatch.trains.values(), self.dispatch.occupancy.snapshot)
+            self.dispatch.trains.values(), self.dispatch.occupancy.snapshot,
+            {signal.signal_id: self.signal_system.get_signal_aspect(signal)
+             for signal in self.track.signals})
         self._refresh_train_selector()
         self.dispatch_view.refresh()
         self._update_log_display()
