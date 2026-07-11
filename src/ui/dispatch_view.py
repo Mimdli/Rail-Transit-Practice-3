@@ -298,7 +298,8 @@ class DispatchView(QWidget):
             self.table.setColumnWidth(column, width)
         header.setSectionResizeMode(7, QHeaderView.Stretch)
         layout.addWidget(self.table)
-        self.table.itemSelectionChanged.connect(self._update_command_state)
+        self.table.itemSelectionChanged.connect(
+            self._on_table_selection_changed)
         return group
 
     def set_manager(self, manager: DispatchManager):
@@ -319,6 +320,8 @@ class DispatchView(QWidget):
     def refresh(self):
         selected = self.selected_train_id()
         runtimes = tuple(self.manager.trains.values())
+        # 重建表格会短暂清空并恢复选择，不能把这种内部刷新当成用户切车。
+        self.table.blockSignals(True)
         self.table.setRowCount(len(runtimes))
         selected_row = -1
         for row, runtime in enumerate(runtimes):
@@ -350,6 +353,7 @@ class DispatchView(QWidget):
             self.table.selectRow(selected_row)
         elif runtimes:
             self.table.selectRow(0)
+        self.table.blockSignals(False)
 
         occupied = len(self.manager.occupancy.snapshot)
         locked = len(self.manager.interlocking.locks)
@@ -414,7 +418,6 @@ class DispatchView(QWidget):
         self.current_train_label.setText(
             f"当前调度对象：{runtime.train_id} · "
             f"{runtime.direction_label} · {runtime.status.value}")
-        self.selected_train_changed.emit(runtime.train_id)
         status = runtime.status
         self.assign_button.setEnabled(
             status in (TrainStatus.WAITING, TrainStatus.COMPLETED))
@@ -440,6 +443,13 @@ class DispatchView(QWidget):
         }
         for button, reason in reasons.items():
             button.setToolTip("" if button.isEnabled() else reason)
+
+    def _on_table_selection_changed(self):
+        """仅用户/程序真正改变表格选择时同步受控列车。"""
+        self._update_command_state()
+        train_id = self.selected_train_id()
+        if train_id:
+            self.selected_train_changed.emit(train_id)
 
     def _remove_train(self):
         train_id = self.selected_train_id()
