@@ -1,5 +1,7 @@
 """主窗口 — 应用程序主界面"""
 
+from html import escape
+
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGroupBox, QTextEdit,
     QLabel, QComboBox, QTabWidget, QSplitter, QScrollArea, QFrame,
@@ -30,6 +32,7 @@ from src.logger.recorder import Recorder
 from src.logger.evaluator import Evaluator
 from src.network.manager import NetworkManager
 from src.dispatch import DispatchManager, ServicePlan
+from src.dispatch.train_manager import resolve_station_track_position
 
 
 class MainWindow(QMainWindow):
@@ -68,6 +71,13 @@ class MainWindow(QMainWindow):
             track=self.track_adapter,
             env=self.env,
         )
+        # 初始位置优先放在首站，避免数据库线路的区段顺序影响列车起点。
+        if self.track.stations:
+            first_station = min(self.track.stations, key=lambda item: item.position)
+            start = resolve_station_track_position(
+                self.track, first_station, direction=1)
+            self.controller.reset_states(start.segment_id, start.offset)
+
         # ── 联锁（需在 route_manager / auto_drive 之前创建） ────
         self.interlock = DoorInterlock(self.controller, self.track, self.track_adapter)
 
@@ -102,6 +112,7 @@ class MainWindow(QMainWindow):
         self.active_train_id = "1车"
 
         self._last_signal_aspects: dict[str, SignalAspect] = {}
+        self._overspeed_active: dict[str, bool] = {}
         self._last_status_log_time: float = -1.0
         self._displayed_event_count: int = 0
         self.sim_time: float = 0.0
@@ -184,6 +195,8 @@ class MainWindow(QMainWindow):
         self.dispatch_view = DispatchView(self.dispatch)
         self.dispatch_view.operation_finished.connect(
             lambda _message, _ok: self._refresh_train_selector())
+        self.dispatch_view.selected_train_changed.connect(
+            self._select_active_train)
 
         self.tabs.addTab(sim_page, "运行仿真")
         self.tabs.addTab(self.dispatch_view, "调度中心")
@@ -285,7 +298,8 @@ class MainWindow(QMainWindow):
 
     def _create_dispatch_manager(self):
         """创建调度域并把现有主控制器注册为1车。"""
-        self.dispatch = DispatchManager(self.track, self.recorder)
+        self.dispatch = DispatchManager(
+            self.track, self.recorder, self.signal_system)
         self.dispatch.trains.register_existing(
             "1车", self.controller, self.auto_drive, self.track_adapter)
         self.dispatch.occupancy.update(self.dispatch.trains.values())
@@ -350,6 +364,13 @@ class MainWindow(QMainWindow):
             self.active_train_id = train_id
             self._bind_active_runtime()
 
+    def _select_active_train(self, train_id: str):
+        """调度表选择与运行仿真的当前受控列车保持一致。"""
+        self._refresh_train_selector()
+        index = self.active_train_combo.findData(train_id)
+        if index >= 0 and self.active_train_combo.currentIndex() != index:
+            self.active_train_combo.setCurrentIndex(index)
+
     def _bind_active_runtime(self):
         runtime = self._active_runtime()
         if runtime is None or not hasattr(self, "dashboard"):
@@ -406,16 +427,21 @@ class MainWindow(QMainWindow):
         self.controller.track = self.track_adapter
         self.env.track = self.track_adapter
         self.route_manager.track_adapter = self.track_adapter
-        # 找到 BFS 根区段（abs_start == 0），而非列表第一个
-        start_seg_id = 1
-        for seg in track.segments:
-            if abs(seg.abs_start) < 0.01:
-                start_seg_id = seg.seg_id
-                break
-        if start_seg_id == 1 and track.segments:
-            start_seg_id = track.segments[0].seg_id
-        self.controller.reset_states(start_segment_id=start_seg_id, start_offset=0.0)
+        self.controller.direction = 1
+        # 切换线路后重新落位到首站；没有车站时回退到线路起始区段。
+        if track.stations:
+            first_station = min(track.stations, key=lambda item: item.position)
+            start = resolve_station_track_position(
+                track, first_station, direction=1)
+            self.controller.reset_states(start.segment_id, start.offset)
+        elif track.segments:
+            self.controller.reset_states(track.segments[0].seg_id, 0.0)
         self.controller.set_running_mode(RunningMode.MANUAL)
+        self.routes = TrackLoader.create_demo_routes()
+        self.route_manager.set_available_routes(self.routes)
+        self.route_manager.set_route(self.routes[0])
+        if hasattr(self, "control_panel"):
+            self.control_panel.populate_routes(self.routes)
 
         self.signal_system.clear_signal_aspects()
         self.interlock.track = track
@@ -439,6 +465,7 @@ class MainWindow(QMainWindow):
         self.track_view.set_train_position(car_abs, self.controller)
 
         self._last_signal_aspects.clear()
+        self._overspeed_active.clear()
         self._last_status_log_time = -1.0
         self.sim_time = 0.0
         self.power_supply.reset()
@@ -544,17 +571,10 @@ class MainWindow(QMainWindow):
             head_abs = self._head_abs_position()
             head_speed = active_controller.head_speed
 
-            train_positions = [
-                runtime.head_abs for runtime in self.dispatch.trains.values()
-            ]
-            self.signal_system.update_aspects_by_occupancy(
-                self.track.signals, train_positions
-            )
-            self._record_signal_changes()
-
             track_limit = self.track.get_speed_limit_at(head_abs)
-            effective_limit = self.signal_system.get_effective_speed_limit(
-                head_abs, track_limit, self.track.signals
+            effective_limit = self.signal_system.get_effective_speed_limit_for_direction(
+                head_abs, active_controller.direction,
+                track_limit, self.track.signals
             )
 
             # ── 供电状态影响牵引能力（系统级安全切断，旁路模式门禁）─
@@ -566,6 +586,7 @@ class MainWindow(QMainWindow):
                 self.auto_drive.step(dt)
 
             reports = self.dispatch.step(dt)
+            self._record_signal_changes()
             report = reports.get(active_runtime.train_id, active_controller.last_report)
             self.power_supply.step(dt)
             self.recorder.step(dt)
@@ -574,12 +595,18 @@ class MainWindow(QMainWindow):
             self.evaluator.update_max_speed(head_speed)
             self._record_status_snapshot(effective_limit)
 
-            if head_speed > effective_limit + 0.5:
+            overspeed = head_speed > effective_limit + 0.5
+            was_overspeed = self._overspeed_active.get(
+                active_runtime.train_id, False)
+            if overspeed and not was_overspeed:
                 self.recorder.record(
                     "超速",
                     f"超速: {head_speed * 3.6:.1f} km/h",
                     head_abs, head_speed,
+                    train_id=active_runtime.train_id,
+                    source="protection", severity="WARNING",
                 )
+            self._overspeed_active[active_runtime.train_id] = overspeed
 
             if self.fast_forward_active and self._check_fast_forward_stop():
                 self.fast_forward_active = False
@@ -602,7 +629,9 @@ class MainWindow(QMainWindow):
         ]
         self.track_view.set_train_position(car_abs, active_controller)
         self.semantic_track_view.set_dispatch_state(
-            self.dispatch.trains.values(), self.dispatch.occupancy.snapshot)
+            self.dispatch.trains.values(), self.dispatch.occupancy.snapshot,
+            {signal.signal_id: self.signal_system.get_signal_aspect(signal)
+             for signal in self.track.signals})
         self._refresh_train_selector()
         self.dispatch_view.refresh()
         self._update_log_display()
@@ -1537,6 +1566,10 @@ class MainWindow(QMainWindow):
         log_layout.setContentsMargins(16, 14, 16, 12)
         log_layout.setSpacing(8)
 
+        self.log_summary = QLabel()
+        self.log_summary.setObjectName("dataSourceStatus")
+        log_layout.addWidget(self.log_summary)
+
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setObjectName("logText")
@@ -1550,16 +1583,25 @@ class MainWindow(QMainWindow):
             self.log_text.append(self._format_log_event(event))
         self._displayed_event_count = len(self.recorder.events)
         self.log_text.moveCursor(self.log_text.textCursor().End)
+        summary = self.recorder.get_summary()
+        evaluation = self.evaluator.evaluate(self.recorder)
+        self.log_summary.setText(
+            f"事件 {summary['总事件数']}  |  "
+            f"警告 {summary['警告事件数']}  |  "
+            f"严重 {summary['严重事件数']}  |  "
+            f"运行评价 {evaluation['综合得分']:.1f} 分·{evaluation['评价等级']}"
+        )
 
     def _format_log_event(self, event) -> str:
         """把事件格式化成清晰的分块日志"""
         color = self._event_color(event.event_type)
         meta = f"位置 {event.position:.1f} m · 速度 {event.speed * 3.6:.1f} km/h"
-        description = event.description.replace("状态快照: ", "")
+        description = escape(event.description.replace("状态快照: ", ""))
+        train = f" · {escape(event.train_id)}" if event.train_id else ""
         return (
             "<div style='margin:0 0 8px 0;'>"
             f"<span style='color:#93c5fd;'>[{event.timestamp:5.1f}s]</span> "
-            f"<span style='color:{color}; font-weight:700;'>● {event.event_type}</span> "
+            f"<span style='color:{color}; font-weight:700;'>● {escape(event.event_type)}{train}</span> "
             f"<span style='color:#f8fafc;'>{description}</span>"
             f"<div style='color:#94a3b8; font-size:12px; margin-top:1px;'>{meta}</div>"
             "</div>"
@@ -1567,9 +1609,9 @@ class MainWindow(QMainWindow):
 
     def _event_color(self, event_type: str) -> str:
         """按事件类型区分日志颜色"""
-        if event_type in ("紧急制动", "超速", "红灯违规"):
+        if event_type in ("紧急制动", "超速", "红灯违规", "列车碰撞"):
             return "#f87171"
-        if event_type == "信号":
+        if event_type in ("信号", "安全防护", "列车接近"):
             return "#fbbf24"
         if event_type == "状态":
             return "#38bdf8"
@@ -1584,12 +1626,18 @@ class MainWindow(QMainWindow):
         for sig in self.track.signals:
             aspect = self.signal_system.get_signal_aspect(sig)
             last_aspect = self._last_signal_aspects.get(sig.signal_id)
+            # 首次扫描只建立基线，避免数据库近百架信号机淹没日志。
+            if last_aspect is None:
+                self._last_signal_aspects[sig.signal_id] = aspect
+                continue
             if aspect != last_aspect:
                 self.recorder.record(
                     "信号",
                     f"{sig.signal_id} {aspect.value}",
                     sig.position,
                     speed,
+                    train_id=runtime.train_id if runtime else "",
+                    source="signal", entity_id=sig.signal_id,
                 )
                 self._last_signal_aspects[sig.signal_id] = aspect
 
@@ -1599,8 +1647,12 @@ class MainWindow(QMainWindow):
             return
 
         head_abs = self._head_abs_position()
-        nearest_signal = self.signal_system.get_nearest_signal_ahead(
-            head_abs, self.track.signals, look_ahead=float("inf")
+        runtime = self._active_runtime()
+        if runtime is None:
+            return
+        nearest_signal = self.signal_system.get_nearest_signal_for_direction(
+            head_abs, runtime.controller.direction, self.track.signals,
+            look_ahead=float("inf"),
         )
         if nearest_signal:
             aspect = self.signal_system.get_signal_aspect(nearest_signal)
@@ -1608,9 +1660,6 @@ class MainWindow(QMainWindow):
         else:
             signal_text = "无前方信号"
 
-        runtime = self._active_runtime()
-        if runtime is None:
-            return
         controller = runtime.controller
         mode = "自动" if controller.running_mode == RunningMode.AUTOMATIC else "手动"
         head_accel = controller.states[0].acceleration if controller.states else 0.0
@@ -1621,5 +1670,6 @@ class MainWindow(QMainWindow):
         )
         self.recorder.record(
             "状态", f"{runtime.train_id} · {description}",
-            head_abs, controller.head_speed)
+            head_abs, controller.head_speed,
+            train_id=runtime.train_id, source="simulation")
         self._last_status_log_time = self.sim_time

@@ -453,6 +453,19 @@ class VehicleController:
         self.door_side = DoorSide.NONE
         self.set_running_mode(RunningMode.MANUAL)
 
+    def reverse_direction(self) -> bool:
+        """列车换端运行，保持各车厢在线路上的几何位置不变。"""
+        if not self.states:
+            return False
+        self.direction *= -1
+        # 新头车应为原尾车；只反转车厢顺序，不重新计算位置，避免换端漂移。
+        self.states = [state.copy() for state in reversed(self.states)]
+        for state in self.states:
+            state.velocity = abs(state.velocity)
+        self._history.clear()
+        self.coast()
+        return True
+
     # ── 车门控制 ───────────────────────────────────────────────
 
     def open_door(self, side: DoorSide) -> bool:

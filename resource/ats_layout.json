@@ -1,0 +1,1744 @@
+{
+  "source": "线路数据(1).xls",
+  "unit": "m",
+  "switches": [
+    {
+      "switch_id": 1,
+      "name": "1",
+      "direction": 2,
+      "normal_seg_id": 5,
+      "reverse_seg_id": 4,
+      "merge_seg_id": 6
+    },
+    {
+      "switch_id": 2,
+      "name": "2",
+      "direction": 1,
+      "normal_seg_id": 238,
+      "reverse_seg_id": 30,
+      "merge_seg_id": 29
+    },
+    {
+      "switch_id": 3,
+      "name": "4",
+      "direction": 2,
+      "normal_seg_id": 31,
+      "reverse_seg_id": 33,
+      "merge_seg_id": 32
+    },
+    {
+      "switch_id": 4,
+      "name": "3",
+      "direction": 1,
+      "normal_seg_id": 8,
+      "reverse_seg_id": 9,
+      "merge_seg_id": 7
+    },
+    {
+      "switch_id": 5,
+      "name": "5",
+      "direction": 2,
+      "normal_seg_id": 10,
+      "reverse_seg_id": 12,
+      "merge_seg_id": 11
+    },
+    {
+      "switch_id": 6,
+      "name": "6",
+      "direction": 1,
+      "normal_seg_id": 35,
+      "reverse_seg_id": 36,
+      "merge_seg_id": 34
+    },
+    {
+      "switch_id": 7,
+      "name": "8",
+      "direction": 2,
+      "normal_seg_id": 35,
+      "reverse_seg_id": 38,
+      "merge_seg_id": 37
+    },
+    {
+      "switch_id": 8,
+      "name": "7",
+      "direction": 1,
+      "normal_seg_id": 15,
+      "reverse_seg_id": 17,
+      "merge_seg_id": 14
+    },
+    {
+      "switch_id": 9,
+      "name": "9",
+      "direction": 2,
+      "normal_seg_id": 15,
+      "reverse_seg_id": 18,
+      "merge_seg_id": 16
+    },
+    {
+      "switch_id": 10,
+      "name": "10",
+      "direction": 1,
+      "normal_seg_id": 41,
+      "reverse_seg_id": 42,
+      "merge_seg_id": 40
+    },
+    {
+      "switch_id": 11,
+      "name": "12",
+      "direction": 2,
+      "normal_seg_id": 41,
+      "reverse_seg_id": 44,
+      "merge_seg_id": 43
+    },
+    {
+      "switch_id": 12,
+      "name": "11",
+      "direction": 2,
+      "normal_seg_id": 19,
+      "reverse_seg_id": 21,
+      "merge_seg_id": 20
+    },
+    {
+      "switch_id": 13,
+      "name": "14",
+      "direction": 2,
+      "normal_seg_id": 45,
+      "reverse_seg_id": 47,
+      "merge_seg_id": 46
+    },
+    {
+      "switch_id": 14,
+      "name": "1",
+      "direction": 2,
+      "normal_seg_id": 63,
+      "reverse_seg_id": 65,
+      "merge_seg_id": 64
+    },
+    {
+      "switch_id": 15,
+      "name": "2",
+      "direction": 1,
+      "normal_seg_id": 79,
+      "reverse_seg_id": 80,
+      "merge_seg_id": 78
+    },
+    {
+      "switch_id": 16,
+      "name": "1",
+      "direction": 1,
+      "normal_seg_id": 90,
+      "reverse_seg_id": 91,
+      "merge_seg_id": 89
+    },
+    {
+      "switch_id": 17,
+      "name": "3",
+      "direction": 2,
+      "normal_seg_id": 93,
+      "reverse_seg_id": 95,
+      "merge_seg_id": 94
+    },
+    {
+      "switch_id": 18,
+      "name": "4",
+      "direction": 2,
+      "normal_seg_id": 119,
+      "reverse_seg_id": 117,
+      "merge_seg_id": 118
+    },
+    {
+      "switch_id": 19,
+      "name": "10",
+      "direction": 1,
+      "normal_seg_id": 237,
+      "reverse_seg_id": 124,
+      "merge_seg_id": 122
+    },
+    {
+      "switch_id": 20,
+      "name": "8",
+      "direction": 1,
+      "normal_seg_id": 122,
+      "reverse_seg_id": 123,
+      "merge_seg_id": 121
+    },
+    {
+      "switch_id": 21,
+      "name": "2",
+      "direction": 1,
+      "normal_seg_id": 106,
+      "reverse_seg_id": 107,
+      "merge_seg_id": 105
+    },
+    {
+      "switch_id": 22,
+      "name": "6",
+      "direction": 2,
+      "normal_seg_id": 108,
+      "reverse_seg_id": 110,
+      "merge_seg_id": 109
+    },
+    {
+      "switch_id": 23,
+      "name": "12",
+      "direction": 2,
+      "normal_seg_id": 112,
+      "reverse_seg_id": 114,
+      "merge_seg_id": 113
+    },
+    {
+      "switch_id": 24,
+      "name": "1",
+      "direction": 2,
+      "normal_seg_id": 130,
+      "reverse_seg_id": 132,
+      "merge_seg_id": 131
+    },
+    {
+      "switch_id": 25,
+      "name": "7-6",
+      "direction": 1,
+      "normal_seg_id": 150,
+      "reverse_seg_id": 151,
+      "merge_seg_id": 149
+    },
+    {
+      "switch_id": 26,
+      "name": "7-4",
+      "direction": 1,
+      "normal_seg_id": 153,
+      "reverse_seg_id": 154,
+      "merge_seg_id": 152
+    },
+    {
+      "switch_id": 27,
+      "name": "7-2",
+      "direction": 2,
+      "normal_seg_id": 153,
+      "reverse_seg_id": 156,
+      "merge_seg_id": 155
+    },
+    {
+      "switch_id": 28,
+      "name": "7-3",
+      "direction": 1,
+      "normal_seg_id": 164,
+      "reverse_seg_id": 165,
+      "merge_seg_id": 163
+    },
+    {
+      "switch_id": 29,
+      "name": "7-1",
+      "direction": 2,
+      "normal_seg_id": 164,
+      "reverse_seg_id": 167,
+      "merge_seg_id": 166
+    },
+    {
+      "switch_id": 30,
+      "name": "7-5",
+      "direction": 1,
+      "normal_seg_id": 161,
+      "reverse_seg_id": 162,
+      "merge_seg_id": 160
+    },
+    {
+      "switch_id": 31,
+      "name": "2",
+      "direction": 2,
+      "normal_seg_id": 141,
+      "reverse_seg_id": 143,
+      "merge_seg_id": 142
+    },
+    {
+      "switch_id": 32,
+      "name": "1",
+      "direction": 1,
+      "normal_seg_id": 176,
+      "reverse_seg_id": 177,
+      "merge_seg_id": 175
+    },
+    {
+      "switch_id": 33,
+      "name": "4",
+      "direction": 2,
+      "normal_seg_id": 198,
+      "reverse_seg_id": 196,
+      "merge_seg_id": 197
+    },
+    {
+      "switch_id": 34,
+      "name": "6",
+      "direction": 1,
+      "normal_seg_id": 201,
+      "reverse_seg_id": 202,
+      "merge_seg_id": 200
+    },
+    {
+      "switch_id": 35,
+      "name": "2",
+      "direction": 1,
+      "normal_seg_id": 188,
+      "reverse_seg_id": 189,
+      "merge_seg_id": 187
+    },
+    {
+      "switch_id": 36,
+      "name": "8",
+      "direction": 2,
+      "normal_seg_id": 191,
+      "reverse_seg_id": 193,
+      "merge_seg_id": 192
+    },
+    {
+      "switch_id": 37,
+      "name": "1",
+      "direction": 1,
+      "normal_seg_id": 209,
+      "reverse_seg_id": 210,
+      "merge_seg_id": 208
+    },
+    {
+      "switch_id": 38,
+      "name": "3",
+      "direction": 2,
+      "normal_seg_id": 209,
+      "reverse_seg_id": 212,
+      "merge_seg_id": 211
+    },
+    {
+      "switch_id": 39,
+      "name": "2",
+      "direction": 1,
+      "normal_seg_id": 223,
+      "reverse_seg_id": 224,
+      "merge_seg_id": 222
+    },
+    {
+      "switch_id": 40,
+      "name": "4",
+      "direction": 2,
+      "normal_seg_id": 223,
+      "reverse_seg_id": 226,
+      "merge_seg_id": 225
+    },
+    {
+      "switch_id": 41,
+      "name": "5",
+      "direction": 1,
+      "normal_seg_id": 215,
+      "reverse_seg_id": 216,
+      "merge_seg_id": 214
+    },
+    {
+      "switch_id": 42,
+      "name": "6",
+      "direction": 1,
+      "normal_seg_id": 229,
+      "reverse_seg_id": 230,
+      "merge_seg_id": 228
+    },
+    {
+      "switch_id": 43,
+      "name": "43",
+      "direction": 1,
+      "normal_seg_id": 239,
+      "reverse_seg_id": 241,
+      "merge_seg_id": 240
+    },
+    {
+      "switch_id": 44,
+      "name": "44",
+      "direction": 2,
+      "normal_seg_id": 243,
+      "reverse_seg_id": 242,
+      "merge_seg_id": 244
+    },
+    {
+      "switch_id": 45,
+      "name": "45",
+      "direction": 2,
+      "normal_seg_id": 248,
+      "reverse_seg_id": 247,
+      "merge_seg_id": 246
+    },
+    {
+      "switch_id": 46,
+      "name": "46",
+      "direction": 1,
+      "normal_seg_id": 250,
+      "reverse_seg_id": 249,
+      "merge_seg_id": 251
+    },
+    {
+      "switch_id": 47,
+      "name": "47",
+      "direction": 2,
+      "normal_seg_id": 254,
+      "reverse_seg_id": 255,
+      "merge_seg_id": 253
+    },
+    {
+      "switch_id": 48,
+      "name": "48",
+      "direction": 1,
+      "normal_seg_id": 260,
+      "reverse_seg_id": 259,
+      "merge_seg_id": 263
+    },
+    {
+      "switch_id": 49,
+      "name": "49",
+      "direction": 2,
+      "normal_seg_id": 260,
+      "reverse_seg_id": 258,
+      "merge_seg_id": 261
+    },
+    {
+      "switch_id": 50,
+      "name": "50",
+      "direction": 1,
+      "normal_seg_id": 254,
+      "reverse_seg_id": 256,
+      "merge_seg_id": 257
+    },
+    {
+      "switch_id": 51,
+      "name": "51",
+      "direction": 2,
+      "normal_seg_id": 267,
+      "reverse_seg_id": 266,
+      "merge_seg_id": 265
+    },
+    {
+      "switch_id": 52,
+      "name": "52",
+      "direction": 1,
+      "normal_seg_id": 269,
+      "reverse_seg_id": 268,
+      "merge_seg_id": 270
+    },
+    {
+      "switch_id": 53,
+      "name": "53",
+      "direction": 2,
+      "normal_seg_id": 273,
+      "reverse_seg_id": 272,
+      "merge_seg_id": 271
+    },
+    {
+      "switch_id": 54,
+      "name": "54",
+      "direction": 2,
+      "normal_seg_id": 282,
+      "reverse_seg_id": 275,
+      "merge_seg_id": 273
+    },
+    {
+      "switch_id": 55,
+      "name": "55",
+      "direction": 1,
+      "normal_seg_id": 277,
+      "reverse_seg_id": 276,
+      "merge_seg_id": 278
+    },
+    {
+      "switch_id": 56,
+      "name": "56",
+      "direction": 2,
+      "normal_seg_id": 284,
+      "reverse_seg_id": 283,
+      "merge_seg_id": 274
+    },
+    {
+      "switch_id": 57,
+      "name": "57",
+      "direction": 2,
+      "normal_seg_id": 286,
+      "reverse_seg_id": 290,
+      "merge_seg_id": 285
+    },
+    {
+      "switch_id": 58,
+      "name": "58",
+      "direction": 2,
+      "normal_seg_id": 288,
+      "reverse_seg_id": 289,
+      "merge_seg_id": 287
+    },
+    {
+      "switch_id": 59,
+      "name": "59",
+      "direction": 2,
+      "normal_seg_id": 304,
+      "reverse_seg_id": 306,
+      "merge_seg_id": 303
+    },
+    {
+      "switch_id": 60,
+      "name": "60",
+      "direction": 1,
+      "normal_seg_id": 311,
+      "reverse_seg_id": 308,
+      "merge_seg_id": 309
+    }
+  ],
+  "signals": [
+    {
+      "layout_id": 1,
+      "name": "Z5",
+      "signal_type": 1,
+      "seg_id": 1,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 2,
+      "name": "SCD1",
+      "signal_type": 2,
+      "seg_id": 231,
+      "offset_m": 170.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 3,
+      "name": "XQ1",
+      "signal_type": 1,
+      "seg_id": 2,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 4,
+      "name": "SQ1",
+      "signal_type": 1,
+      "seg_id": 1,
+      "offset_m": 758.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 5,
+      "name": "F1",
+      "signal_type": 3,
+      "seg_id": 2,
+      "offset_m": 850.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 6,
+      "name": "Z1",
+      "signal_type": 1,
+      "seg_id": 5,
+      "offset_m": 27.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 7,
+      "name": "F3",
+      "signal_type": 3,
+      "seg_id": 6,
+      "offset_m": 11.32,
+      "direction": "down"
+    },
+    {
+      "layout_id": 8,
+      "name": "XC1",
+      "signal_type": 3,
+      "seg_id": 13,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 9,
+      "name": "F5",
+      "signal_type": 3,
+      "seg_id": 13,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 10,
+      "name": "F7",
+      "signal_type": 3,
+      "seg_id": 19,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 11,
+      "name": "F9",
+      "signal_type": 3,
+      "seg_id": 22,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 12,
+      "name": "Z3",
+      "signal_type": 1,
+      "seg_id": 22,
+      "offset_m": 190.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 13,
+      "name": "XC3",
+      "signal_type": 1,
+      "seg_id": 24,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 14,
+      "name": "XC",
+      "signal_type": 1,
+      "seg_id": 55,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 15,
+      "name": "XC",
+      "signal_type": 1,
+      "seg_id": 58,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 16,
+      "name": "XQ1",
+      "signal_type": 1,
+      "seg_id": 60,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 17,
+      "name": "XC",
+      "signal_type": 1,
+      "seg_id": 62,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 18,
+      "name": "F1",
+      "signal_type": 3,
+      "seg_id": 66,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 19,
+      "name": "Z1",
+      "signal_type": 1,
+      "seg_id": 66,
+      "offset_m": 169.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 20,
+      "name": "XQ3",
+      "signal_type": 1,
+      "seg_id": 82,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 21,
+      "name": "XC",
+      "signal_type": 1,
+      "seg_id": 84,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 22,
+      "name": "XQ1",
+      "signal_type": 1,
+      "seg_id": 86,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 23,
+      "name": "XC",
+      "signal_type": 1,
+      "seg_id": 88,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 24,
+      "name": "F1",
+      "signal_type": 3,
+      "seg_id": 88,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 25,
+      "name": "F3",
+      "signal_type": 3,
+      "seg_id": 92,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 26,
+      "name": "F5",
+      "signal_type": 3,
+      "seg_id": 96,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 27,
+      "name": "F4",
+      "signal_type": 3,
+      "seg_id": 120,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 28,
+      "name": "F8",
+      "signal_type": 3,
+      "seg_id": 120,
+      "offset_m": 190.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 29,
+      "name": "XC",
+      "signal_type": 1,
+      "seg_id": 126,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 30,
+      "name": "XC",
+      "signal_type": 1,
+      "seg_id": 129,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 31,
+      "name": "F1",
+      "signal_type": 3,
+      "seg_id": 133,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 32,
+      "name": "Z4(7)",
+      "signal_type": 1,
+      "seg_id": 148,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 33,
+      "name": "F4(7)",
+      "signal_type": 3,
+      "seg_id": 148,
+      "offset_m": 162.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 34,
+      "name": "F2(7)",
+      "signal_type": 3,
+      "seg_id": 157,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 35,
+      "name": "Z2(7)",
+      "signal_type": 1,
+      "seg_id": 157,
+      "offset_m": 220.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 36,
+      "name": "Z1",
+      "signal_type": 1,
+      "seg_id": 133,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 37,
+      "name": "XQ1",
+      "signal_type": 1,
+      "seg_id": 169,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 38,
+      "name": "XC",
+      "signal_type": 1,
+      "seg_id": 170,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 39,
+      "name": "XQ1",
+      "signal_type": 1,
+      "seg_id": 172,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 40,
+      "name": "XC",
+      "signal_type": 1,
+      "seg_id": 174,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 41,
+      "name": "F1",
+      "signal_type": 3,
+      "seg_id": 174,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 42,
+      "name": "F3",
+      "signal_type": 3,
+      "seg_id": 178,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 43,
+      "name": "F2",
+      "signal_type": 3,
+      "seg_id": 199,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 44,
+      "name": "F4",
+      "signal_type": 3,
+      "seg_id": 199,
+      "offset_m": 132.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 45,
+      "name": "XC",
+      "signal_type": 1,
+      "seg_id": 204,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 46,
+      "name": "XC",
+      "signal_type": 1,
+      "seg_id": 207,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 47,
+      "name": "F1",
+      "signal_type": 3,
+      "seg_id": 207,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 48,
+      "name": "F3",
+      "signal_type": 3,
+      "seg_id": 213,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 49,
+      "name": "F5",
+      "signal_type": 3,
+      "seg_id": 213,
+      "offset_m": 179.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 50,
+      "name": "Z6",
+      "signal_type": 1,
+      "seg_id": 53,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 51,
+      "name": "SCD2",
+      "signal_type": 2,
+      "seg_id": 232,
+      "offset_m": 170.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 52,
+      "name": "XQ2",
+      "signal_type": 1,
+      "seg_id": 27,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 53,
+      "name": "SQ2",
+      "signal_type": 1,
+      "seg_id": 26,
+      "offset_m": 706.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 54,
+      "name": "F2",
+      "signal_type": 3,
+      "seg_id": 28,
+      "offset_m": 741.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 55,
+      "name": "Z2",
+      "signal_type": 1,
+      "seg_id": 31,
+      "offset_m": 27.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 56,
+      "name": "F4",
+      "signal_type": 3,
+      "seg_id": 32,
+      "offset_m": 11.32,
+      "direction": "down"
+    },
+    {
+      "layout_id": 57,
+      "name": "F6",
+      "signal_type": 3,
+      "seg_id": 39,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 58,
+      "name": "SC2",
+      "signal_type": 3,
+      "seg_id": 39,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 59,
+      "name": "F8",
+      "signal_type": 3,
+      "seg_id": 45,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 60,
+      "name": "F10",
+      "signal_type": 3,
+      "seg_id": 48,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 61,
+      "name": "Z4",
+      "signal_type": 1,
+      "seg_id": 48,
+      "offset_m": 190.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 62,
+      "name": "SC4",
+      "signal_type": 1,
+      "seg_id": 51,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 63,
+      "name": "SC",
+      "signal_type": 1,
+      "seg_id": 69,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 64,
+      "name": "SC",
+      "signal_type": 1,
+      "seg_id": 72,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 65,
+      "name": "SQ2",
+      "signal_type": 1,
+      "seg_id": 74,
+      "offset_m": 651.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 66,
+      "name": "Z2",
+      "signal_type": 1,
+      "seg_id": 77,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 67,
+      "name": "SC",
+      "signal_type": 3,
+      "seg_id": 77,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 68,
+      "name": "SQ2",
+      "signal_type": 1,
+      "seg_id": 81,
+      "offset_m": 687.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 69,
+      "name": "SC",
+      "signal_type": 1,
+      "seg_id": 98,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 70,
+      "name": "SQ4",
+      "signal_type": 1,
+      "seg_id": 100,
+      "offset_m": 598.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 71,
+      "name": "Z2",
+      "signal_type": 1,
+      "seg_id": 103,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 72,
+      "name": "SC",
+      "signal_type": 3,
+      "seg_id": 103,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 73,
+      "name": "F6",
+      "signal_type": 3,
+      "seg_id": 111,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 74,
+      "name": "F2",
+      "signal_type": 3,
+      "seg_id": 321,
+      "offset_m": 47.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 75,
+      "name": "F10",
+      "signal_type": 3,
+      "seg_id": 111,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 76,
+      "name": "F12",
+      "signal_type": 3,
+      "seg_id": 115,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 77,
+      "name": "Z4",
+      "signal_type": 1,
+      "seg_id": 115,
+      "offset_m": 248.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 78,
+      "name": "SC",
+      "signal_type": 1,
+      "seg_id": 136,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 79,
+      "name": "SC",
+      "signal_type": 3,
+      "seg_id": 139,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 80,
+      "name": "F2",
+      "signal_type": 3,
+      "seg_id": 144,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 81,
+      "name": "Z3(7)",
+      "signal_type": 1,
+      "seg_id": 159,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 82,
+      "name": "F3(7)",
+      "signal_type": 3,
+      "seg_id": 159,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 83,
+      "name": "F1(7)",
+      "signal_type": 3,
+      "seg_id": 168,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 84,
+      "name": "Z1(7)",
+      "signal_type": 1,
+      "seg_id": 168,
+      "offset_m": 220.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 85,
+      "name": "Z2",
+      "signal_type": 1,
+      "seg_id": 144,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 86,
+      "name": "SQ2",
+      "signal_type": 1,
+      "seg_id": 146,
+      "offset_m": 684.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 87,
+      "name": "SC",
+      "signal_type": 1,
+      "seg_id": 180,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 88,
+      "name": "SQ4",
+      "signal_type": 1,
+      "seg_id": 182,
+      "offset_m": 810.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 89,
+      "name": "Z2",
+      "signal_type": 1,
+      "seg_id": 185,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 90,
+      "name": "SC",
+      "signal_type": 3,
+      "seg_id": 185,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 91,
+      "name": "F6",
+      "signal_type": 3,
+      "seg_id": 194,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 92,
+      "name": "Z4",
+      "signal_type": 1,
+      "seg_id": 194,
+      "offset_m": 247.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 93,
+      "name": "SC",
+      "signal_type": 1,
+      "seg_id": 217,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 94,
+      "name": "Z2",
+      "signal_type": 1,
+      "seg_id": 220,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 95,
+      "name": "SC",
+      "signal_type": 3,
+      "seg_id": 220,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 96,
+      "name": "F2",
+      "signal_type": 3,
+      "seg_id": 227,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 97,
+      "name": "F4",
+      "signal_type": 3,
+      "seg_id": 227,
+      "offset_m": 179.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 98,
+      "name": "JC1",
+      "signal_type": 3,
+      "seg_id": 231,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 99,
+      "name": "JC2",
+      "signal_type": 3,
+      "seg_id": 232,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 100,
+      "name": "SQ",
+      "signal_type": 1,
+      "seg_id": 96,
+      "offset_m": 650.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 101,
+      "name": "XQ",
+      "signal_type": 1,
+      "seg_id": 135,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 102,
+      "name": "Z1",
+      "signal_type": 1,
+      "seg_id": 129,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 103,
+      "name": "XC",
+      "signal_type": 1,
+      "seg_id": 139,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 104,
+      "name": "JK1",
+      "signal_type": 3,
+      "seg_id": 233,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 105,
+      "name": "JK2",
+      "signal_type": 3,
+      "seg_id": 234,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 106,
+      "name": "JK4",
+      "signal_type": 3,
+      "seg_id": 245,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 107,
+      "name": "D1",
+      "signal_type": 1,
+      "seg_id": 264,
+      "offset_m": 308.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 108,
+      "name": "CK3",
+      "signal_type": 3,
+      "seg_id": 246,
+      "offset_m": 7.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 109,
+      "name": "D2",
+      "signal_type": 1,
+      "seg_id": 252,
+      "offset_m": 94.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 110,
+      "name": "CK2",
+      "signal_type": 3,
+      "seg_id": 253,
+      "offset_m": 7.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 111,
+      "name": "JK3",
+      "signal_type": 3,
+      "seg_id": 262,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 112,
+      "name": "D3",
+      "signal_type": 1,
+      "seg_id": 263,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 113,
+      "name": "D4",
+      "signal_type": 1,
+      "seg_id": 252,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 114,
+      "name": "D5",
+      "signal_type": 1,
+      "seg_id": 305,
+      "offset_m": 147.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 115,
+      "name": "D9",
+      "signal_type": 1,
+      "seg_id": 307,
+      "offset_m": 247.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 116,
+      "name": "D6",
+      "signal_type": 1,
+      "seg_id": 270,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 117,
+      "name": "D7",
+      "signal_type": 1,
+      "seg_id": 267,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 118,
+      "name": "D8",
+      "signal_type": 1,
+      "seg_id": 264,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 119,
+      "name": "CK1",
+      "signal_type": 3,
+      "seg_id": 279,
+      "offset_m": 173.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 120,
+      "name": "JK1B",
+      "signal_type": 3,
+      "seg_id": 279,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 121,
+      "name": "CK1B",
+      "signal_type": 3,
+      "seg_id": 280,
+      "offset_m": 150.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 122,
+      "name": "CK2A",
+      "signal_type": 3,
+      "seg_id": 291,
+      "offset_m": 150.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 123,
+      "name": "CK3A",
+      "signal_type": 3,
+      "seg_id": 292,
+      "offset_m": 150.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 124,
+      "name": "CK4A",
+      "signal_type": 3,
+      "seg_id": 293,
+      "offset_m": 150.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 125,
+      "name": "CK5A",
+      "signal_type": 3,
+      "seg_id": 294,
+      "offset_m": 150.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 126,
+      "name": "CK6A",
+      "signal_type": 3,
+      "seg_id": 295,
+      "offset_m": 150.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 127,
+      "name": "CK7A",
+      "signal_type": 3,
+      "seg_id": 296,
+      "offset_m": 150.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 128,
+      "name": "JK2B",
+      "signal_type": 3,
+      "seg_id": 291,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 129,
+      "name": "CK2B",
+      "signal_type": 3,
+      "seg_id": 315,
+      "offset_m": 159.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 130,
+      "name": "JK3B",
+      "signal_type": 3,
+      "seg_id": 292,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 131,
+      "name": "CK3B",
+      "signal_type": 3,
+      "seg_id": 316,
+      "offset_m": 159.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 132,
+      "name": "JK4B",
+      "signal_type": 3,
+      "seg_id": 293,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 133,
+      "name": "CK4B",
+      "signal_type": 3,
+      "seg_id": 317,
+      "offset_m": 159.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 134,
+      "name": "JK5B",
+      "signal_type": 3,
+      "seg_id": 294,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 135,
+      "name": "CK5B",
+      "signal_type": 3,
+      "seg_id": 318,
+      "offset_m": 159.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 136,
+      "name": "JK6B",
+      "signal_type": 3,
+      "seg_id": 295,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 137,
+      "name": "CK6B",
+      "signal_type": 3,
+      "seg_id": 319,
+      "offset_m": 159.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 138,
+      "name": "JK7B",
+      "signal_type": 3,
+      "seg_id": 296,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 139,
+      "name": "CK7B",
+      "signal_type": 3,
+      "seg_id": 320,
+      "offset_m": 159.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 140,
+      "name": "D10",
+      "signal_type": 1,
+      "seg_id": 307,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 141,
+      "name": "D11",
+      "signal_type": 1,
+      "seg_id": 310,
+      "offset_m": 147.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 142,
+      "name": "D12",
+      "signal_type": 1,
+      "seg_id": 312,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 143,
+      "name": "XNZ1",
+      "signal_type": 1,
+      "seg_id": 313,
+      "offset_m": 247.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 144,
+      "name": "XNZ2",
+      "signal_type": 1,
+      "seg_id": 280,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 145,
+      "name": "XNZ3",
+      "signal_type": 1,
+      "seg_id": 315,
+      "offset_m": 30.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 146,
+      "name": "XNZ4",
+      "signal_type": 1,
+      "seg_id": 316,
+      "offset_m": 30.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 147,
+      "name": "XNZ5",
+      "signal_type": 1,
+      "seg_id": 317,
+      "offset_m": 30.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 148,
+      "name": "XNZ6",
+      "signal_type": 1,
+      "seg_id": 318,
+      "offset_m": 30.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 149,
+      "name": "XNZ7",
+      "signal_type": 1,
+      "seg_id": 319,
+      "offset_m": 30.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 150,
+      "name": "XNZ8",
+      "signal_type": 1,
+      "seg_id": 320,
+      "offset_m": 30.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 151,
+      "name": "XNZ9",
+      "signal_type": 1,
+      "seg_id": 310,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 152,
+      "name": "XNZ10",
+      "signal_type": 1,
+      "seg_id": 245,
+      "offset_m": 148.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 153,
+      "name": "XNZ11",
+      "signal_type": 1,
+      "seg_id": 262,
+      "offset_m": 167.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 154,
+      "name": "XNZ12",
+      "signal_type": 1,
+      "seg_id": 305,
+      "offset_m": 3.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 155,
+      "name": "V1_FS",
+      "signal_type": 3,
+      "seg_id": 21,
+      "offset_m": 0.0,
+      "direction": "up"
+    },
+    {
+      "layout_id": 156,
+      "name": "V1",
+      "signal_type": 3,
+      "seg_id": 314,
+      "offset_m": 129.0,
+      "direction": "down"
+    },
+    {
+      "layout_id": 157,
+      "name": "D13",
+      "signal_type": 1,
+      "seg_id": 308,
+      "offset_m": 37.0,
+      "direction": "down"
+    }
+  ]
+}

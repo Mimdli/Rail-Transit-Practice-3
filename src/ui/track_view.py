@@ -19,6 +19,8 @@ from typing import Optional
 
 from src.track.data import TrackData, Segment
 from src.track.db_loader import DBLoader
+from src.track.link_mainline import LinkCoordinateMapper
+from src.track.semantic_line import build_semantic_line
 from src.vehicle.vehicle_controller import VehicleController
 
 
@@ -381,73 +383,27 @@ class TrackView(QGraphicsView):
         def _is_valid_seg_id(sid: int) -> bool:
             return sid > 0 and sid != 65535 and sid in td._seg_map
 
-        def _walk_main_chain(start_id: int) -> tuple[set[int], float]:
-            chain = set()
-            total = 0.0
-            sid = start_id
-            while _is_valid_seg_id(sid) and sid not in chain:
-                chain.add(sid)
-                seg = td._seg_map[sid]
-                total += seg.length
-                sid = seg.end_neighbor
-            return chain, total
-
-        starts = [
-            s.seg_id for s in td.segments
-            if s.start_neighbor == 0 and _is_valid_seg_id(s.end_neighbor)
-        ]
-        chains = {}
-        for start_id in starts:
-            chain, total = _walk_main_chain(start_id)
-            chains[start_id] = (chain, total)
-
-        trunk_start_ids = []
-        if len(starts) >= 2:
-            best_score = None
-            best_pair = None
-            overlap_penalty = 10
-            for i, a in enumerate(starts):
-                ca = chains[a][0]
-                for b in starts[i + 1:]:
-                    cb = chains[b][0]
-                    overlap = len(ca & cb)
-                    score = (len(ca) + len(cb)) - overlap_penalty * overlap
-                    if best_score is None or score > best_score:
-                        best_score = score
-                        best_pair = (a, b)
-            if best_pair is not None:
-                trunk_start_ids = [best_pair[0], best_pair[1]]
-        if not trunk_start_ids and starts:
-            trunk_start_ids = [max(starts, key=lambda sid: chains[sid][1])]
-
-        trunks = []
-        for start_id in trunk_start_ids:
-            chain = set(chains[start_id][0])
-            changed = True
-            while changed:
-                changed = False
-                for sid in list(chain):
-                    prev_id = td._seg_map[sid].start_neighbor
-                    if not _is_valid_seg_id(prev_id):
-                        continue
-                    if prev_id in chain:
-                        continue
-                    if td._seg_map[prev_id].end_neighbor != sid:
-                        continue
-                    chain.add(prev_id)
-                    changed = True
-            trunks.append(chain)
-
         from collections import deque
         self._seg_layout = {}
         q = deque()
 
-        for trunk_idx, chain in enumerate(trunks):
-            for sid in chain:
-                if sid in self._seg_layout:
-                    continue
-                self._seg_layout[sid] = (trunk_idx, 0)
-                q.append((sid, trunk_idx, 0))
+        # 与运营线路图共用同一语义主线口径，避免从混杂 Seg 猜两条最长链。
+        semantic = build_semantic_line(td)
+        mapper = LinkCoordinateMapper(td)
+        for sid in semantic.main_seg_ids:
+            if not _is_valid_seg_id(sid):
+                continue
+            direction = mapper.direction_for_segment(sid)
+            trunk_idx = 0 if direction == "down" else 1
+            self._seg_layout[sid] = (trunk_idx, 0)
+            q.append((sid, trunk_idx, 0))
+
+        # 配置缺失时保留原始数据的安全兜底，不让线路图空白。
+        if not self._seg_layout:
+            for seg in td.segments:
+                if seg.start_neighbor == 0:
+                    self._seg_layout[seg.seg_id] = (0, 0)
+                    q.append((seg.seg_id, 0, 0))
 
         while q:
             sid, trunk_idx, depth = q.popleft()
@@ -469,19 +425,6 @@ class TrackView(QGraphicsView):
                     self._seg_layout[nid] = (trunk_idx, next_depth)
                     q.append((nid, trunk_idx, next_depth))
 
-        # ── 将下行轨道主线区段分配到 trunk 1（视觉分离） ──
-        for seg_id, (trunk, depth) in list(self._seg_layout.items()):
-            seg = td._seg_map.get(seg_id)
-            if seg and depth == 0 and self._is_down_track_zone(seg.abs_start):
-                # 下行主线 → 移到 trunk 1，保持 depth 0
-                self._seg_layout[seg_id] = (1, 0)
-                # 同时将所有从其岔出的分支也移到 trunk 1
-                for child_id, (ct, cd) in list(self._seg_layout.items()):
-                    if ct == trunk and cd > 0:
-                        # 检查该分支是否由这个下行段岔出
-                        parent = td._seg_map.get(child_id)
-                        if parent and self._is_down_track_zone(parent.abs_start):
-                            self._seg_layout[child_id] = (1, cd)
 
     def _get_level(self, seg_id: int) -> int:
         return self._seg_layout.get(seg_id, (0, 0))[1]
@@ -769,16 +712,7 @@ class TrackViewWidget(QWidget):
         self.view = TrackView(self.track_data, self)
         self.view.segment_clicked.connect(self.segment_clicked.emit)
         layout.addWidget(self.view)
-
-        td = self.track_data
-        stats = (
-            f"线路总长: {td.total_length():.0f}m | "
-            f"区段: {len(td.segments)} | "
-            f"车站: {len(td.stations)} | "
-            f"限速: {len(td.speed_limits)} | "
-            f"信号: {len(td.signals)}"
-        )
-        self.status_bar.setText(stats)
+        self.status_bar.setText(self._format_stats(self.track_data))
 
     def set_track_data(self, track_data: TrackData, source_name: str = ""):
         """使用外部线路数据重建视图，支持主界面数据源切换"""
@@ -787,7 +721,6 @@ class TrackViewWidget(QWidget):
         if self.view:
             layout.removeWidget(self.view)
             self.view.deleteLater()
-
         self.view = TrackView(track_data, self)
         self.view.segment_clicked.connect(self.segment_clicked.emit)
         layout.addWidget(self.view)

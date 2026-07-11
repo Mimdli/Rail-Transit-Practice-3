@@ -82,6 +82,9 @@ class AutoDriveController:
         self.cruise_speed_factor = cruise_speed_factor
         self.approach_speed = approach_speed
         self.dwell_time = dwell_time
+        # 调度层仍会调整这些旧参数；新控制器用动态制动曲线，保留属性用于兼容。
+        self.stop_distance: float = 20.0
+        self.emergency_brake_distance: float = 0.5
 
         self.target_position: Optional[TrackPosition] = None
         self._track: Optional[ITrackQuery] = None

@@ -7,6 +7,8 @@
     - 编组配置：预设 + 自定义每节车厢属性
 """
 
+from html import escape
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QFrame, QTextEdit, QGroupBox, QComboBox, QGridLayout,
@@ -283,6 +285,7 @@ class ControlPanel(QWidget):
         self._car_prop_buttons = []       # ⚙ 属性编辑按钮
         self._custom_car_configs: dict = {}  # index → 用户自定义的 CarConfig
         self._car_count = 6
+        self.train_id = ""
         self.runtime = None
         self._init_ui()
 
@@ -296,6 +299,7 @@ class ControlPanel(QWidget):
         self.auto_drive = auto_drive
         self.interlock = interlock
         self.track_adapter = track_adapter
+        self.train_id = train_id
         self.runtime = runtime
         self.populate_routes(auto_drive.available_routes)
         self.status_label.setText(f"当前控制：{train_id} · {controller.running_mode.value}")
@@ -1122,25 +1126,30 @@ class ControlPanel(QWidget):
         head_abs = 0.0
         if self.controller.states:
             head_abs = self.track_adapter.to_absolute(self.controller.states[0].position)
-        self.recorder.record(event_type, description, head_abs, head_speed)
+        self.recorder.record(
+            event_type, description, head_abs, head_speed,
+            train_id=self.train_id, source="control",
+        )
 
     def _format_log_event(self, event) -> str:
         color = self._event_color(event.event_type)
         meta = f"位置 {event.position:.1f} m · 速度 {event.speed * 3.6:.1f} km/h"
-        description = event.description.replace("状态快照: ", "")
+        description = escape(event.description.replace("状态快照: ", ""))
+        train = f" · {escape(event.train_id)}" if event.train_id else ""
         return (
             "<div style='margin:0 0 6px 0;'>"
             f"<span style='color:#93c5fd;'>[{event.timestamp:5.1f}s]</span> "
-            f"<span style='color:{color}; font-weight:700;'>● {event.event_type}</span>"
+            f"<span style='color:{color}; font-weight:700;'>"
+            f"● {escape(event.event_type)}{train}</span>"
             f"<div style='color:#f8fafc; margin-top:1px;'>{description}</div>"
             f"<div style='color:#94a3b8; font-size:12px; margin-top:1px;'>{meta}</div>"
             "</div>"
         )
 
     def _event_color(self, event_type: str) -> str:
-        if event_type in ("紧急制动", "超速", "红灯违规"):
+        if event_type in ("紧急制动", "超速", "红灯违规", "列车碰撞"):
             return "#f87171"
-        if event_type == "信号":
+        if event_type in ("信号", "安全防护", "列车接近"):
             return "#fbbf24"
         if event_type == "状态":
             return "#38bdf8"
