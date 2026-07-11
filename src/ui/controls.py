@@ -658,6 +658,9 @@ class ControlPanel(QWidget):
 
     def _on_handle_clicked(self, level: ControlLevel):
         """司控器手柄点击 — 应用离散控制级位。"""
+        # 调度新增列车初始为待发；直接操作司控器时切换为人工驾驶，
+        # 否则调度时钟会在下一帧把待发列车的牵引指令清零。
+        self._activate_direct_control()
         self.controller.apply_control_level(level)
         name = self._control_level_name(level)
         self._record_operation(f"手柄 → {name}")
@@ -717,6 +720,7 @@ class ControlPanel(QWidget):
 
     def _on_start(self):
         """发车按钮：关门+联锁检查+释放制动+全牵引。"""
+        self._activate_direct_control()
         # 先关门
         self.controller.close_door()
         success = self.controller.start_moving(throttle_level=1.0)
