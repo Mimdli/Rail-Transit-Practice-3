@@ -55,8 +55,13 @@ def test_demo_total_length():
 def test_demo_stations_have_positions():
     loader = TrackLoader()
     td = loader.load_demo_data()
+    # 有 8 个车站（4 上行 + 4 下行）
+    assert len(td.stations) == 8
     for station in td.stations:
-        assert station.position > 0 or station.name == "站A"  # 首站位置为 0
+        if "上行" in station.name:
+            assert station.position < 1000
+        else:
+            assert station.position >= 1000
 
 
 def test_demo_get_speed_limit():
@@ -79,7 +84,7 @@ def test_demo_get_station_at():
     td = loader.load_demo_data()
     station = td.get_station_at(0.0)
     assert station is not None
-    assert station.name == "站A"
+    assert "站A" in station.name
 
 
 def test_demo_get_nearest_station():
