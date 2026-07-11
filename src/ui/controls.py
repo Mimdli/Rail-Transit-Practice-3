@@ -953,7 +953,10 @@ class ControlPanel(QWidget):
         self.station_combo.clear()
         for st in stations:
             abs_pos = st.position if hasattr(st, 'position') else st.abs_pos
-            self.station_combo.addItem(f"{st.name} ({abs_pos:.0f}m)", abs_pos)
+            # 精简显示：去掉 "(上行)" / "(下行)" 后缀，加方向标识
+            display_name = st.name.replace("(上行)", "").replace("(下行)", "")
+            side = "上行" if "上行" in st.name else "下行"
+            self.station_combo.addItem(f"{display_name} ({side}, {abs_pos:.0f}m)", abs_pos)
         self.station_combo.blockSignals(False)
 
     def populate_routes(self, routes):
