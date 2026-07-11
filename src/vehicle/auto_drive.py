@@ -58,6 +58,8 @@ class AutoDriveController:
     KP_CRUISE = 0.3        # 巡航：误差 3.3 m/s → 全牵引
     KP_BRAKE = 1.5         # 制动：误差 0.67 m/s → 全制动
     KP_TRACTION_APPROACH = 0.15  # 接近段欠速补偿（温和）
+    # ── 制动距离安全系数 ─────────────────────────────────────
+    BRAKE_MARGIN = 1.3     # 制动距离安全余量（30%），比原 20% 更保守
 
     def __init__(self, controller: VehicleController,
                  interlock: "DoorInterlock | None" = None,
@@ -241,7 +243,10 @@ class AutoDriveController:
     # ═══════════════════════════════════════════════════════════════
 
     def _step_driving(self, distance: Optional[float], current_speed: float):
-        """巡航与制动接近阶段 — 连续 P 控制器。
+        """巡航与制动接近阶段 — 前馈 + 反馈控制器。
+
+        制动段使用运动学前馈（v² = 2ad）计算所需制动级位，
+        配合 P 反馈修正速度跟踪误差，实现精确停车。
 
         Args:
             distance: 到头车目标的沿线路距离 (m)。
@@ -261,11 +266,11 @@ class AutoDriveController:
 
         # ── 计算制动曲线 ──────────────────────────────────────
         a_brake = self._compute_brake_deceleration()
-        d_brake = (current_speed ** 2) / (2.0 * a_brake) * 1.2  # 20% 余量
+        d_brake = (current_speed ** 2) / (2.0 * a_brake) * self.BRAKE_MARGIN
 
         if distance <= max(d_brake, 5.0):
             # ══════════════════════════════════════════════════
-            # 制动接近段 — P 控制器跟随制动曲线
+            # 制动接近段 — 前馈 + 反馈控制器
             # ══════════════════════════════════════════════════
             self.station_phase = StationPhase.APPROACHING
 
@@ -275,15 +280,22 @@ class AutoDriveController:
                 self._set_brake(1.0)
                 return
 
-            # 物理制动曲线: v² = 2*a*d → v_target = sqrt(2*a*d)
+            # ── 前馈：运动学公式 v² = 2ad ──────────────────
+            # a_required = v² / (2d)：要想在距离 d 内停稳所需的减速度
+            # 前馈制动级位 = a_required / a_available
+            required_decel = current_speed ** 2 / (2.0 * max(distance, 0.01))
+            feed_forward = min(1.0, required_decel / a_brake)
+
+            # ── 反馈：P 控制器修正速度跟踪误差 ─────────────
             v_target = math.sqrt(2.0 * a_brake * max(0.0, distance))
             v_target = min(v_target, self.approach_speed)
-
             speed_error = current_speed - v_target
+            feedback = self.KP_BRAKE * max(0.0, speed_error)
 
-            if speed_error > 0:
-                # 超速 → 比例制动
-                brake_cmd = min(1.0, self.KP_BRAKE * speed_error)
+            # 合成制动指令（前馈为主，反馈为辅）
+            brake_cmd = max(0.0, min(1.0, feed_forward + feedback))
+
+            if brake_cmd > 0.01:
                 self._set_throttle(0.0)
                 self._set_brake(brake_cmd)
             elif speed_error < -0.1:
