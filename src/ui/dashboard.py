@@ -243,6 +243,7 @@ class Dashboard(QWidget):
         """
         self._last_report = report
         ctrl = self.controller
+        direction = ctrl.direction
 
         # ── 头车绝对位置 ───────────────────────────────────────
         head_abs = 0.0
