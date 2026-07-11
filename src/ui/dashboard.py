@@ -376,7 +376,8 @@ class Dashboard(QWidget):
 
         # ── 车站信息 ───────────────────────────────────────────
         station = self.track.get_station_at(head_abs)
-        self.station_label.setText(f"当前站: {station.name if station else '区间'}")
+        station_name = station.name.replace("(上行)", "").replace("(下行)", "") if station else '区间'
+        self.station_label.setText(f"当前站: {station_name}")
 
         station_candidates = [
             station for station in self.track.stations
@@ -389,7 +390,8 @@ class Dashboard(QWidget):
         )
         if next_station:
             dist = direction * (next_station.position - head_abs)
-            self.next_station_label.setText(f"下一站: {next_station.name}")
+            next_name = next_station.name.replace("(上行)", "").replace("(下行)", "")
+            self.next_station_label.setText(f"下一站: {next_name}")
             self.distance_label.setText(f"下一站距离: {dist:.0f} m")
         else:
             self.next_station_label.setText("下一站: 终点")
@@ -459,5 +461,9 @@ class Dashboard(QWidget):
         return "#16a34a"
 
     def _refresh_station_markers(self, total_length: float):
-        names = [f"{station.name} {station.position / total_length * 100:.0f}%" for station in self.track.stations]
+        names = []
+        for station in self.track.stations:
+            name = station.name.replace("(上行)", "").replace("(下行)", "")
+            side = "⬆" if station.position < 1000 else "⬇"
+            names.append(f"{name}{side} {station.position / total_length * 100:.0f}%")
         self.station_markers.setText("  |  ".join(names))

@@ -252,6 +252,13 @@ class TrackData:
             return None
         return min(ahead, key=lambda s: s.position - position)
 
+    def get_nearest_station_behind(self, position: float) -> Optional[Station]:
+        """获取后方最近的车站（用于折返反向查找）"""
+        behind = [s for s in self.stations if s.position < position]
+        if not behind:
+            return None
+        return max(behind, key=lambda s: s.position)
+
     def total_length(self) -> float:
         """获取线路总长 (m)"""
         if not self.segments:

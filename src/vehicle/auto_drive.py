@@ -365,19 +365,144 @@ class AutoDriveController:
                 self.station_phase = StationPhase.DEPARTING
 
     def _step_departing(self):
-        """发车阶段：查找下一站并设为目标，发车。"""
+        """发车阶段：查找下一站并设为目标，发车。
+
+        若前方无车站且列车到达线路端点，自动执行折返操作：
+        反转 direction，查找后方最近车站作为新目标，继续运行。
+
+        正向运行 (direction=1) 时"前方" = 里程递增方向；
+        反向运行 (direction=-1) 时"前方" = 里程递减方向。
+        """
         # 保持制动直到找到下一站目标
         self._set_throttle(0.0)
         self._set_brake(1.0)
 
-        # 查找下一站
-        next_station = self.find_next_station()
+        # 根据运行方向选择查找策略
+        if self.controller.direction == 1:
+            next_station = self.find_next_station()
+        else:
+            next_station = self._find_station_reverse()
+
         if next_station is not None:
             # 使用 from_absolute 正确构造 TrackPosition（处理多区段线路）
             target = self._track.from_absolute(next_station.position)
             self.set_target(target)
             # set_target 已将 phase 重置为 CRUISING
-        # 无下一站：保持停止（已在终点）
+        elif self._should_turnaround():
+            # 线路端点 → 执行折返
+            self._do_turnaround()
+        # 无下一站且不满足折返条件：保持停止（已在端点）
+
+    # ═══════════════════════════════════════════════════════════════
+    # 折返操作（线路终点自动反向）
+    # ═══════════════════════════════════════════════════════════════
+
+    def _should_turnaround(self) -> bool:
+        """判断列车是否应执行折返操作。
+
+        条件：列车静止在（或接近）线路端点且前方无车站。
+        - 正向运行 (direction=1) → 接近线路终点 (total_length)
+        - 反向运行 (direction=-1) → 接近线路起点 (0m)
+
+        Returns:
+            True 应执行折返。
+        """
+        if not self.controller.states or self._track is None:
+            return False
+        if not self.controller.is_stopped:
+            return False
+
+        head_abs = self._track.to_absolute(
+            self.controller.states[0].position
+        )
+        total = self._track.total_length()
+
+        threshold = 80.0  # m：距端点 80m 内触发折返
+        if self.controller.direction == 1:
+            return head_abs >= total - threshold
+        elif self.controller.direction == -1:
+            return head_abs <= threshold
+        return False
+
+    def _do_turnaround(self):
+        """执行折返操作：反转方向，查找后方最近车站为新目标。
+
+        策略：
+          1. 反转 controller.direction（正向→负向，负向→正向）
+          2. 优先用 get_nearest_station_behind 查找后方最近车站
+          3. 若后方无车站（线路起点处），回退到 find_next_station 查前方
+          4. 跳过当前站（距离 < 5m 则继续往后/往前找）
+          5. 设新目标 → 状态机重置为 CRUISING 继续运行
+        """
+        # 1. 反转方向
+        self.controller.direction *= -1
+        track_data = getattr(self._interlock, 'track', None)
+        if track_data is None:
+            return
+
+        head_abs = self._track.to_absolute(
+            self.controller.states[0].position
+        )
+
+        # 2. 优先查后方（折返后车头朝向的反方向）
+        station = track_data.get_nearest_station_behind(head_abs)
+        if station is not None:
+            dist = head_abs - station.position  # 正数 = 车在前方
+            if dist < 5.0:
+                station = track_data.get_nearest_station_behind(
+                    station.position - 1.0
+                )
+
+        # 3. 后方无车站 → 查前方（折返到起点后，新方向在前方）
+        if station is None:
+            station = track_data.get_nearest_station_ahead(head_abs)
+            if station is not None:
+                dist = station.position - head_abs
+                if dist < 5.0:
+                    station = track_data.get_nearest_station_ahead(
+                        station.position + 1.0
+                    )
+
+        if station is not None:
+            target = self._track.from_absolute(station.position)
+            self.set_target(target)
+            # set_target 已将 phase 重置为 CRUISING
+
+    def _find_station_reverse(self, head_abs: float = None):
+        """反向运行时查找前方（里程递减方向）最近车站。
+
+        与 find_next_station() 对称——反向运行时使用
+        get_nearest_station_behind() 查找后方（即前方）车站。
+
+        Args:
+            head_abs: 头车绝对位置 (m)。为 None 时自动计算。
+
+        Returns:
+            Station 或 None（无符合条件车站）。
+        """
+        if self._interlock is None:
+            return None
+
+        track_data = getattr(self._interlock, 'track', None)
+        if track_data is None:
+            return None
+
+        if head_abs is None:
+            head_abs = 0.0
+            if self.controller.states and self._track is not None:
+                head_abs = self._track.to_absolute(
+                    self.controller.states[0].position
+                )
+
+        station = track_data.get_nearest_station_behind(head_abs)
+        if station is not None:
+            dist = head_abs - station.position  # 正数 = 车在前方
+            if dist < 5.0:
+                # 当前站 → 继续往后找
+                station = track_data.get_nearest_station_behind(
+                    station.position - 1.0
+                )
+        return station
 
     def find_next_station(self, head_abs: float = None):
         """查找前方最近车站，自动跳过当前站（距离 < 5m）。

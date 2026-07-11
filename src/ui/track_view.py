@@ -367,6 +367,10 @@ class TrackView(QGraphicsView):
 
     # ── 分支层级计算 ──────────────────────────────────────────
 
+    def _is_down_track_zone(self, abs_start: float) -> bool:
+        """判断绝对位置是否属于下行轨道区域（>= 1000m）。"""
+        return abs_start >= 1000
+
     def _compute_branch_levels(self):
         td = self.td
         td._seg_map = {s.seg_id: s for s in td.segments}
@@ -464,6 +468,20 @@ class TrackView(QGraphicsView):
                 if cur is None or cur[0] == trunk_idx and cur[1] > next_depth:
                     self._seg_layout[nid] = (trunk_idx, next_depth)
                     q.append((nid, trunk_idx, next_depth))
+
+        # ── 将下行轨道主线区段分配到 trunk 1（视觉分离） ──
+        for seg_id, (trunk, depth) in list(self._seg_layout.items()):
+            seg = td._seg_map.get(seg_id)
+            if seg and depth == 0 and self._is_down_track_zone(seg.abs_start):
+                # 下行主线 → 移到 trunk 1，保持 depth 0
+                self._seg_layout[seg_id] = (1, 0)
+                # 同时将所有从其岔出的分支也移到 trunk 1
+                for child_id, (ct, cd) in list(self._seg_layout.items()):
+                    if ct == trunk and cd > 0:
+                        # 检查该分支是否由这个下行段岔出
+                        parent = td._seg_map.get(child_id)
+                        if parent and self._is_down_track_zone(parent.abs_start):
+                            self._seg_layout[child_id] = (1, cd)
 
     def _get_level(self, seg_id: int) -> int:
         return self._seg_layout.get(seg_id, (0, 0))[1]
@@ -617,21 +635,31 @@ class TrackView(QGraphicsView):
             self._speed_rects.append(rect)
 
         # ── 车站 ──────────────────────────────────────────────
-        platform_poses = sorted(set(p.position for p in td.platforms if p.position > 0))
-        for i, st in enumerate(td.stations):
-            pos = platform_poses[i] if i < len(platform_poses) else st.position
+        for st in td.stations:
+            pos = st.position
             if pos <= 0:
                 continue
             x = self._x(pos)
-            y = 26
+            # 上行车站显示在上方，下行车站显示在下方
+            is_down = self._is_down_track_zone(pos)
+            if is_down:
+                # 下行车站：位于下行轨道线上方
+                station_y = base_y + BRANCH_OFFSET * 2
+                label_y = station_y - 40
+            else:
+                # 上行车站：位于上行轨道线上方
+                station_y = base_y
+                label_y = station_y - 46
 
-            dot = self.scene.addEllipse(x - 6, y - 6, 12, 12,
+            dot = self.scene.addEllipse(x - 6, station_y - 6, 12, 12,
                                         QPen(COLOR_STATION, 2), QBrush(Qt.white))
             dot.setZValue(2)
             self._signal_items.append(dot)
 
-            text = QGraphicsSimpleTextItem(st.name)
-            text.setPos(x - 22, y - 46)
+            # 站名缩写：去掉 "(上行)" / "(下行)" 后缀
+            short_name = st.name.replace("(上行)", "").replace("(下行)", "")
+            text = QGraphicsSimpleTextItem(short_name)
+            text.setPos(x - 22, label_y)
             text.setFont(QFont("Microsoft YaHei", 9, QFont.Bold))
             text.setBrush(COLOR_STATION)
             text.setZValue(2)
@@ -643,7 +671,8 @@ class TrackView(QGraphicsView):
             if sig.position <= 0:
                 continue
             x = self._x(sig.position)
-            y = base_y
+            is_down = self._is_down_track_zone(sig.position)
+            y = base_y + (BRANCH_OFFSET * 2 if is_down else 0)
 
             dot = self.scene.addEllipse(x - 4, y - 14, 8, 8,
                                         QPen(COLOR_SIGNAL, 1),
