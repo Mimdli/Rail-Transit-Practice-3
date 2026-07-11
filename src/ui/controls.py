@@ -4,28 +4,256 @@
     - 驾驶操作：牵引 / 惰行 / 常用制动 / 紧急制动（2×2 网格）
     - 车门控制：开左门 / 开右门 / 关门
     - 列车设置：载荷等级 + 运行模式（合并为一行）
+    - 编组配置：预设 + 自定义每节车厢属性
 """
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QFrame, QTextEdit, QGroupBox, QComboBox, QGridLayout,
     QSpinBox, QButtonGroup, QScrollArea, QProgressBar,
+    QDialog, QDoubleSpinBox, QCheckBox, QLineEdit, QFormLayout,
+    QDialogButtonBox, QTabWidget,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from src.vehicle.vehicle_controller import VehicleController
 from src.vehicle.auto_drive import AutoDriveController
 from src.vehicle.enums import RunningMode, DoorSide, LoadLevel, VehicleState, ControlLevel
 from src.common.track_position import ITrackQuery
 from src.common.consist import TrainConsist, CONSIST_4M2T, CONSIST_6M0T, CONSIST_1M4T
-from src.common.car_config import MOTOR_CAR_CONFIG, TRAILER_CAR_CONFIG
+from src.common.car_config import CarConfig, MOTOR_CAR_CONFIG, TRAILER_CAR_CONFIG
 from src.door.interlock import DoorInterlock
 from src.logger.recorder import Recorder
 from src.dispatch.models import TrainStatus
 
 if TYPE_CHECKING:
     from src.vehicle.route_manager import RouteManager
+
+
+# ═══════════════════════════════════════════════════════════════
+# 车厢属性编辑对话框
+# ═══════════════════════════════════════════════════════════════
+
+class CarConfigDialog(QDialog):
+    """编辑单节车厢物理属性的模态对话框。"""
+
+    def __init__(self, car_index: int, config: CarConfig, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"编辑车厢 #{car_index + 1} 属性")
+        self.setMinimumWidth(460)
+        self._config = config
+        self._car_index = car_index
+        self._init_ui()
+        self._load_config(config)
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        tabs = QTabWidget()
+        tabs.setObjectName("carConfigTabs")
+
+        # ── 基本信息 ──────────────────────────────────────────
+        basic_widget = QWidget()
+        basic_form = QFormLayout(basic_widget)
+        basic_form.setSpacing(6)
+
+        self._edit_name = QLineEdit()
+        basic_form.addRow("名称:", self._edit_name)
+
+        self._spin_mass = QDoubleSpinBox()
+        self._spin_mass.setRange(1000, 200000)
+        self._spin_mass.setDecimals(0)
+        self._spin_mass.setSuffix(" kg")
+        basic_form.addRow("质量:", self._spin_mass)
+
+        self._spin_length = QDoubleSpinBox()
+        self._spin_length.setRange(5, 40)
+        self._spin_length.setDecimals(2)
+        self._spin_length.setSuffix(" m")
+        basic_form.addRow("长度:", self._spin_length)
+
+        self._chk_motor = QCheckBox("动车（有动力）")
+        basic_form.addRow("类型:", self._chk_motor)
+
+        self._spin_rotary = QDoubleSpinBox()
+        self._spin_rotary.setRange(1.0, 1.5)
+        self._spin_rotary.setDecimals(3)
+        self._spin_rotary.setSingleStep(0.01)
+        basic_form.addRow("回转质量系数:", self._spin_rotary)
+
+        tabs.addTab(basic_widget, "基本信息")
+
+        # ── 阻力参数 ──────────────────────────────────────────
+        drag_widget = QWidget()
+        drag_form = QFormLayout(drag_widget)
+        drag_form.setSpacing(6)
+
+        self._spin_davis_a = QDoubleSpinBox()
+        self._spin_davis_a.setRange(0, 10000)
+        self._spin_davis_a.setDecimals(1)
+        self._spin_davis_a.setSuffix(" N")
+        drag_form.addRow("Davis A:", self._spin_davis_a)
+
+        self._spin_davis_b = QDoubleSpinBox()
+        self._spin_davis_b.setRange(0, 500)
+        self._spin_davis_b.setDecimals(1)
+        self._spin_davis_b.setSuffix(" N/(m/s)")
+        drag_form.addRow("Davis B:", self._spin_davis_b)
+
+        self._spin_davis_c = QDoubleSpinBox()
+        self._spin_davis_c.setRange(0, 50)
+        self._spin_davis_c.setDecimals(2)
+        self._spin_davis_c.setSuffix(" N/(m²/s²)")
+        drag_form.addRow("Davis C:", self._spin_davis_c)
+
+        self._spin_tunnel = QDoubleSpinBox()
+        self._spin_tunnel.setRange(1.0, 5.0)
+        self._spin_tunnel.setDecimals(2)
+        self._spin_tunnel.setSingleStep(0.1)
+        drag_form.addRow("隧道阻力系数:", self._spin_tunnel)
+
+        tabs.addTab(drag_widget, "阻力参数")
+
+        # ── 牵引特性 ──────────────────────────────────────────
+        trac_widget = QWidget()
+        trac_form = QFormLayout(trac_widget)
+        trac_form.setSpacing(6)
+
+        self._spin_max_trac = QDoubleSpinBox()
+        self._spin_max_trac.setRange(0, 300000)
+        self._spin_max_trac.setDecimals(0)
+        self._spin_max_trac.setSuffix(" N")
+        trac_form.addRow("最大牵引力:", self._spin_max_trac)
+
+        self._spin_trac_trans = QDoubleSpinBox()
+        self._spin_trac_trans.setRange(0, 40)
+        self._spin_trac_trans.setDecimals(2)
+        self._spin_trac_trans.setSuffix(" m/s")
+        trac_form.addRow("牵引转换速度:", self._spin_trac_trans)
+
+        self._spin_construction = QDoubleSpinBox()
+        self._spin_construction.setRange(0, 50)
+        self._spin_construction.setDecimals(2)
+        self._spin_construction.setSuffix(" m/s")
+        trac_form.addRow("构造速度:", self._spin_construction)
+
+        tabs.addTab(trac_widget, "牵引特性")
+
+        # ── 制动特性 ──────────────────────────────────────────
+        brake_widget = QWidget()
+        brake_form = QFormLayout(brake_widget)
+        brake_form.setSpacing(6)
+
+        self._spin_service_brake = QDoubleSpinBox()
+        self._spin_service_brake.setRange(0, 300000)
+        self._spin_service_brake.setDecimals(0)
+        self._spin_service_brake.setSuffix(" N")
+        brake_form.addRow("最大常用制动力:", self._spin_service_brake)
+
+        self._spin_emergency_brake = QDoubleSpinBox()
+        self._spin_emergency_brake.setRange(0, 400000)
+        self._spin_emergency_brake.setDecimals(0)
+        self._spin_emergency_brake.setSuffix(" N")
+        brake_form.addRow("最大紧急制动力:", self._spin_emergency_brake)
+
+        tabs.addTab(brake_widget, "制动特性")
+
+        # ── 载荷等级 ──────────────────────────────────────────
+        load_widget = QWidget()
+        load_form = QFormLayout(load_widget)
+        load_form.setSpacing(6)
+
+        self._spin_aw0 = QDoubleSpinBox()
+        self._spin_aw0.setRange(5000, 200000)
+        self._spin_aw0.setDecimals(0)
+        self._spin_aw0.setSuffix(" kg")
+        load_form.addRow("AW0 空载:", self._spin_aw0)
+
+        self._spin_aw1 = QDoubleSpinBox()
+        self._spin_aw1.setRange(5000, 200000)
+        self._spin_aw1.setDecimals(0)
+        self._spin_aw1.setSuffix(" kg")
+        load_form.addRow("AW1 满座:", self._spin_aw1)
+
+        self._spin_aw2 = QDoubleSpinBox()
+        self._spin_aw2.setRange(5000, 200000)
+        self._spin_aw2.setDecimals(0)
+        self._spin_aw2.setSuffix(" kg")
+        load_form.addRow("AW2 定员 (基准):", self._spin_aw2)
+
+        self._spin_aw3 = QDoubleSpinBox()
+        self._spin_aw3.setRange(5000, 200000)
+        self._spin_aw3.setDecimals(0)
+        self._spin_aw3.setSuffix(" kg")
+        load_form.addRow("AW3 超载:", self._spin_aw3)
+
+        tabs.addTab(load_widget, "载荷等级")
+
+        layout.addWidget(tabs)
+
+        # ── 按钮 ──────────────────────────────────────────────
+        btn_box = QDialogButtonBox()
+        btn_reset = btn_box.addButton("重置为预设", QDialogButtonBox.ActionRole)
+        btn_reset.clicked.connect(self._on_reset)
+        btn_box.addButton(QDialogButtonBox.Cancel)
+        btn_box.addButton(QDialogButtonBox.Ok)
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+    def _load_config(self, config: CarConfig):
+        """将 CarConfig 的值填入控件。"""
+        self._edit_name.setText(config.name)
+        self._spin_mass.setValue(config.mass)
+        self._spin_length.setValue(config.length)
+        self._chk_motor.setChecked(config.is_motor)
+        self._spin_rotary.setValue(config.rotary_mass_factor)
+        self._spin_davis_a.setValue(config.davis_A)
+        self._spin_davis_b.setValue(config.davis_B)
+        self._spin_davis_c.setValue(config.davis_C)
+        self._spin_tunnel.setValue(config.tunnel_resistance_factor)
+        self._spin_max_trac.setValue(config.max_traction_force)
+        self._spin_trac_trans.setValue(config.traction_transition_speed)
+        self._spin_construction.setValue(config.construction_speed)
+        self._spin_service_brake.setValue(config.max_service_brake_force)
+        self._spin_emergency_brake.setValue(config.max_emergency_brake_force)
+        self._spin_aw0.setValue(config.aw0_mass)
+        self._spin_aw1.setValue(config.aw1_mass)
+        self._spin_aw2.setValue(config.aw2_mass)
+        self._spin_aw3.setValue(config.aw3_mass)
+
+    def get_config(self) -> CarConfig:
+        """从控件读取值，返回新的 CarConfig。"""
+        c = self._config
+        return CarConfig(
+            name=self._edit_name.text(),
+            mass=self._spin_mass.value(),
+            length=self._spin_length.value(),
+            is_motor=self._chk_motor.isChecked(),
+            rotary_mass_factor=self._spin_rotary.value(),
+            davis_A=self._spin_davis_a.value(),
+            davis_B=self._spin_davis_b.value(),
+            davis_C=self._spin_davis_c.value(),
+            tunnel_resistance_factor=self._spin_tunnel.value(),
+            max_traction_force=self._spin_max_trac.value(),
+            traction_transition_speed=self._spin_trac_trans.value(),
+            construction_speed=self._spin_construction.value(),
+            max_service_brake_force=self._spin_service_brake.value(),
+            max_emergency_brake_force=self._spin_emergency_brake.value(),
+            base_mass=self._spin_aw2.value(),
+            aw0_mass=self._spin_aw0.value(),
+            aw1_mass=self._spin_aw1.value(),
+            aw2_mass=self._spin_aw2.value(),
+            aw3_mass=self._spin_aw3.value(),
+        )
+
+    def _on_reset(self):
+        """重置为选中该按钮时对应的预设值。"""
+        is_motor = self._chk_motor.isChecked()
+        preset = MOTOR_CAR_CONFIG if is_motor else TRAILER_CAR_CONFIG
+        self._load_config(preset)
 
 
 class ControlPanel(QWidget):
@@ -51,7 +279,9 @@ class ControlPanel(QWidget):
         self._route_manager = route_manager
         self.log_text = None
         self._displayed_event_count = 0
-        self._car_type_buttons = []
+        self._car_type_buttons = []       # M/T 切换按钮
+        self._car_prop_buttons = []       # ⚙ 属性编辑按钮
+        self._custom_car_configs: dict = {}  # index → 用户自定义的 CarConfig
         self._car_count = 6
         self.runtime = None
         self._init_ui()
@@ -369,9 +599,9 @@ class ControlPanel(QWidget):
         count_hlayout.addStretch()
         consist_layout.addLayout(count_hlayout)
 
-        # 每节车厢的 M/T 按钮行
-        self._car_type_layout = QHBoxLayout()
-        self._car_type_layout.setSpacing(2)
+        # 每节车厢的 M/T 按钮 + 属性按钮行
+        self._car_type_layout = QVBoxLayout()
+        self._car_type_layout.setSpacing(3)
         self._rebuild_car_type_buttons(6)
         consist_layout.addLayout(self._car_type_layout)
 
@@ -742,25 +972,64 @@ class ControlPanel(QWidget):
     # ── 编组配置 ───────────────────────────────────────────────
 
     def _rebuild_car_type_buttons(self, count: int):
-        """重建 M/T 切换按钮行。"""
+        """重建 M/T 切换按钮行 + 属性编辑按钮。"""
         self._car_count = count
-        # 清除旧按钮
+        # 清除旧按钮和子布局
         while self._car_type_layout.count():
             item = self._car_type_layout.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
+            # 先递归清理子布局中的控件
+            if item.layout():
+                sub = item.layout()
+                while sub.count():
+                    sub_item = sub.takeAt(0)
+                    if sub_item.widget():
+                        sub_item.widget().deleteLater()
+                item.layout().deleteLater()
+            elif item.widget():
+                item.widget().deleteLater()
         self._car_type_buttons.clear()
+        self._car_prop_buttons.clear()
+        # 清除超出车厢数的自定义配置
+        self._custom_car_configs = {
+            k: v for k, v in self._custom_car_configs.items() if k < count
+        }
         # 新建按钮（默认 4M2T 模式）
         for i in range(count):
+            car_row = QHBoxLayout()
+            car_row.setSpacing(2)
+
             is_motor = i < count - 2  # 默认后两节为拖车
             btn = QPushButton("M" if is_motor else "T")
             btn.setObjectName("smallButton")
             btn.setCheckable(True)
             btn.setChecked(is_motor)
+            btn.setFixedWidth(32)
             btn.clicked.connect(lambda checked, idx=i: self._on_toggle_car_type(idx))
-            self._car_type_layout.addWidget(btn)
+            car_row.addWidget(btn)
             self._car_type_buttons.append(btn)
+
+            # 标签
+            label = QLabel(f"#{i + 1}")
+            label.setObjectName("carIdxLabel")
+            label.setFixedWidth(20)
+            car_row.addWidget(label)
+
+            # 属性编辑按钮
+            prop_btn = QPushButton("⚙")
+            prop_btn.setObjectName("propButton")
+            prop_btn.setFixedWidth(24)
+            prop_btn.setFixedHeight(24)
+            prop_btn.setToolTip(f"编辑车厢 #{i + 1} 属性")
+            # 检查是否有自定义配置
+            if i in self._custom_car_configs:
+                prop_btn.setStyleSheet(
+                    "background: #fbbf24; font-weight: bold; border-radius: 3px;")
+            prop_btn.clicked.connect(lambda checked, idx=i: self._on_car_properties(idx))
+            car_row.addWidget(prop_btn)
+            self._car_prop_buttons.append(prop_btn)
+
+            car_row.addStretch()
+            self._car_type_layout.addLayout(car_row)
 
     def _on_car_count_changed(self, value: int):
         """车厢数变化时重建按钮行，保留已存在的 M/T 配置。"""
@@ -775,12 +1044,35 @@ class ControlPanel(QWidget):
         btn = self._car_type_buttons[idx]
         btn.setText("M" if btn.isChecked() else "T")
 
+    def _on_car_properties(self, idx: int):
+        """打开车厢 #idx 的属性编辑对话框。"""
+        # 获取当前配置（优先使用自定义配置）
+        if idx in self._custom_car_configs:
+            current = self._custom_car_configs[idx]
+        else:
+            is_motor = self._car_type_buttons[idx].isChecked()
+            current = MOTOR_CAR_CONFIG if is_motor else TRAILER_CAR_CONFIG
+
+        dialog = CarConfigDialog(idx, current, self)
+        if dialog.exec_() == QDialog.Accepted:
+            custom = dialog.get_config()
+            self._custom_car_configs[idx] = custom
+            # 同步 M/T 按钮状态
+            self._car_type_buttons[idx].setChecked(custom.is_motor)
+            self._car_type_buttons[idx].setText("M" if custom.is_motor else "T")
+            # 标记属性按钮为已自定义
+            if idx < len(self._car_prop_buttons):
+                self._car_prop_buttons[idx].setStyleSheet(
+                    "background: #fbbf24; font-weight: bold; border-radius: 3px;")
+            self.status_label.setText(f"车厢 #{idx + 1} 属性已自定义")
+
     def _apply_preset(self, count: int, motor_states: list):
         """应用预设编组。"""
         self._car_count_spin.blockSignals(True)
         self._car_count_spin.setValue(count)
         self._car_count_spin.blockSignals(False)
         self._car_count = count
+        self._custom_car_configs.clear()  # 更换预设时清空自定义配置
         self._rebuild_car_type_buttons(count)
         for i, motor in enumerate(motor_states):
             if i < count:
@@ -788,10 +1080,14 @@ class ControlPanel(QWidget):
                 self._car_type_buttons[i].setText("M" if motor else "T")
 
     def _on_apply_consist(self):
-        """根据当前 M/T 配置构建 TrainConsist 并发射信号。"""
+        """根据当前 M/T 配置 + 自定义属性构建 TrainConsist 并发射信号。"""
         configs = []
-        for btn in self._car_type_buttons:
-            if btn.isChecked():
+        custom_count = 0
+        for i, btn in enumerate(self._car_type_buttons):
+            if i in self._custom_car_configs:
+                configs.append(self._custom_car_configs[i])
+                custom_count += 1
+            elif btn.isChecked():
                 configs.append(MOTOR_CAR_CONFIG)
             else:
                 configs.append(TRAILER_CAR_CONFIG)
@@ -802,7 +1098,10 @@ class ControlPanel(QWidget):
         self.consist_changed.emit(new_consist)
         motor = sum(1 for b in self._car_type_buttons if b.isChecked())
         trailer = len(self._car_type_buttons) - motor
-        self.status_label.setText(f"编组已更新: {motor}M{trailer}T")
+        parts = [f"{motor}M{trailer}T"]
+        if custom_count:
+            parts.append(f"({custom_count}节已自定义)")
+        self.status_label.setText(f"编组已更新: {' · '.join(parts)}")
 
     # ── 日志 ──────────────────────────────────────────────────
 
