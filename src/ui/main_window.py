@@ -11,7 +11,7 @@ from src.ui.dashboard import Dashboard
 from src.ui.controls import ControlPanel
 from src.ui.semantic_track_view import SemanticTrackViewWidget
 from src.ui.track_view import TrackViewWidget
-from src.ui.charts import ForcePanel
+from src.ui.charts import ForcePanel, EnergyPanel
 from src.ui.dispatch_view import DispatchView
 from src.vehicle.vehicle_controller import VehicleController
 from src.vehicle.auto_drive import AutoDriveController
@@ -181,6 +181,7 @@ class MainWindow(QMainWindow):
         self.track_view.segment_clicked.connect(self._on_track_clicked)
         self.semantic_track_view = SemanticTrackViewWidget(self.track)
         self.force_panel = ForcePanel()
+        self.energy_panel = EnergyPanel()
         self.dispatch_view = DispatchView(self.dispatch)
         self.dispatch_view.operation_finished.connect(
             lambda _message, _ok: self._refresh_train_selector())
@@ -190,6 +191,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.semantic_track_view, "运营线路图")
         self.tabs.addTab(self.track_view, "线路可视化")
         self.tabs.addTab(self.force_panel, "力学分析")
+        self.tabs.addTab(self.energy_panel, "能耗分析")
 
     def _create_train_control_bar(self) -> QWidget:
         """运行仿真页的受控列车切换条。"""
@@ -448,6 +450,7 @@ class MainWindow(QMainWindow):
         self.track_view.segment_clicked.connect(self._on_track_clicked)
         self.dashboard.refresh()
         self.force_panel.clear()
+        self.energy_panel.clear()
 
     def _on_consist_changed(self, new_consist):
         """编组变更后更新列车可视化。"""
@@ -616,6 +619,33 @@ class MainWindow(QMainWindow):
                 track_limit * 3.6,
             )
             self.force_panel.set_report(report)
+
+        # ── 能耗数据 ──────────────────────────────────────
+        ctrl = active_controller
+        last_energy = ctrl.energy_last_step
+        if last_energy is not None:
+            self.energy_panel.feed(
+                self.sim_time,
+                last_energy.traction_power_kw,
+                last_energy.regen_power_kw,
+                last_energy.aux_energy_j / last_energy.dt / 1000 if last_energy.dt > 0 else 0,
+                last_energy.net_energy_j / last_energy.dt / 1000 if last_energy.dt > 0 else 0,
+                ctrl.energy_traction_kwh,
+                ctrl.energy_regen_kwh,
+                ctrl.energy_net_kwh,
+            )
+            trip = ctrl.energy_summary()
+            self.energy_panel.update_summary(
+                traction_kwh=ctrl.energy_traction_kwh,
+                regen_kwh=ctrl.energy_regen_kwh,
+                friction_kwh=ctrl.energy_friction_loss_kwh,
+                aux_kwh=ctrl.energy_aux_kwh,
+                net_kwh=ctrl.energy_net_kwh,
+                regen_ratio=ctrl.energy_regen_ratio,
+                kwh_per_car_km=trip.kwh_per_car_km,
+                kwh_per_1000t_km=trip.kwh_per_1000_ton_km,
+                distance_m=trip.trip_distance_m,
+            )
 
     # ── 时间加速控制 ─────────────────────────────────────────────
 

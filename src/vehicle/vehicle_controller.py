@@ -32,6 +32,7 @@ from src.vehicle.dynamics_pipeline import PerCarDynamicsPipeline
 from src.vehicle.force_report import ForceReport, CarForceReport
 from src.vehicle.enums import DoorSide, RunningMode, ControlLevel, LoadLevel, VehicleState, CONTROL_LEVEL_MAP
 from src.vehicle.traction_controller import TractionBrakeController, TractionInterlock
+from src.vehicle.energy import EnergyCalculator, EnergyStepReport, EnergyTripSummary
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -95,6 +96,12 @@ class VehicleController:
 
         # ── 牵引/制动执行器（NEW） ──────────────────────────────
         self._traction = TractionBrakeController(self.pipeline)
+
+        # ── 能耗计算器 ──────────────────────────────────────
+        self.energy_calc = EnergyCalculator(
+            num_cars=len(self.consist),
+            load_level=LoadLevel.AW2,
+        )
 
         # 仿真时钟
         self.sim_time: float = 0.0
@@ -291,6 +298,9 @@ class VehicleController:
         # 重置牵引/制动控制器
         self._traction.reset()
 
+        # 重置能耗计算器
+        self.energy_calc.reset()
+
         # 保持制动（如果速度为 0）
         if velocity == 0.0:
             self._traction.vehicle_state = VehicleState.STOPPED
@@ -447,6 +457,9 @@ class VehicleController:
         # 注意：不预设 brake_level，由调用者根据需要设置
         # 保持制动应在高层指令（command_stop / start_moving）中体现
 
+        # 重置能耗计算器
+        self.energy_calc.reset()
+
         # 重置车门和运行模式
         self.left_door_open = False
         self.right_door_open = False
@@ -529,6 +542,9 @@ class VehicleController:
             new_mass = getattr(car, mass_attr, car.mass)
             object.__setattr__(car, 'mass', new_mass)
 
+        # 同步更新能耗计算器的载荷等级
+        self.energy_calc.set_load_level(level)
+
     # ═══════════════════════════════════════════════════════════
     # 仿真步进
     # ═══════════════════════════════════════════════════════════
@@ -570,6 +586,9 @@ class VehicleController:
         # 构建 ForceReport（使用 Pipeline 滤波后的有效值）
         report = self._build_report(dt, summary)
         self._history.append(report)
+
+        # 能耗计算
+        self.energy_calc.step(report)
 
         return report
 
@@ -696,3 +715,62 @@ class VehicleController:
     def is_stopped(self) -> bool:
         """所有车是否已停止。"""
         return all(s.velocity < 0.01 for s in self.states)
+
+    # ═══════════════════════════════════════════════════════════
+    # 能耗查询（委托到 EnergyCalculator）
+    # ═══════════════════════════════════════════════════════════
+
+    @property
+    def energy_traction_kwh(self) -> float:
+        """累积牵引电耗 (kWh)。"""
+        return self.energy_calc.traction_kwh
+
+    @property
+    def energy_regen_kwh(self) -> float:
+        """累积再生回收 (kWh)。"""
+        return self.energy_calc.regen_kwh
+
+    @property
+    def energy_aux_kwh(self) -> float:
+        """累积辅助电耗 (kWh)。"""
+        return self.energy_calc.aux_kwh
+
+    @property
+    def energy_net_kwh(self) -> float:
+        """累积净电耗 (kWh)。"""
+        return self.energy_calc.net_kwh
+
+    @property
+    def energy_friction_loss_kwh(self) -> float:
+        """累积摩擦制动热损 (kWh)。"""
+        return self.energy_calc._friction_brake_loss_j / 3_600_000
+
+    @property
+    def energy_regen_ratio(self) -> float:
+        """再生能量回收率。"""
+        t = self.energy_calc.traction_kwh
+        return self.energy_calc.regen_kwh / t if t > 0 else 0.0
+
+    @property
+    def energy_last_step(self) -> Optional[EnergyStepReport]:
+        """最近一步的能耗报告。"""
+        return self.energy_calc.last_step
+
+    @property
+    def energy_step_history(self):
+        """逐步能耗历史。"""
+        return self.energy_calc.step_history
+
+    def energy_summary(self) -> EnergyTripSummary:
+        """生成行程能耗汇总。"""
+        head_abs = 0.0
+        if self.states and self.track:
+            head_abs = self.track.to_absolute(self.states[0].position)
+        return self.energy_calc.summary(
+            distance_m=head_abs,
+            total_mass_kg=self.consist.total_mass,
+        )
+
+    def reset_energy(self):
+        """重置能耗计算器。"""
+        self.energy_calc.reset()

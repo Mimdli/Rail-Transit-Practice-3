@@ -120,6 +120,21 @@ class Dashboard(QWidget):
         grid2.addWidget(self.coupler_indicator, 0, 3)
         layout.addLayout(grid2)
 
+        # ── 能耗行：净电耗 / 牵引电耗 / 再生回收 / 再生率 ──────
+        grid3 = QGridLayout()
+        grid3.setSpacing(6)
+
+        self.net_energy_indicator = StatusIndicator("净电耗", "kWh")
+        self.traction_energy_indicator = StatusIndicator("牵引电耗", "kWh")
+        self.regen_energy_indicator = StatusIndicator("再生回收", "kWh")
+        self.regen_ratio_indicator = StatusIndicator("再生率", "%")
+
+        grid3.addWidget(self.net_energy_indicator, 0, 0)
+        grid3.addWidget(self.traction_energy_indicator, 0, 1)
+        grid3.addWidget(self.regen_energy_indicator, 0, 2)
+        grid3.addWidget(self.regen_ratio_indicator, 0, 3)
+        layout.addLayout(grid3)
+
         # ── 电空制动 + 黏着状态（新增） ──────────────────────────
         detail_grid = QGridLayout()
         detail_grid.setHorizontalSpacing(14)
@@ -310,6 +325,26 @@ class Dashboard(QWidget):
             self.coupler_indicator.set_value(f"{max_coupler_kn:.0f}", coupler_color)
         else:
             self.coupler_indicator.set_value("--")
+
+        # ── 能耗指标 ───────────────────────────────────────────
+        try:
+            net_kwh = ctrl.energy_net_kwh
+            trac_kwh = ctrl.energy_traction_kwh
+            regen_kwh = ctrl.energy_regen_kwh
+            regen_ratio = ctrl.energy_regen_ratio
+            self.net_energy_indicator.set_value(f"{net_kwh:.3f}",
+                "#f59e0b" if net_kwh > 0 else "#333")
+            self.traction_energy_indicator.set_value(f"{trac_kwh:.3f}",
+                "#2ecc71" if trac_kwh > 0 else "#333")
+            self.regen_energy_indicator.set_value(f"{regen_kwh:.3f}",
+                "#3b82f6" if regen_kwh > 0 else "#333")
+            self.regen_ratio_indicator.set_value(f"{regen_ratio * 100:.1f}",
+                "#22d3ee" if regen_ratio > 0 else "#333")
+        except Exception:
+            self.net_energy_indicator.set_value("--")
+            self.traction_energy_indicator.set_value("--")
+            self.regen_energy_indicator.set_value("--")
+            self.regen_ratio_indicator.set_value("--")
 
         # ── 运行模式 + 停站状态 + 车辆状态 ───────────────────────
         mode = "自动" if ctrl.running_mode == RunningMode.AUTOMATIC else "手动"
