@@ -17,7 +17,8 @@ from src.ui.charts import ForcePanel
 from src.ui.dispatch_view import DispatchView
 from src.vehicle.vehicle_controller import VehicleController
 from src.vehicle.auto_drive import AutoDriveController
-from src.vehicle.enums import RunningMode, DoorSide, LoadLevel
+from src.vehicle.route_manager import RouteManager
+from src.vehicle.enums import RunningMode, DoorSide, LoadLevel, StationPhase, ControlLevel
 from src.vehicle.environment import MockEnvironment, WeatherType
 from src.common.consist import CONSIST_4M2T
 from src.track.adapter import TrackDataAdapter
@@ -70,27 +71,38 @@ class MainWindow(QMainWindow):
             track=self.track_adapter,
             env=self.env,
         )
+        # 初始位置优先放在首站，避免数据库线路的区段顺序影响列车起点。
         if self.track.stations:
             first_station = min(self.track.stations, key=lambda item: item.position)
             start = resolve_station_track_position(
                 self.track, first_station, direction=1)
             self.controller.reset_states(start.segment_id, start.offset)
-        self.auto_drive = AutoDriveController(self.controller)
+
+        # ── 联锁（需在 route_manager / auto_drive 之前创建） ────
+        self.interlock = DoorInterlock(self.controller, self.track, self.track_adapter)
+
+        # ── 进路管理器（独立于驾驶模式） ──────────────────────────
+        self.route_manager = RouteManager(self.track_adapter)
+
+        # ── 自动驾驶控制器 ────────────────────────────────────────
+        self.auto_drive = AutoDriveController(
+            self.controller, self.interlock,
+            route_manager=self.route_manager,
+        )
 
         # ── 进路（路线选择） ────────────────────────────────────
-        self.routes = self._available_routes()
-        self.auto_drive.set_available_routes(self.routes)
+        self.routes = TrackLoader.create_demo_routes()
+        self.route_manager.set_available_routes(self.routes)
         # 默认选中"自动"进路
         auto_route = next((r for r in self.routes if r.is_auto), self.routes[0])
-        self.auto_drive.set_route(auto_route)
+        self.route_manager.set_route(auto_route)
 
         # ── 旧版兼容引用（供联锁/日志模块中未迁移的代码使用） ────
         self.vehicle = self.controller  # 兼容别名
 
-        # ── 信号 / 供电 / 联锁 / 日志 ────────────────────────────
+        # ── 信号 / 供电 / 日志 ────────────────────────────────────
         self.signal_system = SignalSystem()
         self.power_supply = PowerSupply()
-        self.interlock = DoorInterlock(self.controller, self.track, self.track_adapter)
         self.recorder = Recorder()
         self.recorder.start()
         self.evaluator = Evaluator()
@@ -143,13 +155,18 @@ class MainWindow(QMainWindow):
         self.dashboard = Dashboard(
             self.controller, self.track, self.track_adapter,
             self.signal_system, self.power_supply,
+            auto_drive=self.auto_drive,
+            route_manager=self.route_manager,
         )
         self.control_panel = ControlPanel(
             self.controller, self.auto_drive, self.interlock,
             self.track_adapter, self.recorder, show_log=False,
+            route_manager=self.route_manager,
         )
         self.control_panel.populate_routes(self.routes)
+        self.control_panel.populate_stations(self.track.stations)
         self.control_panel.consist_changed.connect(self._on_consist_changed)
+        self.control_panel.mode_change_requested.connect(self.set_driving_mode)
 
         top_content = QWidget()
         top_layout = QHBoxLayout(top_content)
@@ -400,7 +417,9 @@ class MainWindow(QMainWindow):
         # 更新 controller 的线路和环境引用
         self.controller.track = self.track_adapter
         self.env.track = self.track_adapter
+        self.route_manager.track_adapter = self.track_adapter
         self.controller.direction = 1
+        # 切换线路后重新落位到首站；没有车站时回退到线路起始区段。
         if track.stations:
             first_station = min(track.stations, key=lambda item: item.position)
             start = resolve_station_track_position(
@@ -408,10 +427,10 @@ class MainWindow(QMainWindow):
             self.controller.reset_states(start.segment_id, start.offset)
         elif track.segments:
             self.controller.reset_states(track.segments[0].seg_id, 0.0)
-        self.controller.running_mode = RunningMode.MANUAL
-        self.routes = self._available_routes()
-        self.auto_drive.set_available_routes(self.routes)
-        self.auto_drive.set_route(self.routes[0])
+        self.controller.set_running_mode(RunningMode.MANUAL)
+        self.routes = TrackLoader.create_demo_routes()
+        self.route_manager.set_available_routes(self.routes)
+        self.route_manager.set_route(self.routes[0])
         if hasattr(self, "control_panel"):
             self.control_panel.populate_routes(self.routes)
 
@@ -421,6 +440,9 @@ class MainWindow(QMainWindow):
         self.dashboard.track = track
         self.dashboard.track_adapter = self.track_adapter
         self._create_dispatch_manager()
+
+        # 重建车站下拉框
+        self.control_panel.populate_stations(track.stations)
 
         # 重建线路可视化并立即将列车绘制到新线路上
         self.semantic_track_view.set_track_data(track, self._data_source_label())
@@ -546,8 +568,13 @@ class MainWindow(QMainWindow):
                 track_limit, self.track.signals
             )
 
+            # ── 供电状态影响牵引能力（系统级安全切断，旁路模式门禁）─
             if not self.power_supply.can_traction():
-                active_controller.set_throttle(0.0)
+                self.controller.traction.set_throttle(0.0, bypass_mode_check=True)
+
+            # ── 自动驾驶 ──────────────────────────────────────────
+            if self.controller.running_mode == RunningMode.AUTOMATIC:
+                self.auto_drive.step(dt)
 
             reports = self.dispatch.step(dt)
             self._record_signal_changes()
@@ -623,6 +650,57 @@ class MainWindow(QMainWindow):
                 self._head_abs_position(), self.controller.head_speed,
             )
 
+    def set_driving_mode(self, mode: RunningMode):
+        """统一驾驶模式切换入口。
+
+        处理模式切换的所有副作用：
+        - 关门（安全）
+        - MANUAL → 重置 ATO 状态、施加常用制动、同步手柄
+        - AUTOMATIC → 查找下一站、设目标
+        - UI 反馈（模式显示更新 + 过渡提示）
+
+        由 ControlPanel.mode_change_requested 信号和 _on_fast_forward 调用。
+
+        Args:
+            mode: 目标驾驶模式。
+        """
+        if self.controller.running_mode == mode:
+            return  # 已在目标模式
+
+        # 先关门（安全：不允许门开着切换模式）
+        self.controller.close_door()
+
+        if mode == RunningMode.MANUAL:
+            self.auto_drive.reset_state()
+            self.controller.set_running_mode(RunningMode.MANUAL)
+            self.controller.command_stop(brake_level=0.4)
+            self.recorder.record("操作", "切换手动模式",
+                                 self._head_abs_position(), self.controller.head_speed)
+            # UI 反馈
+            self.control_panel._update_mode_display()
+            self.control_panel._sync_handle_button(ControlLevel.SERVICE_BRAKE)
+            self.control_panel._show_mode_transition(
+                True, "✓ 已切换至手动驾驶 — 请操作司控器手柄")
+
+        elif mode == RunningMode.AUTOMATIC:
+            head_abs = self._head_abs_position()
+            next_station = self.auto_drive.find_next_station(head_abs)
+            if next_station is None:
+                self.recorder.record("操作", "切换自动失败: 无前方车站",
+                                     head_abs, self.controller.head_speed)
+                self.control_panel._show_mode_transition(
+                    False, "✗ 切换失败: 无前方车站")
+                return
+            target = self.track_adapter.from_absolute(next_station.position)
+            self.auto_drive.set_target(target)
+            self.controller.set_running_mode(RunningMode.AUTOMATIC)
+            self.recorder.record("操作", f"切换自动模式，目标: {next_station.name}",
+                                 head_abs, self.controller.head_speed)
+            # UI 反馈
+            self.control_panel._update_mode_display()
+            self.control_panel._show_mode_transition(
+                True, f"✓ 已切换至自动驾驶 → 目标: {next_station.name}")
+
     def _on_fast_forward(self):
         """自动驾驶到下一站，并用批量步进加速推进。"""
         runtime = self._active_runtime()
@@ -637,9 +715,20 @@ class MainWindow(QMainWindow):
             )
             return
 
-        target = runtime.track_adapter.from_absolute(next_station.position)
-        runtime.auto_drive.set_target(target)
-        runtime.controller.set_running_mode(RunningMode.AUTOMATIC)
+        # 如果已在自动驾驶中，记录目标覆盖警告
+        if self.controller.running_mode == RunningMode.AUTOMATIC:
+            old_target = self.auto_drive.target_position
+            self.recorder.record(
+                "操作",
+                f"快进覆盖当前自动目标 → {next_station.name}",
+                head_abs, self.controller.head_speed,
+            )
+
+        # 设置目标并切换到自动驾驶（通过统一入口）
+        target = self.track_adapter.from_absolute(next_station.position)
+        self.auto_drive.set_target(target)
+        self.set_driving_mode(RunningMode.AUTOMATIC)
+
         self.fast_forward_active = True
         self.fast_forward_cancelled = False
         self._cancel_button.setVisible(True)
@@ -663,12 +752,20 @@ class MainWindow(QMainWindow):
         head_speed = runtime.controller.head_speed
         distance = runtime.auto_drive.distance_to_target
 
-        if distance is not None and distance <= 1.0:
-            self.recorder.record("操作", "已到达目标车站", head_abs, head_speed)
+        # 1. 到站进入停站阶段（优先判断，此时列车已精确停稳）
+        if self.auto_drive.station_phase == StationPhase.DWELL:
+            self.recorder.record(
+                "操作", "已到站，自动开门",
+                head_abs, head_speed,
+            )
             return True
 
-        if runtime.controller.is_stopped and distance is not None and distance < 5.0:
-            self.recorder.record("操作", "列车已停稳", head_abs, head_speed)
+        # 2. 已到目标附近且停止
+        if self.controller.is_stopped and distance is not None and distance < 5.0:
+            self.recorder.record(
+                "操作", "列车已停稳",
+                head_abs, head_speed,
+            )
             return True
 
         track_limit = self.track.get_speed_limit_at(head_abs)
@@ -734,11 +831,11 @@ class MainWindow(QMainWindow):
         if cmds and len(cmds) > 0:
             cmd, pct = cmds[0]
             if cmd == 1:
-                self.controller.set_throttle(float(pct) / 100.0)
+                self.controller.traction.set_throttle(float(pct) / 100.0, bypass_mode_check=True)
             elif cmd == 2:
-                self.controller.set_brake(float(pct) / 100.0)
+                self.controller.traction.set_brake(float(pct) / 100.0, bypass_mode_check=True)
             elif cmd == 0:
-                self.controller.set_throttle(0.0)
+                self.controller.traction.set_throttle(0.0, bypass_mode_check=True)
 
         # 3. 信号网关：发送信号/道岔状态
         switches = []
@@ -928,7 +1025,7 @@ class MainWindow(QMainWindow):
             if "handle_position" in data and self._network_mode:
                 handle = data.get("handle_position", 0)
                 if handle > 0:
-                    self.controller.set_throttle(handle / 127.0)
+                    self.controller.traction.set_throttle(handle / 127.0, bypass_mode_check=True)
         self.network.set_vehicle_recv_callback(on_vehicle_recv)
         self.network.set_signal_recv_callback(on_signal_recv)
         self.network.set_plc_recv_callback(on_plc_recv)
@@ -960,7 +1057,7 @@ class MainWindow(QMainWindow):
         # 计算进路
         route = self._compute_route_to_segment(target.segment_id)
         if route is not None:
-            runtime.auto_drive.set_route(route)
+            self.route_manager.set_route(route)
             self.control_panel.route_combo.blockSignals(True)
             # 在下拉框中选中对应进路
             for i in range(self.control_panel.route_combo.count()):
@@ -969,9 +1066,8 @@ class MainWindow(QMainWindow):
                     break
             self.control_panel.route_combo.blockSignals(False)
 
-        # 设置目标并切换到自动驾驶
-        runtime.auto_drive.set_target(target)
-        runtime.controller.set_running_mode(RunningMode.AUTOMATIC)
+        # 设置目标（不强制切换驾驶模式，由用户决定）
+        self.auto_drive.set_target(target)
         # 在可视化上显示目标标记
         if self.track_view.view:
             self.track_view.view.set_target_marker(target_abs)
@@ -1000,7 +1096,7 @@ class MainWindow(QMainWindow):
             return Route(0, "自动", [])
 
         # 目标在侧线 → 查找预定义进路
-        for r in self.routes:
+        for r in self.route_manager.available_routes:
             if r.is_auto:
                 continue
             if r.last_seg_id == target_seg_id:
@@ -1153,6 +1249,143 @@ class MainWindow(QMainWindow):
                 subcontrol-origin: margin;
                 left: 8px;
                 padding: 0 3px;
+            }
+            /* ── 驾驶模式大块（在全局 QGroupBox 之后） ── */
+            QGroupBox#modeGroup {
+                margin-top: 0;
+                background: #ffffff;
+                border: 2px solid #cbd5e1;
+                border-radius: 10px;
+            }
+            QGroupBox#modeGroup::title {
+                font-size: 16px;
+                color: #1d2939;
+            }
+            QLabel#modeIndicator {
+                font-size: 20px;
+                font-weight: 800;
+            }
+            QLabel#modeDesc {
+                color: #64748b;
+                font-size: 14px;
+                font-weight: 500;
+                padding: 0 2px;
+            }
+            QPushButton#modeToggleBtn {
+                min-height: 48px;
+                border-radius: 8px;
+                border: 2px solid #6366f1;
+                background: #eef2ff;
+                color: #4338ca;
+                font-size: 17px;
+                font-weight: 800;
+            }
+            QPushButton#modeToggleBtn:hover {
+                background: #e0e7ff;
+                border-color: #4f46e5;
+            }
+            /* ── 司控器手柄按钮 ── */
+            QPushButton#tractionHandleBtn {
+                min-height: 48px;
+                min-width: 52px;
+                border-radius: 6px;
+                border: 2px solid #86efac;
+                background: #f0fdf4;
+                color: #166534;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 2px 4px;
+            }
+            QPushButton#tractionHandleBtn:checked {
+                background: #16a34a;
+                color: #ffffff;
+                border-color: #16a34a;
+            }
+            QPushButton#tractionHandleBtn:hover:!checked {
+                background: #dcfce7;
+                border-color: #4ade80;
+            }
+            QPushButton#coastHandleBtn {
+                min-height: 48px;
+                min-width: 52px;
+                border-radius: 6px;
+                border: 2px solid #cbd5e1;
+                background: #f8fafc;
+                color: #475569;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 2px 4px;
+            }
+            QPushButton#coastHandleBtn:checked {
+                background: #64748b;
+                color: #ffffff;
+                border-color: #64748b;
+            }
+            QPushButton#coastHandleBtn:hover:!checked {
+                background: #f1f5f9;
+                border-color: #94a3b8;
+            }
+            QPushButton#brakeHandleBtn {
+                min-height: 48px;
+                min-width: 52px;
+                border-radius: 6px;
+                border: 2px solid #fca5a5;
+                background: #fef2f2;
+                color: #991b1b;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 2px 4px;
+            }
+            QPushButton#brakeHandleBtn:checked {
+                background: #dc2626;
+                color: #ffffff;
+                border-color: #dc2626;
+            }
+            QPushButton#brakeHandleBtn:hover:!checked {
+                background: #fee2e2;
+                border-color: #f87171;
+            }
+            /* ── 手柄百分比条 ── */
+            QFrame#handleBarFrame {
+                background: transparent;
+                border: 0;
+                margin: 0;
+                padding: 0;
+            }
+            QProgressBar#brakeBar {
+                background: #f1f5f9;
+                border: 1px solid #e2e8f0;
+                border-radius: 4px;
+                margin: 0;
+            }
+            QProgressBar#brakeBar::chunk {
+                background: qlineargradient(x1:1, x2:0, stop:0 #dc2626, stop:1 #fca5a5);
+                border-radius: 3px;
+            }
+            QProgressBar#tractionBar {
+                background: #f1f5f9;
+                border: 1px solid #e2e8f0;
+                border-radius: 4px;
+                margin: 0;
+            }
+            QProgressBar#tractionBar::chunk {
+                background: qlineargradient(x1:0, x2:1, stop:0 #86efac, stop:1 #16a34a);
+                border-radius: 3px;
+            }
+            QLabel#handlePctLabel {
+                font-size: 16px;
+                font-weight: 800;
+                color: #64748b;
+                padding: 2px 4px;
+            }
+            QLabel#handleLevelLabel {
+                color: #334155;
+                font-size: 14px;
+                font-weight: 700;
+                padding: 4px 8px;
+                background: #f8fafc;
+                border: 1px solid #e2e8f0;
+                border-radius: 5px;
             }
             QPushButton {
                 min-height: 36px;

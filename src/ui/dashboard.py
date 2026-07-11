@@ -11,13 +11,18 @@
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame, QProgressBar
 from PyQt5.QtCore import Qt
 
+from typing import TYPE_CHECKING
 from src.vehicle.vehicle_controller import VehicleController
-from src.vehicle.enums import RunningMode, LoadLevel
+from src.vehicle.enums import RunningMode, LoadLevel, StationPhase, VehicleState
 from src.vehicle.force_report import ForceReport, CarForceReport
 from src.common.track_position import ITrackQuery
 from src.track.data import TrackData
 from src.signal.system import SignalSystem, SignalAspect
 from src.power.supply import PowerSupply
+
+if TYPE_CHECKING:
+    from src.vehicle.auto_drive import AutoDriveController
+    from src.vehicle.route_manager import RouteManager
 
 
 class StatusIndicator(QFrame):
@@ -53,14 +58,17 @@ class Dashboard(QWidget):
 
     def __init__(self, controller: VehicleController, track: TrackData,
                  track_adapter: ITrackQuery,
-                 signal_system: SignalSystem, power_supply: PowerSupply):
+                 signal_system: SignalSystem, power_supply: PowerSupply,
+                 auto_drive: "AutoDriveController | None" = None,
+                 route_manager: "RouteManager | None" = None):
         super().__init__()
         self.controller = controller
         self.track = track
         self.track_adapter = track_adapter
         self.signal_system = signal_system
         self.power_supply = power_supply
-        self.train_id = "1车"
+        self.auto_drive = auto_drive
+        self.route_manager = route_manager
         self._last_report: ForceReport = None
         self.setObjectName("dashboard")
         self._init_ui()
@@ -150,22 +158,24 @@ class Dashboard(QWidget):
         self.next_station_label = QLabel("下一站: --")
         self.distance_label = QLabel("下一站距离: --")
         self.mode_label = QLabel("模式: 手动")
+        self.route_label = QLabel("进路: --")
         self.signal_label = QLabel("信号: --")
         self.power_label = QLabel("供电: --")
         self.door_label = QLabel("车门: 关闭")
 
         for lbl in [self.station_label, self.next_station_label, self.distance_label,
-                     self.mode_label, self.signal_label, self.power_label, self.door_label]:
+                     self.mode_label, self.route_label, self.signal_label, self.power_label, self.door_label]:
             lbl.setObjectName("infoLabel")
             lbl.setMinimumHeight(22)
 
         info_grid.addWidget(self.mode_label, 0, 0)
-        info_grid.addWidget(self.signal_label, 0, 1)
-        info_grid.addWidget(self.power_label, 0, 2)
-        info_grid.addWidget(self.station_label, 1, 0)
-        info_grid.addWidget(self.next_station_label, 1, 1)
-        info_grid.addWidget(self.distance_label, 1, 2)
-        info_grid.addWidget(self.door_label, 2, 0)
+        info_grid.addWidget(self.route_label, 0, 1)
+        info_grid.addWidget(self.signal_label, 0, 2)
+        info_grid.addWidget(self.power_label, 1, 0)
+        info_grid.addWidget(self.station_label, 1, 1)
+        info_grid.addWidget(self.next_station_label, 1, 2)
+        info_grid.addWidget(self.distance_label, 2, 0)
+        info_grid.addWidget(self.door_label, 2, 1)
 
         info_frame = QFrame()
         info_frame.setObjectName("infoPanel")
@@ -300,21 +310,44 @@ class Dashboard(QWidget):
         else:
             self.coupler_indicator.set_value("--")
 
-        # ── 运行模式 ───────────────────────────────────────────
+        # ── 运行模式 + 停站状态 + 车辆状态 ───────────────────────
         mode = "自动" if ctrl.running_mode == RunningMode.AUTOMATIC else "手动"
+        # 车辆运行状态
+        state_names = {
+            VehicleState.INIT: "初始化",
+            VehicleState.STOPPED: "停止",
+            VehicleState.STARTING: "启动中",
+            VehicleState.MOVING: "运行中",
+            VehicleState.COASTING: "惰行",
+            VehicleState.BRAKING: "制动中",
+            VehicleState.EMERGENCY: "紧急制动",
+        }
+        state_text = state_names.get(ctrl.vehicle_state, "未知")
+        mode += f" · {state_text}"
+        if self.auto_drive is not None:
+            phase = self.auto_drive.station_phase
+            if phase == StationPhase.DWELL:
+                remaining = self.auto_drive.dwell_remaining
+                mode += f" · 停站中 {remaining:.0f}s"
+            elif phase == StationPhase.APPROACHING:
+                mode += " · 进站中"
+            elif phase == StationPhase.DEPARTING:
+                mode += " · 准备发车"
         self.mode_label.setText(f"模式: {mode}")
 
-        # 信号显示看全线最近前方信号，防护限速仍由信号系统的默认范围控制。
-        direction = ctrl.direction
-        candidates = [
-            signal for signal in self.track.signals
-            if direction * (signal.position - head_abs) > 0
-        ]
-        next_signal = min(
-            candidates,
-            key=lambda signal: direction * (signal.position - head_abs),
-            default=None,
-        )
+        # ── 进路（独立于驾驶模式） ────────────────────────────────
+        route_text = "进路: --"
+        if self.route_manager is not None:
+            active_route = self.route_manager.active_route
+            if active_route is not None:
+                if active_route.is_auto:
+                    route_text = "进路: 自动（系统算路）"
+                else:
+                    route_text = f"进路: {active_route.name}"
+        self.route_label.setText(route_text)
+
+        # ── 信号 ───────────────────────────────────────────────
+        next_signal = self.signal_system.get_nearest_signal_ahead(head_abs, self.track.signals)
         if next_signal:
             aspect = self.signal_system.get_signal_aspect(next_signal)
             distance = direction * (next_signal.position - head_abs)
