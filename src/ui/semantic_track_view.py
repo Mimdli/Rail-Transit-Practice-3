@@ -228,13 +228,19 @@ class SemanticTrackSceneView(QGraphicsView):
 
         occupied_ids = set(occupancy)
         for link, down_item, up_item in self._link_items:
-            occupied = bool(occupied_ids.intersection(link.seg_ids))
+            down_occupied = bool(occupied_ids.intersection(link.down_seg_ids))
+            up_occupied = bool(occupied_ids.intersection(link.up_seg_ids))
+            # 回退兼容：旧 SemanticLink 可能没有方向分离字段
+            if not link.down_seg_ids and not link.up_seg_ids:
+                any_occupied = bool(occupied_ids.intersection(link.seg_ids))
+                down_occupied = any_occupied
+                up_occupied = any_occupied
             down_item.setPen(QPen(
-                QColor("#dc2626") if occupied else self.DOWN_LINE,
-                7.0 if occupied else 5.0, Qt.SolidLine, Qt.RoundCap))
+                QColor("#dc2626") if down_occupied else self.DOWN_LINE,
+                7.0 if down_occupied else 5.0, Qt.SolidLine, Qt.RoundCap))
             up_item.setPen(QPen(
-                QColor("#dc2626") if occupied else self.UP_LINE,
-                7.0 if occupied else 5.0, Qt.SolidLine, Qt.RoundCap))
+                QColor("#dc2626") if up_occupied else self.UP_LINE,
+                7.0 if up_occupied else 5.0, Qt.SolidLine, Qt.RoundCap))
 
         lanes: dict[tuple[int, int], int] = {}
         palette = ("#f59e0b", "#7c3aed", "#0891b2", "#2563eb", "#0f766e")

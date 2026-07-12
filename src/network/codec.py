@@ -7,8 +7,13 @@
 """
 
 import struct
+import time as _time
 from typing import Optional
 from .constants import VEHICLE_UDP_TRAIN_COUNT
+from .constants import (
+    SIG_SRC_TO_SIGNAL, SIG_DST_TO_SIGNAL,
+    SIG_SRC_FROM_SIGNAL, SIG_DST_FROM_SIGNAL,
+)
 
 
 # ============================================================
@@ -57,17 +62,49 @@ def unpack_vehicle_udp(data: bytes) -> list[tuple[float, float, float]]:
 # 2. 信号系统报文编解码（协议 §3.3）
 # ============================================================
 
-def _make_signal_header(dest: int, src: int, content_len: int) -> bytes:
-    """构造信号系统通用报文头 (12 bytes)"""
+def _make_signal_header(src_id: bytes, dst_id: bytes, content_len: int,
+                        ctrl: bool = False) -> bytes:
+    """构造信号系统通用报文头 (12 bytes)
+
+    Args:
+        src_id: 4字节源标识
+        dst_id: 4字节目的标识
+        content_len: CONTENT 数据长度
+        ctrl: True 表示驾驶台开关量报文头 (0xff 0xf1), False 为普通 (0xff 0xf0)
+
+    Returns:
+        12字节报文头
+    """
+    magic = (0xff, 0xf1) if ctrl else (0xff, 0xf0)
     return struct.pack(
-        "<" + "B" * 10 + "H",
-        0xff, 0xf0,          # 固定报文头
-        src & 0xff, 0x00,    # 源标识 byte 1 + pad
-        src & 0xff, 0x00,    # 源标识 byte 3 + pad
-        dest & 0xff, 0x00,   # 目的标识 byte 1 + pad
-        dest & 0xff, 0x00,   # 目的标识 byte 3 + pad
-        2 + content_len,     # 数据长度 = 2 + CONTENT长度
+        "<" + "BB" + "BBBB" + "BBBB" + "H",
+        magic[0], magic[1],        # 固定报文头 (2B)
+        src_id[0], src_id[1],      # 源标识 byte 1-2
+        src_id[2], src_id[3],      # 源标识 byte 3-4
+        dst_id[0], dst_id[1],      # 目的标识 byte 1-2
+        dst_id[2], dst_id[3],      # 目的标识 byte 3-4
+        2 + content_len,           # 数据长度 = 2 + CONTENT长度
     )
+
+
+def _make_signal_train_info_header(content_len: int) -> bytes:
+    """总控→信号 列车信息报文头"""
+    return _make_signal_header(SIG_SRC_TO_SIGNAL, SIG_DST_TO_SIGNAL, content_len)
+
+
+def _make_signal_switch_signal_header(content_len: int) -> bytes:
+    """信号→总控 道岔/信号机状态报文头"""
+    return _make_signal_header(SIG_SRC_FROM_SIGNAL, SIG_DST_FROM_SIGNAL, content_len)
+
+
+def _make_signal_ctrl_to_signal_header(content_len: int) -> bytes:
+    """总控→信号 驾驶台开关量报文头 (0xff 0xf1)"""
+    return _make_signal_header(SIG_SRC_TO_SIGNAL, SIG_DST_TO_SIGNAL, content_len, ctrl=True)
+
+
+def _make_signal_ctrl_from_signal_header(content_len: int) -> bytes:
+    """信号→总控 驾驶台开关量报文头 (0xff 0xf1)"""
+    return _make_signal_header(SIG_SRC_FROM_SIGNAL, SIG_DST_FROM_SIGNAL, content_len, ctrl=True)
 
 
 def pack_signal_train_info(
@@ -97,7 +134,7 @@ def pack_signal_train_info(
             int(t.get("traction_count", 0)),  # 1B
             int(t.get("brake_count", 0)),      # 1B
         ))
-    header = _make_signal_header(0x00, 0x01, len(content))
+    header = _make_signal_train_info_header(len(content))
     return header + bytes(content)
 
 
@@ -118,16 +155,16 @@ def pack_signal_switch_signal(
     """
     content = bytearray()
     # 道岔数据
-    sw_len = 2 + len(switches) * 3
+    sw_len = len(switches) * 3
     content.extend(struct.pack("<H", sw_len))
     for sid, state in switches:
         content.extend(struct.pack("<HB", sid, state))
     # 信号机数据
-    sig_len = 2 + len(signals) * 3
+    sig_len = len(signals) * 3
     content.extend(struct.pack("<H", sig_len))
     for sid, aspect in signals:
         content.extend(struct.pack("<HB", sid, aspect))
-    header = _make_signal_header(0x10, 0x00, len(content))
+    header = _make_signal_switch_signal_header(len(content))
     return header + bytes(content)
 
 
@@ -141,7 +178,7 @@ def pack_signal_atp_output(train_id: int, atp_safe: int,
         atp_unsafe & 0xffffffff,
         ato_out & 0xffffffff,
     )
-    header = _make_signal_header(0x10, 0x00, len(content))
+    header = _make_signal_ctrl_from_signal_header(len(content))
     return header + bytes(content)
 
 
@@ -149,8 +186,21 @@ def pack_signal_atp_output(train_id: int, atp_safe: int,
 # 3. 司机台 PLC 编解码（协议 司机驾驶模拟台PLC协议 §7）
 # ============================================================
 
-# PLC→上位机 46字节报文解析模板
-# 24字节报文头 + 22字节数据区
+# PLC→上位机 46字节报文解析
+# 24字节报文头 + 22字节数据区 (11 WORD)
+#
+# 数据区 WORD 定义 (§7.1):
+#   WORD0 (off=24): byte24=指示灯状态, byte25=模式标志
+#   WORD1 (off=26): 车辆速度 (WORD)
+#   WORD2 (off=28): byte28=按钮/开关, byte29=门控
+#   WORD3 (off=30): 外部照明开关状态 (WORD)
+#   WORD4 (off=32): 门模式开关状态 (WORD)
+#   WORD5 (off=34): byte34=按钮, byte35=开关/钥匙
+#   WORD6 (off=36): 方向手柄状态 (WORD 枚举)
+#   WORD7 (off=38): 主手柄状态 (WORD 枚举)
+#   WORD8 (off=40): 牵引极位 (WORD 0~100)
+#   WORD9 (off=42): 制动极位 (WORD 0~100)
+#   WORD10 (off=44): 预留
 
 def unpack_plc_data(data: bytes) -> Optional[dict]:
     """解包PLC→上位机报文 (46 bytes)
@@ -161,44 +211,96 @@ def unpack_plc_data(data: bytes) -> Optional[dict]:
     if len(data) < 46:
         return None
 
-    result = {}
-
+    # 24字节报文头 (可校验 _uIdentify=0x55AA55AA, _uTotalLen=46)
     # 数据区从偏移24开始，共22字节 = 11 WORD
-    # 按照协议 §7.1 字段定义逐位解析
     words = struct.unpack_from("<" + "H" * 11, data, 24)
 
-    # WORD0: 司控器手柄
+    result = {}
+
+    # WORD0: 指示灯状态 + 模式标志
     w0 = words[0]
-    result["handle_position"] = w0 & 0x7F          # bit0-6: 手柄级位
-    result["handle_zero"] = bool(w0 & 0x0080)       # bit7: 零位
+    result["indicator_hv_contactor"] = bool(w0 & 0x0002)       # bit1: 高断合指示灯
+    result["indicator_brake_release"] = bool(w0 & 0x0004)      # bit2: 制动缓解不良
+    result["indicator_door_closed"] = bool(w0 & 0x0020)        # bit5: 门关好
+    result["indicator_network_fault"] = bool(w0 & 0x0040)      # bit6: 网络故障
+    result["mode_ato_available"] = bool(w0 & 0x0100)           # bit8: 具备ATO
+    result["mode_ato_active"] = bool(w0 & 0x0200)              # bit9: ATO激活
+    result["mode_ar"] = bool(w0 & 0x1000)                      # bit12: 自动折返
 
-    # WORD1: 方向开关
-    w1 = words[1]
-    result["dir_forward"] = bool(w1 & 0x0001)       # bit0: 向前
-    result["dir_backward"] = bool(w1 & 0x0002)      # bit1: 向后
-    result["master_key"] = bool(w1 & 0x0004)        # bit2: 司机钥匙
+    # WORD1: 车辆速度 (WORD, 单位需根据实机确认)
+    result["speed"] = words[1]                                  # 偏移26
 
-    # WORD2: 门控按钮
+    # WORD2: 按钮/开关 + 门控
     w2 = words[2]
-    result["btn_open_left"] = bool(w2 & 0x0001)
-    result["btn_close_left"] = bool(w2 & 0x0002)
-    result["btn_open_right"] = bool(w2 & 0x0004)
-    result["btn_close_right"] = bool(w2 & 0x0008)
+    result["btn_emergency_brake"] = bool(w2 & 0x0001)          # bit0: 紧急制动按钮
+    result["btn_bus_control"] = bool(w2 & 0x0002)              # bit1: 母线控制
+    result["btn_forced_release"] = bool(w2 & 0x0004)           # bit2: 强迫缓解
+    result["btn_forced_pump"] = bool(w2 & 0x0008)              # bit3: 强迫泵风
+    result["btn_emergency_command"] = bool(w2 & 0x0010)        # bit4: 应急指挥
+    result["btn_parking_brake"] = bool(w2 & 0x0020)            # bit5: 停放制动
+    result["btn_electric_horn"] = bool(w2 & 0x0040)            # bit6: 电笛
+    # byte29: 门控
+    result["btn_open_left"] = bool(w2 & 0x0100)                # bit8: 开左门
+    result["btn_open_right"] = bool(w2 & 0x0200)               # bit9: 开右门
+    result["btn_close_left"] = bool(w2 & 0x0400)               # bit10: 关左门
+    result["btn_close_right"] = bool(w2 & 0x0800)              # bit11: 关右门
 
-    # WORD3: ATO按钮
+    # WORD3: 外部照明开关状态
     w3 = words[3]
-    result["ato_start"] = bool(w3 & 0x0001)
-    result["mode_up"] = bool(w3 & 0x0002)
-    result["mode_down"] = bool(w3 & 0x0004)
-    result["ar_button"] = bool(w3 & 0x0008)
+    result["light_off"] = (w3 & 0x000F) == 0
+    result["light_stop"] = bool(w3 & 0x0001)                   # bit0: 停止位
+    result["light_auto"] = bool(w3 & 0x0002)                   # bit1: 自动位
+    result["light_near"] = bool(w3 & 0x0004)                   # bit2: 近光位
+    result["light_far"] = bool(w3 & 0x0008)                    # bit3: 远光位
 
-    # WORD4: 报警/状态
+    # WORD4: 门模式开关状态
     w4 = words[4]
-    result["emergency_brake"] = bool(w4 & 0x0001)
-    result["eum_mode"] = bool(w4 & 0x0002)
+    result["door_mode_semiauto"] = bool(w4 & 0x0001)           # bit0: 半自动
+    result["door_mode_manual"] = bool(w4 & 0x0002)             # bit1: 手动
+    result["door_mode_auto"] = bool(w4 & 0x0004)               # bit2: 自动
 
-    # WORD5-10: 预留/备用
+    # WORD5: 按钮 + 开关/钥匙
+    w5 = words[5]
+    result["btn_high_accel"] = bool(w5 & 0x0001)               # bit0: 高加速
+    result["btn_cab_light"] = bool(w5 & 0x0002)                # bit1: 司机室照明
+    result["btn_mode_up"] = bool(w5 & 0x0004)                  # bit2: 模式升级
+    result["btn_mode_down"] = bool(w5 & 0x0008)                # bit3: 模式降级
+    result["btn_confirm"] = bool(w5 & 0x0010)                  # bit4: 确认
+    result["btn_ar"] = bool(w5 & 0x0020)                       # bit5: 自动折返
+    result["btn_traction_reset"] = bool(w5 & 0x0040)           # bit6: 牵引辅助复位
+    result["btn_ato_start"] = bool(w5 & 0x0080)                # bit7: ATO启动
+    result["switch_wash"] = bool(w5 & 0x0100)                  # bit8: 洗车模式
+    result["master_key"] = bool(w5 & 0x0200)                   # bit9: 司机钥匙
+    result["switch_alert"] = bool(w5 & 0x0400)                 # bit10: 警惕
+    result["switch_alert_release"] = bool(w5 & 0x0800)         # bit11: 警惕允许解除
+
+    # WORD6: 方向手柄状态 (枚举)
+    w6 = words[6]
+    result["dir_zero"] = bool(w6 & 0x0001)                     # bit0: 0位
+    result["dir_forward"] = bool(w6 & 0x0002)                  # bit1: 向前
+    result["dir_backward"] = bool(w6 & 0x0004)                 # bit2: 向后
+
+    # WORD7: 主手柄状态 (枚举)
+    w7 = words[7]
+    result["handle_zero"] = bool(w7 & 0x0001)                  # bit0: 0位
+    result["handle_traction"] = bool(w7 & 0x0002)              # bit1: 牵引
+    result["handle_brake"] = bool(w7 & 0x0004)                 # bit2: 制动
+    result["handle_fast_brake"] = bool(w7 & 0x0008)            # bit3: 快制
+
+    # WORD8: 牵引极位 (0~100)
+    result["traction_level"] = words[8]
+
+    # WORD9: 制动极位 (0~100)
+    result["brake_level"] = words[9]
+
+    # WORD10: 预留
+    result["reserved"] = words[10]
+
+    # 原始数据
     result["raw_words"] = list(words)
+
+    # 兼容旧版命名
+    result["handle_position"] = result["traction_level"]
 
     return result
 
@@ -211,14 +313,23 @@ def pack_plc_output(
     """打包上位机→PLC报文 (26 bytes)
 
     24字节帧头 + 2字节数据区
+    帧头字段按协议填充。
     """
-    # 24字节帧头（固定格式）
-    header = struct.pack("<" + "H" * 12,
-        0x0000, 0x0000, 0x0000, 0x0000,
-        0x0000, 0x0000, 0x0000, 0x0000,
-        0x0000, 0x0000, 0x0000, 0x0000,
+    t = _time.localtime(_time.time())
+    header = struct.pack("<" + "I" + "H" * 10,
+        0x55AA55AA,                      # _uIdentify (4B)
+        26,                               # _uTotalLen (2B) = 26
+        26 - 8,                           # _uDataLen (2B) = 18
+        t.tm_year,                        # _uYear
+        t.tm_mon,                         # _uMonth
+        t.tm_mday,                        # _uDay
+        t.tm_hour,                        # _uHour
+        t.tm_min,                         # _uMinute
+        t.tm_sec,                         # _uSecond
+        0,                                # _uVerifyType
+        0,                                # _uVerifyCode
     )
-    # 2字节数据区
+    # 2字节数据区 (ATP安全输出)
     data = struct.pack("<H", atp_safe_out & 0xFFFF)
     return header + data
 

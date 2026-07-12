@@ -59,21 +59,27 @@ class DispatchLineView(QGraphicsView):
         for link in model.links:
             x1 = left + link.start_pos / total * (right - left)
             x2 = left + link.end_pos / total * (right - left)
-            owner_set = set().union(*(
-                self.manager.occupancy.owners(segment_id)
-                for segment_id in link.seg_ids
-            )) if link.seg_ids else set()
-            lock_owners = {
-                owner for segment_id in link.seg_ids
-                if (owner := self.manager.interlocking.locked_by(segment_id))
-            }
-            state_color = (QColor("#dc2626") if owner_set else
-                           QColor("#f59e0b") if lock_owners else None)
-            if state_color is None:
-                continue
-            for y in (down_y, up_y):
+            # 按方向分离占用和锁闭检查，避免下行占用误显在上行线上
+            for direction, direction_y in (("down", down_y), ("up", up_y)):
+                seg_ids = (link.down_seg_ids if direction == "down"
+                           else link.up_seg_ids)
+                # 回退兼容：旧 SemanticLink 可能没有方向分离字段
+                if not seg_ids:
+                    seg_ids = link.seg_ids
+                owner_set = set().union(*(
+                    self.manager.occupancy.owners(segment_id)
+                    for segment_id in seg_ids
+                )) if seg_ids else set()
+                lock_owners = {
+                    owner for segment_id in seg_ids
+                    if (owner := self.manager.interlocking.locked_by(segment_id))
+                }
+                state_color = (QColor("#dc2626") if owner_set else
+                               QColor("#f59e0b") if lock_owners else None)
+                if state_color is None:
+                    continue
                 line = self._scene.addLine(
-                    x1, y, x2, y,
+                    x1, direction_y, x2, direction_y,
                     QPen(state_color, 7, Qt.SolidLine, Qt.RoundCap))
                 state = (f"{','.join(sorted(owner_set))} 占用"
                          if owner_set else
@@ -298,7 +304,8 @@ class DispatchView(QWidget):
             self.table.setColumnWidth(column, width)
         header.setSectionResizeMode(7, QHeaderView.Stretch)
         layout.addWidget(self.table)
-        self.table.itemSelectionChanged.connect(self._update_command_state)
+        self.table.itemSelectionChanged.connect(
+            self._on_table_selection_changed)
         return group
 
     def set_manager(self, manager: DispatchManager):
@@ -319,6 +326,8 @@ class DispatchView(QWidget):
     def refresh(self):
         selected = self.selected_train_id()
         runtimes = tuple(self.manager.trains.values())
+        # 重建表格会短暂清空并恢复选择，不能把这种内部刷新当成用户切车。
+        self.table.blockSignals(True)
         self.table.setRowCount(len(runtimes))
         selected_row = -1
         for row, runtime in enumerate(runtimes):
@@ -350,6 +359,7 @@ class DispatchView(QWidget):
             self.table.selectRow(selected_row)
         elif runtimes:
             self.table.selectRow(0)
+        self.table.blockSignals(False)
 
         occupied = len(self.manager.occupancy.snapshot)
         locked = len(self.manager.interlocking.locks)
@@ -414,7 +424,6 @@ class DispatchView(QWidget):
         self.current_train_label.setText(
             f"当前调度对象：{runtime.train_id} · "
             f"{runtime.direction_label} · {runtime.status.value}")
-        self.selected_train_changed.emit(runtime.train_id)
         status = runtime.status
         self.assign_button.setEnabled(
             status in (TrainStatus.WAITING, TrainStatus.COMPLETED))
@@ -440,6 +449,13 @@ class DispatchView(QWidget):
         }
         for button, reason in reasons.items():
             button.setToolTip("" if button.isEnabled() else reason)
+
+    def _on_table_selection_changed(self):
+        """仅用户/程序真正改变表格选择时同步受控列车。"""
+        self._update_command_state()
+        train_id = self.selected_train_id()
+        if train_id:
+            self.selected_train_changed.emit(train_id)
 
     def _remove_train(self):
         train_id = self.selected_train_id()
