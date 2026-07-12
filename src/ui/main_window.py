@@ -1,5 +1,6 @@
 """主窗口 — 应用程序主界面"""
 
+import logging
 from html import escape
 
 from PyQt5.QtWidgets import (
@@ -31,6 +32,8 @@ from src.door.interlock import DoorInterlock
 from src.logger.recorder import Recorder
 from src.logger.evaluator import Evaluator
 from src.network.manager import NetworkManager
+
+logger = logging.getLogger(__name__)
 from src.dispatch import DispatchManager, ServicePlan
 from src.dispatch.train_manager import resolve_station_track_position
 
