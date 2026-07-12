@@ -310,7 +310,7 @@ class MainWindow(QMainWindow):
         return bar
 
     def _create_dispatch_manager(self):
-        """创建调度域并把现有主控制器注册为1车。"""
+        """创建调度域并把现有主控制器注册为1车，自动分配交路并发车。"""
         self.dispatch = DispatchManager(
             self.track, self.recorder, self.signal_system)
         self.dispatch.trains.register_existing(
@@ -323,10 +323,14 @@ class MainWindow(QMainWindow):
         if len(station_ids) >= 2:
             first = self.dispatch.trains.get_station(station_ids[0]).name
             last = self.dispatch.trains.get_station(station_ids[-1]).name
-            self.dispatch.add_service_plan(ServicePlan(
+            plan = ServicePlan(
                 "mainline_loop", f"{first} ⇆ {last}", station_ids,
                 turnback=True, dwell_time=5.0,
-            ))
+            )
+            self.dispatch.add_service_plan(plan)
+            # 自动为 1 车分配交路并发车
+            self.dispatch.assign_plan("1车", plan.plan_id)
+            self.dispatch.depart("1车")
 
     def _available_routes(self):
         """数据库使用动态算路，演示线路保留预定义侧线进路。"""
@@ -741,7 +745,11 @@ class MainWindow(QMainWindow):
 
         elif mode == RunningMode.AUTOMATIC:
             head_abs = self._head_abs_position()
-            next_station = self.auto_drive.find_next_station(head_abs)
+            # 根据运行方向选择查站策略
+            if self.controller.direction == 1:
+                next_station = self.auto_drive.find_next_station(head_abs)
+            else:
+                next_station = self.auto_drive._find_station_reverse(head_abs)
             if next_station is None:
                 self.recorder.record("操作", "切换自动失败: 无前方车站",
                                      head_abs, self.controller.head_speed)
@@ -1043,23 +1051,39 @@ class MainWindow(QMainWindow):
         return 0
 
     def _find_next_station(self, head_abs: float) -> int:
-        """查找下一站ID"""
+        """查找下一站ID（根据运行方向）"""
         if not hasattr(self, 'track'):
             return 0
-        next_id = 0
-        for st in self.track.stations:
-            if st.position > head_abs + 20:
-                next_id = st.station_id if hasattr(st, 'station_id') else 0
-                break
-        return next_id
+        direction = self.controller.direction if self.controller else 1
+        if direction >= 0:
+            # 下行：查前方（递增里程）
+            for st in self.track.stations:
+                if st.position > head_abs + 20:
+                    return st.station_id if hasattr(st, 'station_id') else 0
+        else:
+            # 上行：查后方（递减里程）
+            behind = [st for st in self.track.stations if st.position < head_abs - 20]
+            if behind:
+                st = max(behind, key=lambda s: s.position)
+                return st.station_id if hasattr(st, 'station_id') else 0
+        return 0
 
     def _distance_to_next_station(self, head_abs: float) -> float:
-        """距下一站距离 (m)"""
+        """距下一站距离 (m)（根据运行方向）"""
         if not hasattr(self, 'track'):
             return 0.0
-        for st in self.track.stations:
-            if st.position > head_abs + 20:
-                return st.position - head_abs
+        direction = self.controller.direction if self.controller else 1
+        if direction >= 0:
+            # 下行：查前方（递增里程）
+            for st in self.track.stations:
+                if st.position > head_abs + 20:
+                    return st.position - head_abs
+        else:
+            # 上行：查后方（递减里程）
+            behind = [st for st in self.track.stations if st.position < head_abs - 20]
+            if behind:
+                st = max(behind, key=lambda s: s.position)
+                return head_abs - st.position
         return 0.0
 
     def _get_front_signal_state(self) -> int:

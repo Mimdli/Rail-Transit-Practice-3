@@ -369,9 +369,10 @@ class TrackView(QGraphicsView):
 
     # ── 分支层级计算 ──────────────────────────────────────────
 
-    def _is_down_track_zone(self, abs_start: float) -> bool:
-        """判断绝对位置是否属于下行轨道区域（>= 1000m）。"""
-        return abs_start >= 1000
+    def _trunk_y(self, seg_id: int) -> float:
+        """返回指定区段所在主线层的 Y 坐标。"""
+        trunk, depth = self._seg_layout.get(seg_id, (0, 0))
+        return (trunk + depth) * BRANCH_OFFSET + self._base_y
 
     def _compute_branch_levels(self):
         td = self.td
@@ -398,12 +399,23 @@ class TrackView(QGraphicsView):
             self._seg_layout[sid] = (trunk_idx, 0)
             q.append((sid, trunk_idx, 0))
 
-        # 配置缺失时保留原始数据的安全兜底，不让线路图空白。
-        if not self._seg_layout:
+        # 配置缺失（如演示数据）时，按站台方向分配主干层并沿邻接传播。
+        trunks_in_use = {t for (t, d) in self._seg_layout.values()}
+        if len(trunks_in_use) < 2:
+            for platform in td.platforms:
+                if platform.seg_id in self._seg_layout:
+                    trunk_idx = 0 if platform.direction == "down" else 1
+                    self._seg_layout[platform.seg_id] = (trunk_idx, 0)
+                    q.append((platform.seg_id, trunk_idx, 0))
+
+        # 最后兜底：仍然只用一层时，给不同根段分配不同主干层。
+        if len({t for (t, d) in self._seg_layout.values()}) < 2:
+            root_idx = 0
             for seg in td.segments:
-                if seg.start_neighbor == 0:
-                    self._seg_layout[seg.seg_id] = (0, 0)
-                    q.append((seg.seg_id, 0, 0))
+                if seg.start_neighbor == 0 and seg.seg_id in self._seg_layout:
+                    self._seg_layout[seg.seg_id] = (root_idx, 0)
+                    q.append((seg.seg_id, root_idx, 0))
+                    root_idx += 1
 
         while q:
             sid, trunk_idx, depth = q.popleft()
@@ -411,11 +423,19 @@ class TrackView(QGraphicsView):
             if not seg:
                 continue
 
+            # 沿正向邻接传播主干层（仅主线，非渡线）
             nid = seg.end_neighbor
-            if _is_valid_seg_id(nid) and nid not in self._seg_layout:
-                self._seg_layout[nid] = (trunk_idx, depth)
-                q.append((nid, trunk_idx, depth))
+            if _is_valid_seg_id(nid):
+                cur = self._seg_layout.get(nid)
+                if cur is None:
+                    self._seg_layout[nid] = (trunk_idx, depth)
+                    q.append((nid, trunk_idx, depth))
+                elif cur[0] != trunk_idx:
+                    # 平台方向修正后覆盖旧 trunk
+                    self._seg_layout[nid] = (trunk_idx, max(depth, cur[1]))
+                    q.append((nid, trunk_idx, max(depth, cur[1])))
 
+            # 沿侧向邻接增加分支深度（道岔/渡线）
             for nid in (seg.start_lateral, seg.end_lateral):
                 if not _is_valid_seg_id(nid):
                     continue
@@ -583,39 +603,40 @@ class TrackView(QGraphicsView):
             if pos <= 0:
                 continue
             x = self._x(pos)
-            # 上行车站显示在上方，下行车站显示在下方
-            is_down = self._is_down_track_zone(pos)
-            if is_down:
-                # 下行车站：位于下行轨道线上方
-                station_y = base_y + BRANCH_OFFSET * 2
+            # 按站台所在段的主干层确定车站 Y 坐标
+            station_platforms = [p for p in td.platforms
+                                if p.station_id == st.station_id or p.platform_id in st.platform_ids]
+            drawn_trunks = set()
+            for plat in station_platforms:
+                if plat.seg_id not in self._seg_layout:
+                    continue
+                trunk, depth = self._seg_layout[plat.seg_id]
+                if trunk in drawn_trunks:
+                    continue
+                drawn_trunks.add(trunk)
+                station_y = (trunk + depth) * BRANCH_OFFSET + base_y
                 label_y = station_y - 40
-            else:
-                # 上行车站：位于上行轨道线上方
-                station_y = base_y
-                label_y = station_y - 46
 
-            dot = self.scene.addEllipse(x - 6, station_y - 6, 12, 12,
-                                        QPen(COLOR_STATION, 2), QBrush(Qt.white))
-            dot.setZValue(2)
-            self._signal_items.append(dot)
+                dot = self.scene.addEllipse(x - 6, station_y - 6, 12, 12,
+                                            QPen(COLOR_STATION, 2), QBrush(Qt.white))
+                dot.setZValue(2)
+                self._signal_items.append(dot)
 
-            # 站名缩写：去掉 "(上行)" / "(下行)" 后缀
-            short_name = st.name.replace("(上行)", "").replace("(下行)", "")
-            text = QGraphicsSimpleTextItem(short_name)
-            text.setPos(x - 22, label_y)
-            text.setFont(QFont("Microsoft YaHei", 9, QFont.Bold))
-            text.setBrush(COLOR_STATION)
-            text.setZValue(2)
-            self.scene.addItem(text)
-            self._station_labels.append(text)
+                short_name = st.name.replace("(上行)", "").replace("(下行)", "")
+                text = QGraphicsSimpleTextItem(short_name)
+                text.setPos(x - 22, label_y)
+                text.setFont(QFont("Microsoft YaHei", 9, QFont.Bold))
+                text.setBrush(COLOR_STATION)
+                text.setZValue(2)
+                self.scene.addItem(text)
+                self._station_labels.append(text)
 
         # ── 信号机 ────────────────────────────────────────────
         for sig in td.signals:
             if sig.position <= 0:
                 continue
             x = self._x(sig.position)
-            is_down = self._is_down_track_zone(sig.position)
-            y = base_y + (BRANCH_OFFSET * 2 if is_down else 0)
+            y = self._trunk_y(sig.seg_id)
 
             dot = self.scene.addEllipse(x - 4, y - 14, 8, 8,
                                         QPen(COLOR_SIGNAL, 1),

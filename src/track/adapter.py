@@ -112,111 +112,15 @@ class TrackDataAdapter(ITrackQuery):
         if distance == 0:
             return pos
 
-        seg_map = self._td._seg_map
-        seg_id = pos.segment_id
-        offset = pos.offset
-        remaining = distance
-
-        while abs(remaining) > 1e-9:
-            seg = seg_map.get(seg_id)
-            if seg is None:
-                return pos
-
-            if remaining > 0:
-                room = seg.length - offset
-                if remaining <= room + 1e-9:
-                    return TrackPosition(seg_id, offset + remaining)
-                end_abs = seg.abs_start + seg.length
-                remaining -= room
-                next_id = self._pick_forward_exit(seg)
-                if next_id is None or next_id not in seg_map:
-                    return TrackPosition(seg_id, seg.length)
-                next_seg = seg_map[next_id]
-                seg_id = next_id
-                offset = max(0.0, min(end_abs - next_seg.abs_start, next_seg.length))
-            else:
-                if -remaining <= offset + 1e-9:
-                    return TrackPosition(seg_id, offset + remaining)
-                remaining += offset
-                prev_id = self._next_backward(seg)
-                if prev_id is None or prev_id not in seg_map:
-                    return TrackPosition(seg_id, 0.0)
-                prev_seg = seg_map[prev_id]
-                seg_id = prev_id
-                offset = prev_seg.length
-
-        return TrackPosition(seg_id, offset)
-
-    def _forward_exit_candidates(self, seg) -> List[int]:
-        if seg.seg_id in self._fork_routes:
-            chosen = self._fork_routes[seg.seg_id]
-            if chosen > 0 and chosen != 65535:
-                return [chosen]
-        cands = []
-        for nid in (seg.end_neighbor, seg.end_lateral):
-            if nid > 0 and nid != 65535:
-                cands.append(nid)
-        if self._active_route is not None and not self._active_route.is_auto:
-            route_set = self._active_route.seg_id_set
-            routed = [n for n in cands if n in route_set]
-            if routed:
-                return routed
-        return cands
-
-    def _pick_forward_exit(self, seg) -> Optional[int]:
-        """离开区段时选择前向出口，优先能抵达更远终点的路径。"""
-        cands = self._forward_exit_candidates(seg)
-        if cands:
-            if len(cands) == 1:
-                return cands[0]
-            memo: Dict[int, float] = {}
-            return max(cands, key=lambda nid: self._max_reachable_end_abs(nid, memo))
-        return self._overlap_forward_at(seg.abs_start + seg.length, exclude=seg.seg_id)
-
-    def _overlap_forward_at(self, abs_pos: float, exclude: int = 0) -> Optional[int]:
-        """在共线岔点处，按绝对里程匹配可接续的下一段。"""
-        cands = []
-        for s in self._td.segments:
-            if s.seg_id == exclude:
-                continue
-            if (s.abs_start - _OVERLAP_JUNCTION_TOL
-                    <= abs_pos
-                    <= s.abs_start + s.length + _OVERLAP_JUNCTION_TOL):
-                cands.append(s.seg_id)
-        if not cands:
-            return None
-        memo: Dict[int, float] = {}
-        return max(cands, key=lambda nid: self._max_reachable_end_abs(nid, memo))
-
-    def _max_reachable_end_abs(self, seg_id: int, memo: Dict[int, float],
-                              visiting: Optional[Set[int]] = None) -> float:
-        if seg_id in memo:
-            return memo[seg_id]
-        seg = self._td._seg_map.get(seg_id)
-        if seg is None:
-            return 0.0
-        if visiting is None:
-            visiting = set()
-        if seg_id in visiting:
-            return seg.abs_start + seg.length
-        visiting.add(seg_id)
-
-        best = seg.abs_start + seg.length
-        for nid in self._forward_exit_candidates(seg):
-            best = max(best, self._max_reachable_end_abs(nid, memo, visiting))
-        overlap = self._overlap_forward_at(best, exclude=seg_id)
-        if overlap is not None:
-            best = max(best, self._max_reachable_end_abs(overlap, memo, visiting))
-
-        visiting.remove(seg_id)
-        memo[seg_id] = best
-        return best
-
-    def _next_backward(self, seg) -> Optional[int]:
-        for nid in (seg.start_neighbor, seg.start_lateral):
-            if nid > 0 and nid != 65535:
-                return nid
-        return None
+        通过绝对坐标转换实现，支持跨区段推进。
+        超出线路终点时钳位到终点；允许起点之前的负位置（列车尾部）。
+        """
+        total = self._td.total_length()
+        abs_pos = self.to_absolute(pos)
+        new_abs = abs_pos + distance
+        if new_abs > total:
+            new_abs = total
+        return self.from_absolute(new_abs, hint_seg_id=pos.segment_id)
 
     def to_absolute(self, pos: TrackPosition) -> float:
         """TrackPosition → 线路绝对里程 (m)。"""
@@ -265,6 +169,16 @@ class TrackDataAdapter(ITrackQuery):
 
         # Step 3: 兜底 — abs_pos < 0 或落在段间隙中
         if self._td.segments:
+            if hint_seg_id is not None and hint_seg_id in self._td._seg_map:
+                # 有 hint：在同链上找 abs_start≈0 的根段，避免并行链歧义
+                chain_ids = self._build_chain_ids(hint_seg_id)
+                for seg in self._td.segments:
+                    if seg.seg_id in chain_ids and abs(seg.abs_start) < 0.01:
+                        return TrackPosition(segment_id=seg.seg_id, offset=abs_pos)
+                # 同链未找到根段，回退到 hint 段本身
+                return TrackPosition(segment_id=hint_seg_id, offset=abs_pos)
+
+            # 无 hint：原有逻辑，找第一个 abs_start≈0 的段作为根段
             root_seg = self._td.segments[0]
             for seg in self._td.segments:
                 if abs(seg.abs_start) < 0.01:
@@ -353,6 +267,29 @@ class TrackDataAdapter(ITrackQuery):
 
         return visited
 
+    def _build_chain_ids(self, seed_seg_id: int) -> set[int]:
+        """构建与 seed_seg_id 同链的段 ID 集合（双向遍历邻居）。
+
+        从种子段出发，沿 start_neighbor（上行方向）和 end_neighbor（下行方向）
+        双向遍历，收集所有属于同一物理链的 segment ID。
+        """
+        seg_map = self._td._seg_map
+        seed = seg_map.get(seed_seg_id)
+        if seed is None:
+            return set()
+        chain = {seed_seg_id}
+        # 沿 end_neighbor 方向遍历（下行）
+        sid = seed.end_neighbor
+        while sid > 0 and sid != 65535 and sid in seg_map:
+            chain.add(sid)
+            sid = seg_map[sid].end_neighbor
+        # 沿 start_neighbor 方向遍历（上行）
+        sid = seed.start_neighbor
+        while sid > 0 and sid != 65535 and sid in seg_map:
+            chain.add(sid)
+            sid = seg_map[sid].start_neighbor
+        return chain
+
     def _disambiguate_candidates(self, candidates, abs_pos, hint_seg_id: Optional[int] = None):
         """从多个候选 segment 中选择正确的 segment。
 
@@ -379,17 +316,7 @@ class TrackDataAdapter(ITrackQuery):
         # 构建 hint_seg_id 所在链的 ID 集合
         chain_ids: set[int] = set()
         if hint_seg_id is not None:
-            last = self._td._seg_map.get(hint_seg_id)
-            if last is not None:
-                chain_ids = {last.seg_id}
-                sid = last.end_neighbor
-                while sid > 0 and sid != 65535 and sid in self._td._seg_map:
-                    chain_ids.add(sid)
-                    sid = self._td._seg_map[sid].end_neighbor
-                sid = last.start_neighbor
-                while sid > 0 and sid != 65535 and sid in self._td._seg_map:
-                    chain_ids.add(sid)
-                    sid = self._td._seg_map[sid].start_neighbor
+            chain_ids = self._build_chain_ids(hint_seg_id)
 
         # 优先级 2: 同链匹配 — 主线候选在同链上
         for seg in main_candidates:

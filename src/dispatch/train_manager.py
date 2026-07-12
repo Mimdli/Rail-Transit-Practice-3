@@ -86,7 +86,14 @@ class TrainManager:
             start = resolve_station_track_position(
                 self.track, station, controller.direction)
         else:
-            start = adapter.from_absolute(start_abs)
+            # 用方向对应的站台链作为消歧提示，避免并行线重叠坐标落错链
+            hint_seg = None
+            if self.track.stations:
+                hint_station = self.track.stations[0]
+                hint_pos = resolve_station_track_position(
+                    self.track, hint_station, controller.direction)
+                hint_seg = hint_pos.segment_id
+            start = adapter.from_absolute(start_abs, hint_seg_id=hint_seg)
         controller.reset_states(start.segment_id, start.offset)
 
         auto_drive = AutoDriveController(controller)

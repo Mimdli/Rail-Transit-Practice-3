@@ -137,7 +137,8 @@ def test_deceleration_regime_brakes_when_overspeed():
 
 
 def test_emergency_brake_regime():
-    """距离 ≤ 0.5m 且仍在移动时应施加紧急制动。"""
+    """距离 ≤ 3m 且仍在移动时应用渐进制动（常用制动上限 0.7，
+    非紧急制动 1.0——正常运营不使用紧急制动对标停车）。"""
     track = MockTrackQuery()
     env = MockEnvironment(WeatherType.DRY)
     ctrl = VehicleController(CONSIST_4M2T, track, env)
@@ -152,11 +153,15 @@ def test_emergency_brake_regime():
     assert speed_before > 0.5, f"列车应有一定速度，实际 {speed_before:.2f}"
 
     # 设置极近距离目标（0.3m 前方），列车仍在移动中
+    # 新逻辑：0.3m 触发蠕行阶段，施加渐进制动（上限 0.7），非紧急制动
     head_offset = ctrl.states[0].position.offset
     auto.set_target(TrackPosition(segment_id=1, offset=head_offset + 0.3))
     auto.step()
 
-    assert ctrl.brake_level == 1.0, f"紧急制动段应最大制动, brake={ctrl.brake_level}"
+    assert ctrl.brake_level >= 0.4, f"近距离应施加制动, brake={ctrl.brake_level}"
+    assert ctrl.brake_level <= 0.7, (
+        f"正常对标不应使用紧急制动(1.0), brake={ctrl.brake_level}"
+    )
     assert ctrl.throttle == 0.0
 
 

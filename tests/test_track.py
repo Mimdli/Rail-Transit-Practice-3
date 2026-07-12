@@ -35,23 +35,35 @@ def test_demo_segments_have_coordinates():
 def test_demo_segment_chain_continuous():
     loader = TrackLoader()
     td = loader.load_demo_data()
-    # 仅验证主线区段链连续；侧线从道岔岔出，与主线共享分叉点坐标
-    main_segs = sorted(
-        [s for s in td.segments if s.seg_id in (1, 2, 3, 4)],
-        key=lambda s: s.abs_start,
-    )
-    for i in range(len(main_segs) - 1):
-        expected = main_segs[i].abs_start + main_segs[i].length
-        assert abs(main_segs[i + 1].abs_start - expected) < 1.0
+    # 双链并行：UP链(seg1-4) 与 DOWN链(seg5-8) 各有独立坐标 0~1000m
+    assert len(td.segments) == 8
+
+    # 按 seg_id 分组为两条链
+    up_chain = [s for s in td.segments if s.seg_id in (1, 2, 3, 4)]
+    down_chain = [s for s in td.segments if s.seg_id in (5, 6, 7, 8)]
+    assert len(up_chain) == 4
+    assert len(down_chain) == 4
+
+    # 每条链独立连续
+    for chain_name, chain in [("UP", up_chain), ("DOWN", down_chain)]:
+        sorted_chain = sorted(chain, key=lambda s: s.abs_start)
+        for i in range(len(sorted_chain) - 1):
+            expected = sorted_chain[i].abs_start + sorted_chain[i].length
+            assert abs(sorted_chain[i + 1].abs_start - expected) < 1.0, \
+                f"{chain_name}链 seg{sorted_chain[i].seg_id}→seg{sorted_chain[i+1].seg_id} 不连续"
+
+    # 两链起点均为 0（坐标重叠）
+    up_root = next(s for s in up_chain if s.start_neighbor == 0)
+    down_root = next(s for s in down_chain if s.start_neighbor == 0)
+    assert up_root.abs_start == 0.0
+    assert down_root.abs_start == 0.0
 
 
 def test_demo_total_length():
     loader = TrackLoader()
     td = loader.load_demo_data()
-    main_segs = [s for s in td.segments if s.seg_id in (1, 2, 3, 4)]
-    main_sum = sum(s.length for s in main_segs)
-    # total_length = 最远 segment 的终点，包含了侧线延伸
-    assert td.total_length() >= main_sum
+    # 双链各 4×250=1000m，坐标重叠，total_length 为单链最大延伸
+    assert td.total_length() == 1000.0
 
 
 def test_advance_past_fork_stays_on_main():
@@ -195,13 +207,14 @@ def test_db_train_reaches_line_end():
 def test_demo_stations_have_positions():
     loader = TrackLoader()
     td = loader.load_demo_data()
-    # 有 8 个车站（4 上行 + 4 下行）
-    assert len(td.stations) == 8
+    # 有 4 个统一车站（每站跨上下行双线）
+    assert len(td.stations) == 4
+    names = {s.name for s in td.stations}
+    assert names == {"站A", "站B", "站C", "站D"}
     for station in td.stations:
-        if "上行" in station.name:
-            assert station.position < 1000
-        else:
-            assert station.position >= 1000
+        assert 0 <= station.position <= 1000
+        # 每站应有 2 个站台（上下行各一）
+        assert len(station.platform_ids) == 2
 
 
 def test_demo_get_speed_limit():
