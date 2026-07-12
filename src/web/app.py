@@ -114,6 +114,16 @@ async def set_power(body: PowerRequest):
     return response(runtime.set_power(body.status))
 
 
+@app.post("/api/network/start")
+async def network_start():
+    return response(runtime.network_connect())
+
+
+@app.post("/api/network/stop")
+async def network_stop():
+    return response(runtime.network_disconnect())
+
+
 @app.post("/api/simulation/{command}")
 async def simulation_command(command: str):
     if command == "pause":

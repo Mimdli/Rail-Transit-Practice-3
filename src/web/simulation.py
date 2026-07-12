@@ -36,6 +36,7 @@ class SimulationRuntime:
         self.paused = False
         self.speed_multiplier = 1
         self._task: Optional[asyncio.Task] = None
+        self.network_started = False
         self._initialize_dispatch()
 
     def _initialize_dispatch(self):
@@ -65,6 +66,84 @@ class SimulationRuntime:
             self._task = None
         self.network.stop()
         self.recorder.close()
+
+    def network_connect(self) -> dict:
+        """启动所有网络通信模块"""
+        if self.network_started:
+            return {"ok": True, "message": "网络已连接"}
+        self._setup_network_sources()
+        self.network.start()
+        self.network_started = True
+        self.recorder.record("网络", "Web ATS 启动联调网络连接", severity="INFO")
+        return {"ok": True, "message": "网络连接已启动"}
+
+    def _setup_network_sources(self):
+        """连接仿真数据到网络模块的数据源"""
+        from src.signal.system import SignalAspect
+
+        # 1. 车辆UDP：发送所有列车位置
+        def _vehicle_source():
+            trains = []
+            for runtime in self.dispatch.trains.values():
+                ctrl = runtime.controller
+                if ctrl.states:
+                    s = ctrl.states[0]
+                    trains.append((s.acceleration, ctrl.head_speed, runtime.head_abs))
+                else:
+                    trains.append((0.0, 0.0, 0.0))
+            # 补齐20列车（UDP协议固定20槽）
+            while len(trains) < 20:
+                trains.append((0.0, 0.0, 0.0))
+            return trains[:20]
+
+        self.network.set_vehicle_send_source(_vehicle_source)
+
+        # 2. 信号网关：发送道岔/信号状态
+        def _signal_source():
+            switches = []   # [(id, state)] — 暂不发送道岔
+            _aspect_map = {
+                SignalAspect.RED: 0x01,
+                SignalAspect.YELLOW: 0x02,
+                SignalAspect.GREEN: 0x04,
+            }
+            signals = [
+                (s.signal_id, _aspect_map.get(
+                    self.signal_system.get_signal_aspect(s), 0x00))
+                for s in self.track.signals
+            ]
+            return (switches, signals[:20])
+
+        self.network.set_signal_send_source(_signal_source)
+
+        # 3. 信号网关接收回调：记录日志
+        _last_signal_data = [None]
+
+        def _on_signal_recv(data: bytes):
+            _last_signal_data[0] = data
+            self.recorder.record("信号网关", f"收到 {len(data)} 字节", severity="INFO")
+
+        self.network.set_signal_recv_callback(_on_signal_recv)
+
+        # 4. PLC 接收回调
+        def _on_plc_recv(data: dict):
+            self.recorder.record("PLC", str(data), severity="INFO")
+
+        self.network.set_plc_recv_callback(_on_plc_recv)
+
+        # 5. 视景系统数据源：使用默认内部数据生成
+        #    VisionUDPClient 内部已有 TCMS2VIEW 数据生成逻辑，无需手动设置
+
+        # 6. 司机台显示屏数据源：使用默认内部数据生成
+        #    CabDisplayClient 内部已有网络屏/信号屏数据生成逻辑，无需手动设置
+
+    def network_disconnect(self) -> dict:
+        """断开所有网络通信模块"""
+        if not self.network_started:
+            return {"ok": True, "message": "网络已断开"}
+        self.network.stop()
+        self.network_started = False
+        self.recorder.record("网络", "Web ATS 断开联调网络连接", severity="INFO")
+        return {"ok": True, "message": "网络连接已断开"}
 
     async def _run(self):
         while True:
@@ -143,6 +222,7 @@ class SimulationRuntime:
             },
             "network": self.network.connection_status,
             "network_stats": self.network.network_stats,
+            "network_started": self.network_started,
             "stations": [
                 {"id": item.station_id, "name": item.name,
                  "position": item.position}

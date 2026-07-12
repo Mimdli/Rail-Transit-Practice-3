@@ -44,6 +44,9 @@ class VisionUDPClient:
         self.packets_sent = 0
         self.last_send_time = 0.0
 
+        # 最近发送的原始报文（hex dump用）
+        self.last_sent_packet: bytes = b''
+
     def set_data_source(self, source: Callable[[], dict]):
         """设置数据源回调，返回包含 TCMS2VIEW 各字段的 dict"""
         self._data_source = source
@@ -97,6 +100,7 @@ class VisionUDPClient:
                             other_trains=data.get("other_trains"),
                         )
                         self._sock.sendto(packet, remote)
+                        self.last_sent_packet = packet
                         self.packets_sent += 1
                         self.last_send_time = time.time()
                         self._last_send_time = time.time()

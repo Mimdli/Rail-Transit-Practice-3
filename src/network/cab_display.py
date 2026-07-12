@@ -43,6 +43,11 @@ class CabDisplayClient:
         self.packets_sent = 0
         self.last_send_time = 0.0
 
+        # 最近发送的原始报文（hex dump用）
+        self.last_sent_packet: bytes = b''
+        self.last_network_packet: bytes = b''
+        self.last_signal_packet: bytes = b''
+
     def set_network_data_source(self, source: Callable[[], dict]):
         """设置网络屏数据源"""
         self._network_data_source = source
@@ -113,6 +118,8 @@ class CabDisplayClient:
                         )
                         if self._send_tcp(CAB_DISPLAY_ADDR, CAB_NETWORK_SCREEN_PORT, packet):
                             has_network = True
+                            self.last_network_packet = packet
+                            self.last_sent_packet = packet
                             self.packets_sent += 1
                             self.last_send_time = time.time()
 
@@ -141,6 +148,8 @@ class CabDisplayClient:
                         )
                         if self._send_tcp(CAB_DISPLAY_ADDR, CAB_SIGNAL_SCREEN_PORT, packet):
                             has_signal = True
+                            self.last_signal_packet = packet
+                            self.last_sent_packet = packet
                             self.packets_sent += 1
                             self.last_send_time = time.time()
 

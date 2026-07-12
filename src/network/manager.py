@@ -59,13 +59,32 @@ class NetworkManager:
     def network_stats(self) -> dict:
         """获取各子系统详细通信统计"""
         now = __import__("time").time()
-        return {
+        result = {
             "vehicle_udp": self._module_stats(self.vehicle_udp, "车辆UDP", "UDP", 20, True, now),
             "signal_gateway": self._module_stats(self.signal_gateway, "信号网关", "UDP", 250, True, now),
             "plc": self._module_stats(self.plc, "司机台PLC", "TCP", 100, True, now),
             "vision": self._module_stats(self.vision, "视景系统", "UDP", 100, False, now),
             "cab_display": self._module_stats(self.cab_display, "司机台显示", "TCP", 100, False, now),
         }
+        # cab_display 额外携带两个屏各自的报文
+        cab = result["cab_display"]
+        cab["last_network_packet_hex"] = self._hex_str(
+            getattr(self.cab_display, "last_network_packet", b""))
+        cab["last_signal_packet_hex"] = self._hex_str(
+            getattr(self.cab_display, "last_signal_packet", b""))
+        return result
+
+    @staticmethod
+    def _hex_str(data: bytes, max_len: int = 1024) -> str:
+        """将 bytes 格式化为每行 8 字节的 hex dump 字符串"""
+        if not data:
+            return ""
+        data = data[:max_len]
+        rows = []
+        for i in range(0, len(data), 8):
+            chunk = data[i:i + 8]
+            rows.append(" ".join(f"{b:02X}" for b in chunk))
+        return "\n".join(rows)
 
     @staticmethod
     def _module_stats(module, name, protocol, cycle_ms, bidirectional, now):
@@ -82,6 +101,10 @@ class NetworkManager:
             "packets_received": getattr(module, 'packets_received', 0),
             "last_send_ago": round((now - last_send) * 1000) if last_send > 0 else None,
             "last_recv_ago": round((now - last_recv) * 1000) if last_recv > 0 else None,
+            "last_sent_packet_hex": NetworkManager._hex_str(
+                getattr(module, "last_sent_packet", b"")),
+            "last_recv_packet_hex": NetworkManager._hex_str(
+                getattr(module, "last_recv_packet", b"")),
         }
 
     @property
