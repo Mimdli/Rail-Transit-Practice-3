@@ -1,11 +1,12 @@
 """主窗口 — 应用程序主界面"""
 
+import logging
 from html import escape
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGroupBox, QTextEdit,
     QLabel, QComboBox, QTabWidget, QSplitter, QScrollArea, QFrame,
-    QPushButton, QButtonGroup, QApplication,
+    QPushButton, QButtonGroup, QApplication, QCheckBox,
 )
 from PyQt5.QtCore import QTimer, Qt
 
@@ -31,6 +32,8 @@ from src.door.interlock import DoorInterlock
 from src.logger.recorder import Recorder
 from src.logger.evaluator import Evaluator
 from src.network.manager import NetworkManager
+
+logger = logging.getLogger(__name__)
 from src.dispatch import DispatchManager, ServicePlan
 from src.dispatch.train_manager import resolve_station_track_position
 
@@ -249,6 +252,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
         layout.addWidget(self.data_source_combo)
         layout.addWidget(self.data_source_status, stretch=1)
+
+        # 联调模式开关
+        self.network_toggle = QCheckBox("联调模式")
+        self.network_toggle.setObjectName("networkToggle")
+        self.network_toggle.setChecked(self._network_mode)
+        self.network_toggle.toggled.connect(self._on_network_toggle)
+        layout.addWidget(self.network_toggle)
+
         return bar
 
     def _create_speed_control_bar(self) -> QWidget:
@@ -506,13 +517,16 @@ class MainWindow(QMainWindow):
         """当前数据源摘要"""
         if not hasattr(self, "track"):
             return ""
-        summary = (
-            f"{self._data_source_label()} | "
-            f"区段 {len(self.track.segments)} | "
-            f"车站 {len(self.track.stations)} | "
-            f"信号 {len(self.track.signals)} | "
-            f"总长 {self.track.total_length():.0f} m"
-        )
+        parts = [
+            f"{self._data_source_label()}",
+            f"区段 {len(self.track.segments)}",
+            f"车站 {len(self.track.stations)}",
+            f"信号 {len(self.track.signals)}",
+            f"总长 {self.track.total_length():.0f} m",
+        ]
+        if self._network_mode:
+            parts.append("联调模式")
+        summary = " | ".join(parts)
         warnings = getattr(self.track, "data_warnings", [])
         if warnings:
             summary += f" | 已修复缺失字段 {len(warnings)} 项"
@@ -1050,11 +1064,42 @@ class MainWindow(QMainWindow):
         """获取前方信号机状态"""
         return 0
 
+    def _on_network_toggle(self, checked: bool):
+        """联调模式开关"""
+        self._network_mode = checked
+        if checked:
+            logger.info("切换为联调模式：启动网络通信")
+            self._setup_network_callbacks()
+            self.network.start()
+        else:
+            logger.info("切换为本地模式：停止网络通信")
+            self.network.stop()
+        self._refresh_connection_status()
+
     def _refresh_connection_status(self):
         """刷新连接状态显示"""
         if not self._network_mode:
             return
-        self.data_source_status.setText(self._data_source_summary())
+        parts = [self._data_source_summary()]
+        # 各模块连接状态
+        try:
+            n = self.network
+            statuses = []
+            if hasattr(n.vehicle_udp, 'connected'):
+                statuses.append(("车", "🟢" if n.vehicle_udp.connected else "🔴"))
+            if hasattr(n.signal_gateway, 'connected'):
+                statuses.append(("信", "🟢" if n.signal_gateway.connected else "🔴"))
+            if hasattr(n.plc, 'connected'):
+                statuses.append(("PLC", "🟢" if n.plc.connected else "🔴"))
+            if hasattr(n.vision, 'connected'):
+                statuses.append(("视", "🟢" if n.vision.connected else "🔴"))
+            if hasattr(n.cab_display, 'connected'):
+                statuses.append(("显", "🟢" if n.cab_display.connected else "🔴"))
+            if statuses:
+                parts.append(" | ".join(f"{k}{v}" for k, v in statuses))
+        except Exception:
+            pass
+        self.data_source_status.setText(" | ".join(parts))
 
     def _setup_network_callbacks(self):
         """设置网络模块的回调"""
@@ -1063,10 +1108,27 @@ class MainWindow(QMainWindow):
         def on_signal_recv(data: bytes):
             pass
         def on_plc_recv(data: dict):
-            if "handle_position" in data and self._network_mode:
-                handle = data.get("handle_position", 0)
-                if handle > 0:
-                    self.controller.traction.set_throttle(handle / 127.0, bypass_mode_check=True)
+            if not self._network_mode:
+                return
+            # 主手柄牵引极位
+            traction = data.get("traction_level", 0)
+            if traction > 0:
+                self.controller.traction.set_throttle(traction / 100.0, bypass_mode_check=True)
+            # 制动极位
+            brake = data.get("brake_level", 0)
+            if brake > 0 and hasattr(self.controller, 'brake'):
+                self.controller.brake.set_brake_level(brake / 100.0)
+            # 方向
+            if data.get("dir_forward"):
+                if hasattr(self.controller, 'set_direction'):
+                    self.controller.set_direction(1)
+            elif data.get("dir_backward"):
+                if hasattr(self.controller, 'set_direction'):
+                    self.controller.set_direction(-1)
+            # 紧急制动
+            if data.get("btn_emergency_brake"):
+                if hasattr(self.controller, 'emergency_brake'):
+                    self.controller.emergency_brake.apply()
         self.network.set_vehicle_recv_callback(on_vehicle_recv)
         self.network.set_signal_recv_callback(on_signal_recv)
         self.network.set_plc_recv_callback(on_plc_recv)
