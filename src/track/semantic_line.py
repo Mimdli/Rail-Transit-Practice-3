@@ -28,6 +28,8 @@ class SemanticLink:
     start_pos: float
     end_pos: float
     seg_ids: tuple[int, ...] = ()
+    down_seg_ids: tuple[int, ...] = ()
+    up_seg_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,17 +150,20 @@ def _build_links(
         return links, main_seg_ids
 
     for left, right in zip(stations, stations[1:]):
-        paths = []
+        direction_paths: dict[str, tuple[int, ...]] = {}
         for direction in ("down", "up"):
             starts = _station_platform_segments(track, left, direction)
             targets = _station_platform_segments(track, right, direction)
             path = _shortest_path(track, starts, targets, allowed_seg_ids)
             if path:
                 # 目标站台所在区段属于下一站站场，不计入当前站间区间。
-                paths.append(path[:-1] or path)
+                path = path[:-1] or path
+            direction_paths[direction] = tuple(dict.fromkeys(path))
 
+        down_seg_ids = direction_paths.get("down", ())
+        up_seg_ids = direction_paths.get("up", ())
         seg_ids = tuple(dict.fromkeys(
-            segment_id for path in paths for segment_id in path
+            segment_id for path in direction_paths.values() for segment_id in path
         ))
         if not seg_ids:
             # 数据关联缺失时才使用里程范围兜底，并排除孤立侧线。
@@ -180,6 +185,8 @@ def _build_links(
                 start_pos=left.position,
                 end_pos=right.position,
                 seg_ids=seg_ids,
+                down_seg_ids=down_seg_ids,
+                up_seg_ids=up_seg_ids,
             )
         )
     return links, main_seg_ids

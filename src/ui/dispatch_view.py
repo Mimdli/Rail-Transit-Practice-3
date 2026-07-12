@@ -59,21 +59,27 @@ class DispatchLineView(QGraphicsView):
         for link in model.links:
             x1 = left + link.start_pos / total * (right - left)
             x2 = left + link.end_pos / total * (right - left)
-            owner_set = set().union(*(
-                self.manager.occupancy.owners(segment_id)
-                for segment_id in link.seg_ids
-            )) if link.seg_ids else set()
-            lock_owners = {
-                owner for segment_id in link.seg_ids
-                if (owner := self.manager.interlocking.locked_by(segment_id))
-            }
-            state_color = (QColor("#dc2626") if owner_set else
-                           QColor("#f59e0b") if lock_owners else None)
-            if state_color is None:
-                continue
-            for y in (down_y, up_y):
+            # 按方向分离占用和锁闭检查，避免下行占用误显在上行线上
+            for direction, direction_y in (("down", down_y), ("up", up_y)):
+                seg_ids = (link.down_seg_ids if direction == "down"
+                           else link.up_seg_ids)
+                # 回退兼容：旧 SemanticLink 可能没有方向分离字段
+                if not seg_ids:
+                    seg_ids = link.seg_ids
+                owner_set = set().union(*(
+                    self.manager.occupancy.owners(segment_id)
+                    for segment_id in seg_ids
+                )) if seg_ids else set()
+                lock_owners = {
+                    owner for segment_id in seg_ids
+                    if (owner := self.manager.interlocking.locked_by(segment_id))
+                }
+                state_color = (QColor("#dc2626") if owner_set else
+                               QColor("#f59e0b") if lock_owners else None)
+                if state_color is None:
+                    continue
                 line = self._scene.addLine(
-                    x1, y, x2, y,
+                    x1, direction_y, x2, direction_y,
                     QPen(state_color, 7, Qt.SolidLine, Qt.RoundCap))
                 state = (f"{','.join(sorted(owner_set))} 占用"
                          if owner_set else
