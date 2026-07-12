@@ -45,6 +45,10 @@ class PLCClient:
         self.last_send_time = 0.0
         self.last_recv_time = 0.0
 
+        # 最近收发的原始报文（hex dump用）
+        self.last_sent_packet: bytes = b''
+        self.last_recv_packet: bytes = b''
+
     @property
     def last_plc_data(self) -> Optional[dict]:
         return self._last_plc_data
@@ -79,6 +83,7 @@ class PLCClient:
                 try:
                     s.sendall(data)
                     self.packets_sent += 1
+                    self.last_sent_packet = data
                     self.last_send_time = time.time()
                 except Exception:
                     pass
@@ -116,6 +121,7 @@ class PLCClient:
                         parsed = unpack_plc_data(data)
                         if parsed:
                             self._last_plc_data = parsed
+                            self.last_recv_packet = data
                             self.packets_received += 1
                             self.last_recv_time = time.time()
                             if self._recv_callback:

@@ -233,7 +233,7 @@
       train: `<header class="page-head"><div><h1>单车运行监控</h1><p id="monitorSubtitle">选择列车查看独立运行状态</p></div><div class="field"><label for="monitorTrainSelect">监控列车</label><select id="monitorTrainSelect"></select></div></header><div class="page-body split"><section class="pane"><div class="big-speed"><div><strong id="monitorSpeed">0.0</strong> <small>km/h</small><div style="text-align:center;color:#73858e">允许速度 <span id="monitorLimit">--</span> km/h</div></div><div class="arc" id="monitorSpeedArc"></div></div><div class="pane-title" style="margin-top:18px"><h2>当前运行位置</h2><span id="monitorPosition">--</span></div><table class="data-table"><tbody><tr><td>运行状态</td><td id="monitorStatus">--</td></tr><tr><td>当前交路</td><td id="monitorPlan">--</td></tr><tr><td>目标车站</td><td id="monitorTarget">--</td></tr><tr><td>距目标站</td><td id="monitorDistance">--</td></tr></tbody></table></section><aside class="pane"><div class="pane-title"><h2>车辆实时状态</h2><span>100 ms</span></div><div class="kv-grid"><div class="kv"><span>加速度</span><b id="monitorAcceleration">--</b></div><div class="kv"><span>牵引级位</span><b id="monitorThrottle">--</b></div><div class="kv"><span>制动级位</span><b id="monitorBrake">--</b></div><div class="kv"><span>牵引力</span><b id="monitorTractiveForce">--</b></div><div class="kv"><span>总制动力</span><b id="monitorBrakeForce">--</b></div><div class="kv"><span>累计净能耗</span><b id="monitorEnergy">--</b></div><div class="kv"><span>供电</span><b id="monitorPower">--</b></div><div class="kv"><span>车门</span><b id="monitorDoors">--</b></div></div><div class="command-grid"><button class="button" data-command="depart">发车</button><button class="button" data-command="hold">扣车</button><button class="button" data-command="release">解除扣车</button><button class="button danger" data-command="emergency-stop">紧急停车</button></div></aside></div>`,
       signal: `<header class="page-head"><div><h1>信号与联锁</h1><p>主线取自校对后的 Link 链，车站与侧线取自后端语义线路模型</p></div><span class="status" id="signalRealtimeState">等待数据</span></header><div class="page-body split"><section class="pane"><div class="pane-title"><h2>全线联锁图</h2><span id="signalSummary">正在同步线路拓扑</span></div><div class="signal-canvas"><svg id="signalTrackSvg" viewBox="0 0 1100 430" role="img" aria-label="后端主干线实时联锁图"></svg></div></section><aside class="pane"><div class="pane-title"><h2>实时设备状态</h2><span id="signalDeviceCount">0 项</span></div><div class="device-list" id="signalDeviceList"><div class="log-empty">等待后端快照…</div></div></aside></div>`,
       power: `<header class="page-head"><div><h1>供电监控</h1><p>当前模型支持正常、低电压、断电与恢复四种供电状态</p></div><span class="status">全线供电状态实时同步</span></header><div class="page-body split"><section class="pane"><div class="power-state"><div class="power-value"><span>当前牵引能力</span><strong id="powerValue">100%</strong><span id="powerLabel">供电正常 · 无降级</span></div><div class="power-line"><i style="left:8%"></i><i style="left:32%"></i><i style="left:58%"></i><i style="left:84%"></i></div></div><div class="pane-title" style="margin-top:24px"><h2>全线供电区段</h2><span>4 区段</span></div><table class="data-table"><tbody><tr><td>PS-01 郭公庄—长阳</td><td><span class="status">正常</span></td><td>牵引能力跟随全线状态</td></tr><tr><td>PS-02 长阳—良乡大学城</td><td><span class="status">正常</span></td><td>牵引能力跟随全线状态</td></tr><tr><td>PS-03 良乡大学城—苏庄</td><td><span class="status">正常</span></td><td>牵引能力跟随全线状态</td></tr><tr><td>PS-04 苏庄—燕山</td><td><span class="status">正常</span></td><td>牵引能力跟随全线状态</td></tr></tbody></table></section><aside class="pane"><div class="pane-title"><h2>故障场景注入</h2><span>真实后端控制</span></div><p style="color:var(--muted)">切换后端 PowerSupply 状态；断电将切除列车牵引。</p><div class="command-grid"><button class="button active" data-power="NORMAL">正常供电</button><button class="button" data-power="LOW_VOLTAGE">模拟低电压</button><button class="button danger" data-power="POWER_OFF">模拟断电</button><button class="button" data-power="RECOVERING">恢复供电</button></div><div class="kv" style="margin-top:24px"><span>线路网压</span><b>未接入 / 1500 V</b></div><div class="kv"><span>线路电流</span><b>未接入</b></div><div class="kv"><span>恢复倒计时</span><b>—</b></div></aside></div>`,
-      interface: `<header class="page-head"><div><h1>接口通信</h1><p>多系统连接状态、通信周期与报文统计</p></div><button class="button" onclick="showToast('✓ 日志导出功能待实现')">导出通信日志</button></header><div class="page-body" style="grid-template-rows:auto 1fr;padding:0 28px"><div class="topology"><div class="node" id="topoNode_vehicle_udp">车辆UDP<br><small>UDP · 20ms</small><br><span id="topoStatus_vehicle_udp"><i class="dot off"></i>未连接</span></div><div class="node" id="topoNode_signal_gateway">信号网关<br><small>UDP · 250ms</small><br><span id="topoStatus_signal_gateway"><i class="dot off"></i>未连接</span></div><div class="node core">仿真核心<br><small>接口网关</small><br><span style="color:var(--green);font-size:10px">● 运行中</span></div><div class="node" id="topoNode_plc">司机台PLC<br><small>TCP · 100ms</small><br><span id="topoStatus_plc"><i class="dot off"></i>未连接</span></div><div class="node" id="topoNode_cab_display">司机台显示<br><small>TCP · 100ms</small><br><span id="topoStatus_cab_display"><i class="dot off"></i>未连接</span></div></div><div style="text-align:center;margin:-8px 0 16px"><div class="node" id="topoNode_vision" style="display:inline-block;padding:8px 28px">视景系统<br><small>UDP · 100ms · 单向</small><br><span id="topoStatus_vision"><i class="dot off"></i>未连接</span></div></div><div style="display:grid;grid-template-columns:1.1fr .9fr;gap:28px;min-height:0"><section><div class="pane-title"><h2>通信状态</h2><span id="interfaceSummary">等待数据</span></div><table class="data-table"><thead><tr><th>子系统</th><th>协议</th><th>周期</th><th>状态</th><th>已发送</th><th>已接收</th><th>延迟</th></tr></thead><tbody id="interfaceTableBody"></tbody></table></section><aside><div class="pane-title"><h2>通信详情</h2><span id="interfaceDetailLabel">实时</span></div><div class="kv-grid" id="interfaceDetailGrid"></div></aside></div></div>`,
+      interface: `<header class="page-head"><div><h1>接口通信</h1><p>多系统连接状态、通信周期与报文统计</p></div><div style="display:flex;align-items:center;gap:12px"><span id="networkToggleStatus" style="color:var(--muted);font-size:11px">网络未启动</span><button class="button" id="networkToggleBtn">联调连接</button><button class="button" onclick="showToast('✓ 日志导出功能待实现')">导出通信日志</button></div></header><div class="page-body" style="grid-template-rows:auto 1fr;padding:0 28px"><div class="topology"><div class="node" id="topoNode_vehicle_udp">车辆UDP<br><small>UDP · 20ms</small><br><span id="topoStatus_vehicle_udp"><i class="dot off"></i>未连接</span></div><div class="node" id="topoNode_signal_gateway">信号网关<br><small>UDP · 250ms</small><br><span id="topoStatus_signal_gateway"><i class="dot off"></i>未连接</span></div><div class="node core">仿真核心<br><small>接口网关</small><br><span style="color:var(--green);font-size:10px">● 运行中</span></div><div class="node" id="topoNode_plc">司机台PLC<br><small>TCP · 100ms</small><br><span id="topoStatus_plc"><i class="dot off"></i>未连接</span></div><div class="node" id="topoNode_cab_display">司机台显示<br><small>TCP · 100ms</small><br><span id="topoStatus_cab_display"><i class="dot off"></i>未连接</span></div></div><div style="text-align:center;margin:-8px 0 16px"><div class="node" id="topoNode_vision" style="display:inline-block;padding:8px 28px">视景系统<br><small>UDP · 100ms · 单向</small><br><span id="topoStatus_vision"><i class="dot off"></i>未连接</span></div></div><div style="display:grid;grid-template-columns:1.1fr .9fr;gap:28px;min-height:0"><section><div class="pane-title"><h2>通信状态</h2><span id="interfaceSummary">等待数据</span></div><table class="data-table"><thead><tr><th>子系统</th><th>协议</th><th>周期</th><th>状态</th><th>已发送</th><th>已接收</th><th>延迟</th></tr></thead><tbody id="interfaceTableBody"></tbody></table></section><aside><div class="pane-title"><h2>通信详情</h2><span id="interfaceDetailLabel">实时</span></div><div class="kv-grid" id="interfaceDetailGrid"></div><div class="pane-title" style="margin-top:18px"><h2>发送报文</h2><span id="sentPacketLabel">Hex</span></div><div class="hexbox" id="interfaceSentHex" style="font-size:11px;max-height:145px;overflow:auto;white-space:pre-wrap"></div><div class="pane-title" style="margin-top:12px"><h2>接收报文</h2><span id="recvPacketLabel">Hex</span></div><div class="hexbox" id="interfaceRecvHex" style="font-size:11px;max-height:145px;overflow:auto;white-space:pre-wrap"></div></aside></div></div>`,
       scene: `<header class="page-head"><div><h1>数据与场景</h1><p>线路数据总览、运行环境与故障演示配置</p></div><button class="button active" data-demo="场景配置已应用">应用当前场景</button></header><div class="page-body" style="display:block;padding:24px 28px"><div class="kv-grid" style="grid-template-columns:repeat(4,1fr);gap:24px"><div><div class="eyebrow">STATIONS</div><div class="score">13</div><span style="color:var(--muted)">运营车站</span></div><div><div class="eyebrow">SEGMENTS</div><div class="score">319</div><span style="color:var(--muted)">轨道区段</span></div><div><div class="eyebrow">SWITCHES</div><div class="score">60</div><span style="color:var(--muted)">道岔组</span></div><div><div class="eyebrow">SIGNALS</div><div class="score">157</div><span style="color:var(--muted)">信号设备</span></div></div><div class="pane-title" style="margin-top:34px"><h2>运行场景</h2><span>选择一个演示配置</span></div><div class="scene-grid"><div class="scene active"><span class="status">READY</span><h3>正常早高峰</h3><p>3 列车 · ATO · 正常供电</p></div><div class="scene"><span class="status warn">FAULT</span><h3>区段占用冲突</h3><p>验证进路拒绝与解释反馈</p></div><div class="scene"><span class="status stop">FAULT</span><h3>牵引供电中断</h3><p>PS-03 区段模拟断电</p></div><div class="scene"><span class="status warn">WEATHER</span><h3>低黏着运行</h3><p>雨雪天气 · 制动距离增加</p></div><div class="scene"><span class="status off">COMMS</span><h3>视景通信中断</h3><p>UDP 接收超时与告警</p></div><div class="scene"><span class="status">CUSTOM</span><h3>自定义场景</h3><p>配置列车、位置与故障组合</p></div></div></div>`,
       replay: `<header class="page-head"><div><h1>运行回放与评价</h1><p>记录 2026-07-12 · 场景：正常早高峰 · 时长 18分42秒</p></div><div><button class="button">导出报告</button> <button class="button active">开始回放</button></div></header><div class="page-body split"><section class="pane"><div class="timeline"><button class="button">▶</button><time>09:42:31</time><div class="track"><span></span><i></i></div><time>09:49:12</time></div><div class="pane-title" style="margin-top:22px"><h2>速度回放 · 2车</h2><span>允许速度 / 实际速度</span></div><div class="chart" style="height:300px"><svg viewBox="0 0 800 280" preserveAspectRatio="none"><path d="M0 225 C80 210 95 80 190 90 S300 190 390 82 S520 65 600 145 S720 90 800 55" fill="none" stroke="#39d0d8" stroke-width="3"/><path d="M0 55 H180 V38 H390 V72 H590 V45 H800" fill="none" stroke="#e9b44c" stroke-width="2" stroke-dasharray="8 6"/><line x1="510" x2="510" y1="0" y2="280" stroke="#ff5b62" stroke-dasharray="3 4"/></svg></div><div class="log-row" style="margin-top:10px"><time>09:42:29</time><span class="warn">事件</span><span>2车进路建立，进入良乡大学城区间</span></div></section><aside class="pane"><div class="eyebrow">OPERATION SCORE</div><div class="score">92<small> / 100</small></div><div class="kv"><span>停车精度</span><b>96</b></div><div class="kv"><span>运行平稳性</span><b>91</b></div><div class="kv"><span>安全操作</span><b>100</b></div><div class="kv"><span>能耗表现</span><b>83</b></div><div class="pane-title" style="margin-top:28px"><h2>关键事件</h2><span>3 条</span></div><div class="device-list"><div class="device"><code>09:38</code><div>停车误差 +0.32 m</div><span class="status">正常</span></div><div class="device"><code>09:42</code><div>进路 R-202 建立</div><span class="status">成功</span></div><div class="device"><code>09:45</code><div>接近限速 · 提前制动</div><span class="status warn">提示</span></div></div></aside></div>`
     };
@@ -314,6 +314,29 @@
       const stats=liveState?.network_stats;
       if(!stats||!$('interfaceTableBody'))return;
       const net=liveState.network||{};
+      // Update network toggle button state
+      const started=liveState.network_started;
+      const btn=$('networkToggleBtn');
+      const statusLabel=$('networkToggleStatus');
+      if(btn){
+        btn.textContent=started?'断开连接':'联调连接';
+        btn.className='button'+(started?' danger':'');
+        // Attach click handler (re-attach each render to avoid stale closures)
+        btn.onclick=async()=>{
+          const isStarting=btn.textContent==='联调连接';
+          btn.disabled=true;
+          btn.textContent='操作中...';
+          try{
+            const ep=isStarting?'/api/network/start':'/api/network/stop';
+            const r=await(await fetch(ep,{method:'POST'})).json();
+            showToast(r.message||(isStarting?'连接已启动':'连接已断开'));
+          }catch(e){showToast('操作失败: '+e.message);}
+          btn.disabled=false;
+        };
+      }
+      if(statusLabel){
+        statusLabel.textContent=started?'网络已启动 - 等待连接':statusLabel.textContent;
+      }
       let totalSent=0,totalRecv=0,connectedCount=0;
       INTERFACE_KEYS.forEach(key=>{
         const s=stats[key];
@@ -334,6 +357,16 @@
         }
       });
       $('interfaceSummary').textContent=`${connectedCount}/5 已连接 · 发送 ${totalSent} · 接收 ${totalRecv}`;
+      // Update status label with real connections
+      const isStarted=liveState.network_started;
+      const l=$('networkToggleStatus');
+      if(l){
+        if(!isStarted)l.textContent='网络未启动';
+        else if(connectedCount>0)l.textContent=`已连接 ${connectedCount}/5 子系统`;
+        else l.textContent='网络已启动 - 等待连接';
+      }
+      // Log raw data to console for F12 inspection
+      if($('interfaceTableBody'))console.log('[接口通信] network_stats:', JSON.parse(JSON.stringify(stats)));
       // Build table
       const rows=INTERFACE_KEYS.map(key=>{
         const s=stats[key];
@@ -353,6 +386,7 @@
         if(!tr)return;
         $('interfaceTableBody').querySelectorAll('tr').forEach(x=>x.classList.remove('selected'));
         tr.classList.add('selected');
+        console.log('[接口通信] 选中子系统详情:', JSON.parse(JSON.stringify(stats[tr.dataset.iface])));
         renderInterfaceDetail(stats[tr.dataset.iface]);
       };
       // Show first detail
@@ -377,6 +411,25 @@
         {k:'最近接收',v:s.last_recv_ago!=null?`${s.last_recv_ago} ms 前`:'从未'},
       ];
       $('interfaceDetailGrid').innerHTML=items.map(item=>`<div class="kv"><span>${item.k}</span><b>${item.v}</b></div>`).join('');
+      // Hex dump
+      const sentHex=s.last_sent_packet_hex||'';
+      const recvHex=s.last_recv_packet_hex||'';
+      $('interfaceSentHex').textContent=sentHex||'（暂无发送报文）';
+      $('interfaceRecvHex').textContent=recvHex||'（暂无接收报文）';
+      const sentBytes=sentHex?(sentHex.split(/\s+/).length||0):0;
+      const recvBytes=recvHex?(recvHex.split(/\s+/).length||0):0;
+      $('sentPacketLabel').textContent=sentBytes?`${sentBytes} B`:'Hex';
+      $('recvPacketLabel').textContent=recvBytes?`${recvBytes} B`:'Hex';
+      // cab_display 额外显示两个屏的报文
+      if(s.last_network_packet_hex){
+        $('sentPacketLabel').textContent='网络屏 '+(sentBytes?`${sentBytes} B`:'');
+        // 在发送报文下方追加信号屏hex
+        const extraHex=s.last_signal_packet_hex||'';
+        if(extraHex){
+          $('interfaceSentHex').textContent='--- 网络屏 ---\n'+(sentHex||'')+'\n\n--- 信号屏 ---\n'+extraHex;
+          $('sentPacketLabel').textContent='网络/'+((extraHex.split(/\s+/).length||0)+sentBytes)+' B';
+        }
+      }
     }
     function renderLogs(){if(!liveState)return;const trainIds=liveState.trains.map(t=>t.id);$('logFilters').innerHTML=`<button class="${logTrain===''?'active':''}" data-log-train="">全部日志</button><button class="${logTrain==='system'?'active':''}" data-log-train="system">系统</button>${trainIds.map(id=>`<button class="${logTrain===id?'active':''}" data-log-train="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join('')}`;const filtered=(liveState.events||[]).filter(e=>logTrain===''||(logTrain==='system'?!e.train_id:e.train_id===logTrain)).slice().reverse();$('logCount').textContent=`${filtered.length} 条 · 最近 120 条`;if(!filtered.length){$('eventLog').innerHTML='<div class="log-empty">当前筛选下暂无日志</div>';return;}$('eventLog').innerHTML=filtered.map(e=>{const level=e.severity==='CRITICAL'?'critical':e.severity==='WARNING'?'warn':'ok';const minutes=String(Math.floor(e.timestamp/60)).padStart(2,'0'),secs=(e.timestamp%60).toFixed(1).padStart(4,'0');return `<div class="log-row"><time>${minutes}:${secs}</time><span class="${level}">${escapeHtml(e.severity)}</span><span>${escapeHtml(e.train_id||'系统')}</span><span>${escapeHtml(e.description)}</span><span>${escapeHtml(e.source)}</span><span>${e.speed?`${(e.speed*3.6).toFixed(1)} km/h`:'—'}</span></div>`}).join('');}
     connectBackend();
