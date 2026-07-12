@@ -118,12 +118,12 @@ def pack_signal_switch_signal(
     """
     content = bytearray()
     # 道岔数据
-    sw_len = 2 + len(switches) * 3
+    sw_len = len(switches) * 3
     content.extend(struct.pack("<H", sw_len))
     for sid, state in switches:
         content.extend(struct.pack("<HB", sid, state))
     # 信号机数据
-    sig_len = 2 + len(signals) * 3
+    sig_len = len(signals) * 3
     content.extend(struct.pack("<H", sig_len))
     for sid, aspect in signals:
         content.extend(struct.pack("<HB", sid, aspect))
