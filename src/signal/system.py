@@ -78,17 +78,17 @@ class SignalSystem:
     def update_from_dispatch(self, signals: list, track,
                              occupancy: dict[int, frozenset[str]],
                              locks: dict[int, str]):
-        """根据区段占用和调度进路锁闭生成联锁信号显示。"""
+        """根据区段占用和调度进路锁闭生成联锁信号显示。
+
+        信号仅对占用亮红灯，锁闭由联锁系统保证互斥，
+        不因段未被锁而亮红灯，避免滚动进路死锁。
+        """
         if not signals:
             return
-        route_mode = bool(locks)
         for signal in signals:
             protected = self._protected_segment_id(signal, track)
             if protected in occupancy:
                 aspect = SignalAspect.RED
-            elif route_mode:
-                aspect = (SignalAspect.GREEN if protected in locks
-                          else SignalAspect.RED)
             else:
                 aspect = SignalAspect.GREEN
             self.set_signal_aspect(signal.signal_id, aspect)

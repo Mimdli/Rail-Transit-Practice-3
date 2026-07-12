@@ -64,8 +64,9 @@ class TestCodec:
 
     def test_plc_unpack(self):
         buf = bytearray(46)
-        struct.pack_into("<H", buf, 24, 0x0045)
-        struct.pack_into("<H", buf, 26, 0x0001)
+        # 兼容字段 handle_position 对应牵引级位 WORD8，即整包偏移 40。
+        struct.pack_into("<H", buf, 40, 0x0045)
+        struct.pack_into("<H", buf, 36, 0x0002)  # WORD6 bit1：方向向前
         result = codec.unpack_plc_data(bytes(buf))
         assert result is not None
         assert result["handle_position"] == 0x45
@@ -358,8 +359,9 @@ def test_plc_receive():
 
         conn, addr = server.accept()
         buf = bytearray(46)
-        struct.pack_into("<H", buf, 24, 0x0045)
-        struct.pack_into("<H", buf, 26, 0x0001)
+        # 兼容字段 handle_position 对应牵引级位 WORD8，即整包偏移 40。
+        struct.pack_into("<H", buf, 40, 0x0045)
+        struct.pack_into("<H", buf, 36, 0x0002)  # WORD6 bit1：方向向前
         conn.sendall(bytes(buf))
         time.sleep(0.4)
 

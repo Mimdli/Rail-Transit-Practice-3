@@ -297,16 +297,81 @@ pip install -r requirements.txt
 
 ### 运行程序
 
+启动桌面 Qt 程序：
+
 ```bash
 python -m src.main
 ```
-# 终端1: 桌面端
-cd e:\2025py\shixun3\Rail-Transit-Practice-3
-py -3.13 -m src.main
 
-# 终端2: Web端
-cd e:\2025py\shixun3\Rail-Transit-Practice-3\web-ats
-py -3.13 -m http.server 8080
+### 运行 Web ATS
+
+Web ATS 必须由 FastAPI 后端提供页面和实时线路数据，不能直接双击
+`web-ats/index.html`，也不能只使用普通静态文件服务器打开。
+
+首次运行先安装项目依赖：
+
+```bash
+pip install -r requirements.txt
+```
+
+仅在当前电脑使用时启动：
+
+```bash
+python -m uvicorn src.web.app:app --host 127.0.0.1 --port 8765
+```
+
+浏览器访问：
+
+```text
+http://127.0.0.1:8765/
+```
+
+如果需要让同一局域网内的其他电脑访问，服务端应监听全部网络接口：
+
+```bash
+python -m uvicorn src.web.app:app --host 0.0.0.0 --port 8765
+```
+
+其他电脑使用服务端的局域网 IP 访问，例如：
+
+```text
+http://192.168.1.20:8765/
+```
+
+若页面一直显示“线路拓扑加载中”，依次检查以下接口：
+
+```text
+http://127.0.0.1:8765/api/health
+http://127.0.0.1:8765/api/snapshot
+```
+
+- `/api/health` 应返回 `"ok": true`。
+- `/api/snapshot` 应包含 `line`、`line.directions.up` 和
+  `line.directions.down`。
+- 局域网访问时，将上述地址中的 `127.0.0.1` 替换为服务端 IP，并确认
+  Windows 防火墙允许 TCP 端口 `8765`。
+- 修改或拉取前端代码后，应重启 Uvicorn 并刷新浏览器页面。
+
+Web ATS 当前支持：
+
+- WebSocket 100 ms 实时快照，断线时自动降级为 HTTP 轮询；
+- 多列车调度、命令结果与拒绝原因、紧急停车确认；
+- 可点击 Link 区段详情、列车和信号图层、线路缩放和平移；
+- 正常、低电压、断电、占用冲突、低黏着和通信中断六种场景；
+- 500 ms 采样的运行回放、速度曲线、事件统计和基础安全评分；
+- 实际接口连接状态、活动报警统计和 CSV 运行日志导出。
+
+场景与回放接口：
+
+```text
+POST /api/scenarios/{scenario_id}
+GET  /api/replay
+```
+
+可用的 `scenario_id` 为 `normal`、`low_voltage`、`power_outage`、
+`occupancy_conflict`、`low_adhesion` 和 `communication_outage`。切换场景时
+会清除上一个场景的注入状态，避免多种故障意外叠加。
+
 ### 调度中心演示
 
 1. 打开「调度中心」，输入车号并选择上行/下行和加入车站；界面会显示对应站台 Seg。
@@ -353,13 +418,13 @@ pytest tests/ -v
 | **Should** | 交路停站、终端换端和自动折返 | ✅ 完成 |
 | **Could** | 天气影响、载荷模式、黏着控制 | ✅ 完成 |
 | **Could** | 网络通信接口（UDP/信号网关/PLC） | 🔧 框架预留 |
-| **Could** | Web 线路可视化原型 | 🚧 开发中 |
+| **Could** | Web ATS 实时监控、场景注入与基础回放 | ✅ 完成 |
 | **Won't** | 完整 CBTC、完整联锁表、真实供电网络 | — |
 
 ## 后续扩展方向
 
 - **网络模式接入**：将 `NetworkManager` 与实际外部硬件联调
-- **Web 可视化完善**：`web/` 目录下的 Web 原型继续开发
+- **Web 工程化扩展**：继续将页面模板和图形渲染拆分为独立模块
 - **CBTC 移动闭塞**：从简化固定闭塞升级为移动闭塞
 - **完整联锁表**：支持真实联锁进路逻辑
 - **多工作站调度**：增加调度员、车站值班员权限与控制权转换

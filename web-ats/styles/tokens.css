@@ -1,0 +1,14 @@
+/* Web ATS 设计令牌：集中维护工业监控界面的颜色与语义状态。 */
+:root {
+  --bg: #080d11;
+  --panel: #0d1419;
+  --panel-2: #101a20;
+  --line: #24323b;
+  --text: #dce8ed;
+  --muted: #73858e;
+  --cyan: #39d0d8;
+  --red: #ff5b62;
+  --amber: #e9b44c;
+  --green: #5bd28a;
+  --rail: #43545e;
+}

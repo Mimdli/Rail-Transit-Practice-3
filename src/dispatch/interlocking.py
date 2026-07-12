@@ -13,13 +13,23 @@ class BlockOccupancyManager:
 
     def __init__(self):
         self._occupied: dict[int, set[str]] = {}
+        self._injected: dict[int, set[str]] = {}
 
     def update(self, trains: Iterable[TrainRuntime]):
         occupied: dict[int, set[str]] = {}
         for runtime in trains:
             for state in runtime.controller.states:
                 occupied.setdefault(state.position.segment_id, set()).add(runtime.train_id)
+        for segment_id, owners in self._injected.items():
+            occupied.setdefault(segment_id, set()).update(owners)
         self._occupied = occupied
+
+    def inject(self, segment_id: int, owner: str):
+        """注入可追踪的实训占用，用于验证联锁拒绝逻辑。"""
+        self._injected.setdefault(segment_id, set()).add(owner)
+
+    def clear_injected(self):
+        self._injected.clear()
 
     def owners(self, segment_id: int) -> frozenset[str]:
         return frozenset(self._occupied.get(segment_id, set()))

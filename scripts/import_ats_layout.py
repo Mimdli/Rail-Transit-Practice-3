@@ -23,7 +23,7 @@ def _integer(value) -> int:
 
 def _direction(value) -> str:
     text = str(value).strip().lower()
-    return "down" if text in ("0x55", "85") else "up"
+    return "up" if text in ("0x55", "85") else "down"
 
 
 def load_layout(source: Path) -> dict:
