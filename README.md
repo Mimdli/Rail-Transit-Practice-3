@@ -300,7 +300,13 @@ pip install -r requirements.txt
 ```bash
 python -m src.main
 ```
+# 终端1: 桌面端
+cd e:\2025py\shixun3\Rail-Transit-Practice-3
+py -3.13 -m src.main
 
+# 终端2: Web端
+cd e:\2025py\shixun3\Rail-Transit-Practice-3\web-ats
+py -3.13 -m http.server 8080
 ### 调度中心演示
 
 1. 打开「调度中心」，输入车号并选择上行/下行和加入车站；界面会显示对应站台 Seg。
