@@ -142,6 +142,7 @@ class SimulationRuntime:
                 "tractionCapability": self.power_supply.get_traction_limit(),
             },
             "network": self.network.connection_status,
+            "network_stats": self.network.network_stats,
             "stations": [
                 {"id": item.station_id, "name": item.name,
                  "position": item.position}

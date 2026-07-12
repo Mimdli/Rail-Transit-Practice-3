@@ -39,6 +39,10 @@ class CabDisplayClient:
 
         self.connected = False
 
+        # 统计信息 (纯发送，无接收)
+        self.packets_sent = 0
+        self.last_send_time = 0.0
+
     def set_network_data_source(self, source: Callable[[], dict]):
         """设置网络屏数据源"""
         self._network_data_source = source
@@ -109,6 +113,8 @@ class CabDisplayClient:
                         )
                         if self._send_tcp(CAB_DISPLAY_ADDR, CAB_NETWORK_SCREEN_PORT, packet):
                             has_network = True
+                            self.packets_sent += 1
+                            self.last_send_time = time.time()
 
                 # --- 信号屏 (66 bytes → 总控:9999) ---
                 if self._signal_data_source:
@@ -135,6 +141,8 @@ class CabDisplayClient:
                         )
                         if self._send_tcp(CAB_DISPLAY_ADDR, CAB_SIGNAL_SCREEN_PORT, packet):
                             has_signal = True
+                            self.packets_sent += 1
+                            self.last_send_time = time.time()
 
                 self.connected = has_network or has_signal
 

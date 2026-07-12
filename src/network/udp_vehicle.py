@@ -46,6 +46,12 @@ class VehicleUDPClient:
         self.connected = False
         self._last_recv_time = 0.0
 
+        # 统计信息
+        self.packets_sent = 0
+        self.packets_received = 0
+        self.last_send_time = 0.0
+        self.last_recv_time = 0.0
+
     @property
     def last_commands(self) -> list[tuple[float, float]]:
         """最近一次收到的平台指令列表"""
@@ -102,6 +108,8 @@ class VehicleUDPClient:
                     trains = self._send_data_source()
                     data = pack_vehicle_udp(trains)
                     self._sock.sendto(data, remote)
+                    self.packets_sent += 1
+                    self.last_send_time = time.time()
                 except Exception as e:
                     logger.debug("车辆UDP发送失败: %s", e)
 
@@ -113,6 +121,7 @@ class VehicleUDPClient:
                 if self._recv_callback:
                     self._recv_callback(commands)
                 self._last_recv_time = time.time()
+                self.packets_received += 1
                 self.connected = True
             except socket.timeout:
                 pass

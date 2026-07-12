@@ -41,6 +41,12 @@ class SignalGateway:
         self.connected = False
         self._last_recv_time = 0.0
 
+        # 统计信息
+        self.packets_sent = 0
+        self.packets_received = 0
+        self.last_send_time = 0.0
+        self.last_recv_time = 0.0
+
     def set_send_source(self, source: Callable[[], tuple[list, list]]):
         """设置发送数据源，返回 (switches, signals)"""
         self._send_source = source
@@ -94,6 +100,8 @@ class SignalGateway:
                         switches, signals = self._send_source()
                         data = pack_signal_switch_signal(switches, signals)
                         self._sock.sendto(data, remote)
+                        self.packets_sent += 1
+                        self.last_send_time = time.time()
                     except Exception as e:
                         logger.debug("信号网关发送失败: %s", e)
 
@@ -103,6 +111,7 @@ class SignalGateway:
                 if self._recv_callback:
                     self._recv_callback(data)
                 self._last_recv_time = time.time()
+                self.packets_received += 1
                 self.connected = True
             except socket.timeout:
                 pass
