@@ -211,7 +211,7 @@ def unpack_plc_data(data: bytes) -> Optional[dict]:
     if len(data) < 46:
         return None
 
-    # 24字节报文头 (可校验 _uIdentify=0x55AA55AA, _uTotalLen=46)
+    # 24字节报文头 (可校验 _uIdentify=0xAA55AA55, _uTotalLen=46)
     # 数据区从偏移24开始，共22字节 = 11 WORD
     words = struct.unpack_from("<" + "H" * 11, data, 24)
 
@@ -317,7 +317,7 @@ def pack_plc_output(
     """
     t = _time.localtime(_time.time())
     header = struct.pack("<" + "I" + "H" * 10,
-        0x55AA55AA,                      # _uIdentify (4B)
+        0xAA55AA55,                      # _uIdentify (4B) 现场PLC发送55 AA 55 AA
         26,                               # _uTotalLen (2B) = 26
         26 - 8,                           # _uDataLen (2B) = 18
         t.tm_year,                        # _uYear

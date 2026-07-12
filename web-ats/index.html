@@ -195,22 +195,23 @@
     <section class="workspace">
       <aside class="sidebar">
         <p class="section-label">运行控制</p>
-        <nav class="nav">
-          <button class="active" data-page="overview">综合运行总览 <span class="num">01</span></button><button data-page="dispatch">调度控制 <span class="num">02</span></button><button data-page="train">单车运行监控 <span class="num">03</span></button><button data-page="signal">信号与联锁 <span class="num">04</span></button><button data-page="power">供电监控 <span class="num">05</span></button><button data-page="drive">司控器驾驶 <span class="num">09</span></button><button data-page="consist">编组配置 <span class="num">10</span></button>
+        <nav class="nav" aria-label="运行控制">
+          <button class="active" data-page="overview" aria-current="page">综合运行总览</button><button data-page="dispatch">调度控制</button><button data-page="train">单车运行监控</button><button data-page="signal">信号与联锁</button><button data-page="power">供电监控</button>
         </nav>
         <p class="section-label" style="margin-top:24px">系统工具</p>
-        <nav class="nav"><button data-page="interface">接口通信 <span class="num">06</span></button><button data-page="scene">数据与场景 <span class="num">07</span></button><button data-page="replay">回放与评价 <span class="num">08</span></button><button data-page="network">网络通信 <span class="num">11</span></button></nav>
+        <nav class="nav" aria-label="系统工具"><button data-page="interface">接口通信</button><button data-page="scene">数据与场景</button><button data-page="replay">回放与评价</button></nav>
         <div class="sidebar-meta">WEB ATS<br>BUILD 2026.07</div>
       </aside>
 
       <main class="main">
         <div class="toolbar">
-          <div class="view-tabs"><button class="tool active">运营图</button><button class="tool">信号图</button></div>
-          <div class="layer-tools"><button class="tool active">列车</button><button class="tool active">信号</button><button class="tool">限速</button><button class="tool">坡度</button><button class="tool">Link</button></div><div class="zoom-group"><button class="zoom-btn" id="zoomOutBtn" title="缩小">−</button><input type="range" class="zoom-slider" id="zoomSlider" min="50" max="300" value="100" step="10" title="水平缩放"><button class="zoom-btn" id="zoomInBtn" title="放大">+</button><span class="zoom-label" id="zoomLabel">100%</span><button class="zoom-btn" id="zoomResetBtn" title="重置">↺</button></div>
+          <div class="view-tabs"><button class="tool active" data-view="overview" aria-pressed="true">运营图</button><button class="tool" data-view="signal" aria-pressed="false">信号图</button></div>
+          <div class="layer-tools"><button class="tool active" data-layer="trains" aria-pressed="true">列车</button><button class="tool" data-layer="links" aria-pressed="false">Link 编号</button><button class="tool" disabled title="后端尚未提供线路限速曲线">限速</button><button class="tool" disabled title="后端尚未提供坡度曲线">坡度</button></div>
         </div>
         <div class="map">
-          <div class="map-title"><h1>房山线 · 全线运行态势</h1><p id="mapSummary">13 站 · 3 列车在线 · 数据刷新 100 ms</p></div><div class="map-badge"><i class="dot"></i>运营正常</div>
+          <div class="map-title"><h1>全线运行态势</h1><p id="mapSummary">等待实时数据</p></div><div class="map-badge data-health" id="dataHealth"><i class="dot off"></i>正在连接</div>
           <svg class="track-svg" id="overviewTrackSvg" viewBox="0 0 1100 540" role="img" aria-label="后端主干线实时运行图"><text x="550" y="270" text-anchor="middle" fill="#73858e">正在加载后端线路拓扑…</text></svg>
+          <aside class="link-detail" id="linkDetail" hidden aria-live="polite"><header><h2 id="linkDetailTitle">Link 详情</h2><button id="closeLinkDetail" aria-label="关闭区段详情">✕</button></header><dl><dt>方向</dt><dd id="linkDirection">—</dd><dt>里程范围</dt><dd id="linkRange">—</dd><dt>区段长度</dt><dd id="linkLength">—</dd><dt>占用状态</dt><dd id="linkOccupancy">—</dd><dt>锁闭状态</dt><dd id="linkLock">—</dd><dt>邻近车站</dt><dd id="linkStations">—</dd></dl></aside>
           <div class="legend"><span><i class="l-red"></i>列车占用</span><span><i class="l-amber"></i>进路锁闭</span><span><i class="l-cyan"></i>选中列车</span><span><i></i>空闲区段</span></div>
         </div>
       </main>
@@ -220,11 +221,11 @@
         <div class="metrics"><div class="metric"><span>运行方向</span><b id="direction">--</b></div><div class="metric"><span>加速度</span><b id="acceleration">--</b></div><div class="metric"><span>当前区段</span><b id="section">--</b></div><div class="metric"><span>坡度</span><b id="gradient">--</b></div><div class="metric"><span>线路限速</span><b id="limit">--</b></div><div class="metric"><span>牵引力</span><b id="tractiveForce">--</b></div><div class="metric"><span>总制动力</span><b id="brakeForce">--</b></div><div class="metric"><span>电制动</span><b id="electricBrake">--</b></div><div class="metric"><span>空气制动</span><b id="frictionBrake">--</b></div><div class="metric"><span>最大车钩力</span><b id="couplerForce">--</b></div><div class="metric"><span>黏着状态</span><b id="adhesionStatus">--</b></div><div class="metric"><span>停站阶段</span><b id="stationPhase">--</b></div><div class="metric"><span>前方信号</span><b id="signalOverview">--</b></div><div class="metric"><span>下一站 / 站距</span><b id="nextStation">--</b></div><div class="metric"><span>供电状态</span><b class="safe" id="overviewPower">--</b></div><div class="metric"><span>车门状态</span><b id="overviewDoors">--</b></div><div class="metric"><span>天气/黏着</span><b id="overviewWeather">--</b></div><div class="metric"><span>编组</span><b id="overviewConsist">--</b></div><div class="metric"><span>牵引电耗</span><b id="overviewTractionEnergy">--</b></div><div class="metric"><span>再生回收</span><b id="overviewRegenEnergy">--</b></div><div class="metric"><span>净能耗 / 吨公里</span><b id="overviewNetEnergy">--</b></div></div>
         <div class="inspector-actions"><button class="button" id="detailBtn">单车详情</button><button class="button danger" id="emergencyBtn">紧急停车</button></div>
       </aside>
-      <section class="subpage" id="subpage" aria-live="polite"></section>
+      <section class="subpage" id="subpage"></section>
     </section>
 
     <footer class="dock">
-      <div class="alarm-count"><strong id="alarmScore">--</strong><div><b>运行评分</b><br><span style="color:#697a83" id="alarmGrade">等待数据</span></div></div>
+      <div class="alarm-count"><strong id="alarmCount">0</strong><div><b>活动报警</b><br><span id="alarmSummary" style="color:#697a83">等待实时统计</span></div></div>
       <div class="dock-main"><div class="dock-tabs"><div class="log-filters" id="logFilters"><button class="active" data-log-train="">全部日志</button><button data-log-train="system">系统</button></div><span id="logCount">等待实时日志</span></div><div class="log" id="eventLog"><div class="log-empty">正在连接仿真后端…</div></div></div>
     </footer>
   </div>

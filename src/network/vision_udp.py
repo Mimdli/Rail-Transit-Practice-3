@@ -38,6 +38,14 @@ class VisionUDPClient:
         self._data_source: Optional[Callable[[], dict]] = None
 
         self.connected = False
+        self._last_send_time = 0.0
+
+        # 统计信息 (纯发送，无接收)
+        self.packets_sent = 0
+        self.last_send_time = 0.0
+
+        # 最近发送的原始报文（hex dump用）
+        self.last_sent_packet: bytes = b''
 
     def set_data_source(self, source: Callable[[], dict]):
         """设置数据源回调，返回包含 TCMS2VIEW 各字段的 dict"""
@@ -92,12 +100,14 @@ class VisionUDPClient:
                             other_trains=data.get("other_trains"),
                         )
                         self._sock.sendto(packet, remote)
-                        self.connected = True
+                        self.last_sent_packet = packet
+                        self.packets_sent += 1
+                        self.last_send_time = time.time()
+                        self._last_send_time = time.time()
                         if self._live_counter % 100 == 0:
                             logger.debug("视景UDP已发送 %d 报文", self._live_counter)
                 except Exception as e:
                     logger.debug("视景UDP发送失败: %s", e)
-                    self.connected = False
 
             elapsed = (time.perf_counter() - cycle_start) * 1000
             sleep_ms = max(0, VISION_CYCLE_MS - elapsed)

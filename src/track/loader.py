@@ -74,17 +74,17 @@ def _cm_s_to_m_s(cm_s_val) -> float:
 
 
 def _parse_direction(hex_val) -> str:
-    """解析方向: 0x55=down, 0xaa=up"""
+    """解析方向: 0x55=up(上行), 0xaa=down(下行)  依据接口协议"""
     if isinstance(hex_val, str):
         hex_val = hex_val.strip().lower()
         if hex_val in ("0x55", "0xaa"):
-            return "down" if hex_val == "0x55" else "up"
+            return "up" if hex_val == "0x55" else "down"
     try:
         v = int(float(str(hex_val)))
         if v == 0x55:
-            return "down"
-        elif v == 0xaa:
             return "up"
+        elif v == 0xaa:
+            return "down"
     except (ValueError, TypeError):
         pass
     return "down"

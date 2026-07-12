@@ -149,8 +149,9 @@ def test_dispatch_lock_and_occupancy_drive_signal_aspects():
     ss = SignalSystem()
 
     ss.update_from_dispatch(signals, track, {}, {2: "1车"})
-    assert ss.get_signal_aspect(signals[0]) == SignalAspect.YELLOW
-    assert ss.get_signal_aspect(signals[1]) == SignalAspect.RED
+    # 仅进路锁闭不产生红灯，避免滚动进路因未锁区段形成死锁。
+    assert ss.get_signal_aspect(signals[0]) == SignalAspect.GREEN
+    assert ss.get_signal_aspect(signals[1]) == SignalAspect.GREEN
 
     ss.update_from_dispatch(signals, track, {2: frozenset({"2车"})}, {2: "1车"})
     assert ss.get_signal_aspect(signals[0]) == SignalAspect.RED

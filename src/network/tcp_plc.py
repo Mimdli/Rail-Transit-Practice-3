@@ -39,6 +39,16 @@ class PLCClient:
         self._last_plc_data: Optional[dict] = None
         self.connected = False
 
+        # 统计信息
+        self.packets_sent = 0
+        self.packets_received = 0
+        self.last_send_time = 0.0
+        self.last_recv_time = 0.0
+
+        # 最近收发的原始报文（hex dump用）
+        self.last_sent_packet: bytes = b''
+        self.last_recv_packet: bytes = b''
+
     @property
     def last_plc_data(self) -> Optional[dict]:
         return self._last_plc_data
@@ -72,12 +82,17 @@ class PLCClient:
             if s:
                 try:
                     s.sendall(data)
+                    self.packets_sent += 1
+                    self.last_sent_packet = data
+                    self.last_send_time = time.time()
                 except Exception:
                     pass
 
     def _run(self):
-        # 连接三个端口
+        # 连接三个端口（port <= 0 的跳过）
         for i, port in enumerate(self._ports):
+            if port <= 0:
+                continue
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.settimeout(3.0)
@@ -106,6 +121,9 @@ class PLCClient:
                         parsed = unpack_plc_data(data)
                         if parsed:
                             self._last_plc_data = parsed
+                            self.last_recv_packet = data
+                            self.packets_received += 1
+                            self.last_recv_time = time.time()
                             if self._recv_callback:
                                 self._recv_callback(parsed)
                 except socket.timeout:

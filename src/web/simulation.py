@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from collections import deque
 from contextlib import suppress
 from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 MAX_CHART_POINTS = 600   # 60s at 10Hz
@@ -20,9 +22,11 @@ from src.signal.system import SignalAspect, SignalSystem
 from src.track.db_loader import DBLoader
 from src.track.link_mainline import LinkCoordinateMapper, load_mainline_links
 from src.track.loader import TrackLoader
+from src.common.track_position import TrackPosition
 from src.track.semantic_line import build_semantic_line
 from src.vehicle.enums import DoorSide, RunningMode
 from src.vehicle.environment import MockEnvironment, WeatherType
+from src.vehicle.environment import WeatherType
 
 
 class SimulationRuntime:
@@ -46,6 +50,11 @@ class SimulationRuntime:
             self.track, self.recorder, self.signal_system)
         self.paused = False
         self.speed_multiplier = 1
+        self._snapshot_sequence = 0
+        self.active_scenario = "normal"
+        self.network_fault_injected = False
+        self.replay_frames: deque[dict] = deque(maxlen=1200)
+        self._last_replay_sample = -1.0
         self._task: Optional[asyncio.Task] = None
         self.evaluator = Evaluator()
         self._last_signal_aspects: dict[str, SignalAspect] = {}
@@ -81,6 +90,7 @@ class SimulationRuntime:
             },
         }
         self.current_scene: str = "normal_peak"
+        self.network_started = False
         self._initialize_dispatch()
 
     def _initialize_dispatch(self):
@@ -230,6 +240,84 @@ class SimulationRuntime:
         self.network.stop()
         self.recorder.close()
 
+    def network_connect(self) -> dict:
+        """启动所有网络通信模块"""
+        if self.network_started:
+            return {"ok": True, "message": "网络已连接"}
+        self._setup_network_sources()
+        self.network.start()
+        self.network_started = True
+        self.recorder.record("网络", "Web ATS 启动联调网络连接", severity="INFO")
+        return {"ok": True, "message": "网络连接已启动"}
+
+    def _setup_network_sources(self):
+        """连接仿真数据到网络模块的数据源"""
+        from src.signal.system import SignalAspect
+
+        # 1. 车辆UDP：发送所有列车位置
+        def _vehicle_source():
+            trains = []
+            for runtime in self.dispatch.trains.values():
+                ctrl = runtime.controller
+                if ctrl.states:
+                    s = ctrl.states[0]
+                    trains.append((s.acceleration, ctrl.head_speed, runtime.head_abs))
+                else:
+                    trains.append((0.0, 0.0, 0.0))
+            # 补齐20列车（UDP协议固定20槽）
+            while len(trains) < 20:
+                trains.append((0.0, 0.0, 0.0))
+            return trains[:20]
+
+        self.network.set_vehicle_send_source(_vehicle_source)
+
+        # 2. 信号网关：发送道岔/信号状态
+        def _signal_source():
+            switches = []   # [(id, state)] — 暂不发送道岔
+            _aspect_map = {
+                SignalAspect.RED: 0x01,
+                SignalAspect.YELLOW: 0x02,
+                SignalAspect.GREEN: 0x04,
+            }
+            signals = [
+                (s.signal_id, _aspect_map.get(
+                    self.signal_system.get_signal_aspect(s), 0x00))
+                for s in self.track.signals
+            ]
+            return (switches, signals[:20])
+
+        self.network.set_signal_send_source(_signal_source)
+
+        # 3. 信号网关接收回调：记录日志
+        _last_signal_data = [None]
+
+        def _on_signal_recv(data: bytes):
+            _last_signal_data[0] = data
+            self.recorder.record("信号网关", f"收到 {len(data)} 字节", severity="INFO")
+
+        self.network.set_signal_recv_callback(_on_signal_recv)
+
+        # 4. PLC 接收回调
+        def _on_plc_recv(data: dict):
+            self.recorder.record("PLC", str(data), severity="INFO")
+
+        self.network.set_plc_recv_callback(_on_plc_recv)
+
+        # 5. 视景系统数据源：使用默认内部数据生成
+        #    VisionUDPClient 内部已有 TCMS2VIEW 数据生成逻辑，无需手动设置
+
+        # 6. 司机台显示屏数据源：使用默认内部数据生成
+        #    CabDisplayClient 内部已有网络屏/信号屏数据生成逻辑，无需手动设置
+
+    def network_disconnect(self) -> dict:
+        """断开所有网络通信模块"""
+        if not self.network_started:
+            return {"ok": True, "message": "网络已断开"}
+        self.network.stop()
+        self.network_started = False
+        self.recorder.record("网络", "Web ATS 断开联调网络连接", severity="INFO")
+        return {"ok": True, "message": "网络连接已断开"}
+
     async def _run(self):
         while True:
             if not self.paused:
@@ -248,6 +336,7 @@ class SimulationRuntime:
                     self._feed_chart_buffers()
                 self.power_supply.step(dt)
                 self.recorder.step(dt)
+                self._record_replay_frame()
             await asyncio.sleep(self.STEP_SECONDS)
 
     def _step_fast_forward(self, dt: float):
@@ -774,7 +863,87 @@ class SimulationRuntime:
             "simTime": round(self.dispatch.sim_time, 2),
         }
 
+    def apply_scenario(self, scenario_id: str) -> dict:
+        """应用可重复演示的故障场景，并记录到运行日志。"""
+        labels = {
+            "normal": "正常运行", "power_outage": "牵引供电中断",
+            "low_voltage": "低电压运行", "occupancy_conflict": "区段占用冲突",
+            "low_adhesion": "低黏着运行", "communication_outage": "通信中断",
+        }
+        label = labels.get(scenario_id)
+        if label is None:
+            return {"ok": False, "message": f"未知运行场景: {scenario_id}"}
+
+        # 每次切换先清除上一个场景注入，确保演示可重复。
+        self.power_supply.set_status(PowerStatus.NORMAL)
+        self.dispatch.occupancy.clear_injected()
+        self.network_fault_injected = False
+        for train in self.dispatch.trains.values():
+            train.controller.env.weather = WeatherType.DRY
+
+        if scenario_id == "power_outage":
+            self.power_supply.set_status(PowerStatus.POWER_OFF)
+        elif scenario_id == "low_voltage":
+            self.power_supply.set_status(PowerStatus.LOW_VOLTAGE)
+        elif scenario_id == "low_adhesion":
+            for train in self.dispatch.trains.values():
+                train.controller.env.weather = WeatherType.RAIN
+        elif scenario_id == "communication_outage":
+            self.network_fault_injected = True
+        elif scenario_id == "occupancy_conflict":
+            train = next(iter(self.dispatch.trains.values()), None)
+            if train is None:
+                return {"ok": False, "message": "没有列车，无法注入占用冲突"}
+            route = self.dispatch._route_window(train)
+            segment_id = route[0] if route else train.controller.states[0].position.segment_id
+            self.dispatch.occupancy.inject(segment_id, "场景占用")
+        self.dispatch.occupancy.update(self.dispatch.trains.values())
+
+        self.active_scenario = scenario_id
+        self.recorder.record(
+            "场景", f"应用场景：{label}", source="web-ats",
+            entity_id=scenario_id,
+        )
+        return {"ok": True, "message": f"场景已切换为{label}"}
+
+    def _record_replay_frame(self):
+        """以 2 Hz 保存轻量快照，供 Web 时间轴回放。"""
+        sim_time = self.dispatch.sim_time
+        if sim_time - self._last_replay_sample < 0.5:
+            return
+        self._last_replay_sample = sim_time
+        self.replay_frames.append({
+            "simTime": round(sim_time, 2),
+            "powerStatus": self.power_supply.status.name,
+            "trains": [
+                {
+                    "id": train.train_id,
+                    "speedKmh": round(train.speed_kmh, 2),
+                    "position": round(train.head_abs, 2),
+                    "status": train.status.value,
+                    "emergency": train.emergency,
+                }
+                for train in self.dispatch.trains.values()
+            ],
+        })
+
+    def replay_snapshot(self) -> dict:
+        frames = list(self.replay_frames)
+        emergency_count = sum(
+            1 for event in self.recorder.events
+            if event.severity == "CRITICAL"
+        )
+        return {
+            "ok": True,
+            "scenario": self.active_scenario,
+            "sampleIntervalMs": 500,
+            "frames": frames,
+            "eventCount": len(self.recorder.events),
+            "score": max(0, 100 - emergency_count * 10),
+        }
+
     def snapshot(self) -> dict:
+        self._snapshot_sequence += 1
         occupancy = self.dispatch.occupancy.snapshot
         locks = self.dispatch.interlocking.locks
         trains = [self._serialize_train(runtime)
@@ -786,6 +955,11 @@ class SimulationRuntime:
                 "offset": signal.offset,
                 "direction": signal.direction,
                 "aspect": self.signal_system.get_signal_aspect(signal).name,
+                "linkPosition": (
+                    round(pos, 3) if (pos := self.link_mapper.to_link_position(
+                        TrackPosition(signal.seg_id, signal.offset)
+                    )) is not None else None
+                ),
             }
             for signal in self.track.signals
         ]
@@ -793,11 +967,31 @@ class SimulationRuntime:
             {"id": index, **asdict(event)}
             for index, event in enumerate(self.recorder.events[-120:])
         ]
+        active_alarms = [
+            event for event in events
+            if event["severity"] in {"WARNING", "CRITICAL"}
+        ]
+        network_status = self.network.connection_status
+        if self.network_fault_injected:
+            network_status = {key: False for key in network_status}
+        first_train = next(iter(self.dispatch.trains.values()), None)
+        weather = (first_train.controller.env.weather
+                   if first_train is not None else WeatherType.DRY)
         return {
             "type": "snapshot",
+            "sequence": self._snapshot_sequence,
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+            "dataSources": {
+                "simulation": "realtime",
+                "track": "database",
+                "power": "simulation",
+                "network": "realtime",
+                "replay": "recorded",
+            },
             "simTime": round(self.dispatch.sim_time, 2),
             "paused": self.paused,
             "speedMultiplier": self.speed_multiplier,
+            "activeScenario": self.active_scenario,
             "trains": trains,
             "occupancy": {str(key): sorted(value)
                           for key, value in occupancy.items()},
@@ -813,7 +1007,34 @@ class SimulationRuntime:
                 "label": self.weather.value,
                 "adhesion": round(self.env.get_adhesion_coefficient(), 4),
             },
-            "network": self.network.connection_status,
+            "network": network_status,
+            "network_stats": self.network.network_stats,
+            "network_started": self.network_started,
+            "networkFaultInjected": self.network_fault_injected,
+            "environment": {
+                "weather": weather.value,
+                "adhesionCoefficient": (first_train.controller.env.get_adhesion_coefficient()
+                                        if first_train is not None else 0.18),
+            },
+            "networkInterfaces": [
+                {"id": "signal_gateway", "label": "信号系统网关",
+                 "protocol": "UDP", "cycleMs": 250},
+                {"id": "vehicle_udp", "label": "车辆状态接口",
+                 "protocol": "UDP", "cycleMs": 20},
+                {"id": "plc", "label": "实体司机台 PLC",
+                 "protocol": "TCP", "cycleMs": 100},
+                {"id": "vision", "label": "视景系统",
+                 "protocol": "UDP", "cycleMs": 100},
+                {"id": "cab_display", "label": "司机台显示屏",
+                 "protocol": "TCP", "cycleMs": 100},
+            ],
+            "alarms": {
+                "active": len(active_alarms),
+                "critical": sum(event["severity"] == "CRITICAL"
+                                for event in active_alarms),
+                "warning": sum(event["severity"] == "WARNING"
+                               for event in active_alarms),
+            },
             "dataSource": self._data_source,
             "stations": [
                 {"id": item.station_id, "name": item.name,

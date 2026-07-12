@@ -33,7 +33,9 @@ app = FastAPI(title="轨道交通仿真 Web ATS API", lifespan=lifespan)
 async def disable_frontend_cache(request, call_next):
     """开发态前端始终读取最新页面，避免合并后仍执行旧脚本。"""
     result = await call_next(request)
-    if request.url.path == "/" or request.url.path.endswith(".html"):
+    if (request.url.path == "/" or request.url.path.endswith(".html")
+            or request.url.path.startswith("/scripts/")
+            or request.url.path.startswith("/styles/")):
         result.headers["Cache-Control"] = "no-store, max-age=0"
     return result
 
@@ -226,6 +228,26 @@ async def apply_scene(scene_id: str):
 @app.get("/api/replay")
 async def replay():
     return runtime.replay_data()
+
+
+@app.post("/api/network/start")
+async def network_start():
+    return response(runtime.network_connect())
+
+
+@app.post("/api/network/stop")
+async def network_stop():
+    return response(runtime.network_disconnect())
+
+
+@app.post("/api/scenarios/{scenario_id}")
+async def apply_scenario(scenario_id: str):
+    return response(runtime.apply_scenario(scenario_id))
+
+
+@app.get("/api/replay")
+async def replay():
+    return runtime.replay_snapshot()
 
 
 @app.post("/api/simulation/{command}")
