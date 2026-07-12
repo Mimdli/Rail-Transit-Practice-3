@@ -94,15 +94,10 @@ class VisionUDPClient:
                         )
                         self._sock.sendto(packet, remote)
                         self._last_send_time = time.time()
-                        self.connected = True
                         if self._live_counter % 100 == 0:
                             logger.debug("视景UDP已发送 %d 报文", self._live_counter)
                 except Exception as e:
                     logger.debug("视景UDP发送失败: %s", e)
-
-            # 发送超时检测 (10s无成功发送则标记断开)
-            if self.connected and time.time() - self._last_send_time > 10:
-                self.connected = False
 
             elapsed = (time.perf_counter() - cycle_start) * 1000
             sleep_ms = max(0, VISION_CYCLE_MS - elapsed)

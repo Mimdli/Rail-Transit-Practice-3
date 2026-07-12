@@ -59,16 +59,22 @@ class CabDisplayClient:
         self._running = False
         self.connected = False
 
-    def _send_tcp(self, addr: str, port: int, data: bytes):
-        """发送 TCP 数据到指定地址和端口"""
+    def _send_tcp(self, addr: str, port: int, data: bytes) -> bool:
+        """发送 TCP 数据到指定地址和端口
+
+        Returns:
+            True 发送成功, False 发送失败
+        """
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(2.0)
             s.connect((addr, port))
             s.sendall(data)
             s.close()
+            return True
         except Exception as e:
             logger.debug("TCP发送失败 %s:%d - %s", addr, port, e)
+            return False
 
     def _run(self):
         import time as _time_mod
@@ -101,8 +107,8 @@ class CabDisplayClient:
                             has_power=data.get("has_power", True),
                             timestamp_ms=timestamp_ms,
                         )
-                        self._send_tcp(CAB_DISPLAY_ADDR, CAB_NETWORK_SCREEN_PORT, packet)
-                        has_network = True
+                        if self._send_tcp(CAB_DISPLAY_ADDR, CAB_NETWORK_SCREEN_PORT, packet):
+                            has_network = True
 
                 # --- 信号屏 (66 bytes → 总控:9999) ---
                 if self._signal_data_source:
@@ -127,8 +133,8 @@ class CabDisplayClient:
                             next_station_dist=data.get("next_station_dist", 0.0),
                             timestamp_ms=timestamp_ms,
                         )
-                        self._send_tcp(CAB_DISPLAY_ADDR, CAB_SIGNAL_SCREEN_PORT, packet)
-                        has_signal = True
+                        if self._send_tcp(CAB_DISPLAY_ADDR, CAB_SIGNAL_SCREEN_PORT, packet):
+                            has_signal = True
 
                 self.connected = has_network or has_signal
 
