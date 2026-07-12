@@ -31,7 +31,7 @@ CMD_BRAKE: Final[int] = 2   # 减速
 # 信号系统 UDP 网关（协议 §3.3）
 # ============================================================
 SIGNAL_GATEWAY_ADDR: Final[str] = "192.168.200.102"  # 总控数据库节点
-SIGNAL_GATEWAY_PORT: Final[int] = 24001
+SIGNAL_GATEWAY_PORT: Final[int] = 10000
 SIGNAL_LOCAL_PORT: Final[int] = 24002
 SIGNAL_GATEWAY_CYCLE_MS: Final[int] = 250            # 信号→总控 250ms
 SIGNAL_GATEWAY_RECV_CYCLE_MS: Final[int] = 100       # 总控→信号 100ms
@@ -44,7 +44,7 @@ SIG_HEADER_1_RECV: Final[int] = 0xf0   # 总控→信号
 # ============================================================
 # 司机台 PLC 协议（协议 司机驾驶模拟台PLC协议 §2-6）
 # ============================================================
-PLC_SERVER_ADDR: Final[str] = "192.168.100.123"
+PLC_SERVER_ADDR: Final[str] = "192.168.200.123"
 PLC_PORT_1: Final[int] = 8001   # 主控
 PLC_PORT_2: Final[int] = 8002   # 备用
 PLC_PORT_3: Final[int] = 8003   # 备用
