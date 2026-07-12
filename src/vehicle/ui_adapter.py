@@ -6,7 +6,8 @@ from src.common.consist import CONSIST_4M2T
 from src.common.track_position import ITrackQuery, TrackPosition
 from src.track.data import TrackData
 from src.vehicle.auto_drive import AutoDriveController
-from src.vehicle.enums import ControlLevel, DoorSide, RunningMode, CONTROL_LEVEL_MAP
+from src.vehicle.energy import EnergyCalculator, EnergyStepReport, EnergyTripSummary
+from src.vehicle.enums import ControlLevel, DoorSide, RunningMode, LoadLevel, CONTROL_LEVEL_MAP
 from src.vehicle.environment import MockEnvironment, WeatherType
 from src.vehicle.vehicle_controller import VehicleController
 
@@ -84,6 +85,12 @@ class VehicleUiAdapter:
         self.environment = MockEnvironment(WeatherType.DRY, self.track_query)
         self.controller = VehicleController(CONSIST_4M2T, self.track_query, self.environment)
         self.last_report = None
+
+        # 能耗计算器
+        self.energy_calc = EnergyCalculator(
+            num_cars=len(CONSIST_4M2T),
+            load_level=LoadLevel.AW2,
+        )
 
     @property
     def position(self) -> float:
@@ -177,9 +184,66 @@ class VehicleUiAdapter:
 
     def step(self):
         self.last_report = self.controller.step(self.dt)
+        self.energy_calc.step(self.last_report)
 
     def get_speed_kmh(self) -> float:
         return self.speed * 3.6
+
+    # ── 能耗查询 ───────────────────────────────────────────────
+
+    @property
+    def energy_traction_kwh(self) -> float:
+        """累积牵引电耗 (kWh)。"""
+        return self.energy_calc.traction_kwh
+
+    @property
+    def energy_regen_kwh(self) -> float:
+        """累积再生回收 (kWh)。"""
+        return self.energy_calc.regen_kwh
+
+    @property
+    def energy_aux_kwh(self) -> float:
+        """累积辅助电耗 (kWh)。"""
+        return self.energy_calc.aux_kwh
+
+    @property
+    def energy_net_kwh(self) -> float:
+        """累积净电耗 (kWh)。"""
+        return self.energy_calc.net_kwh
+
+    @property
+    def energy_friction_loss_kwh(self) -> float:
+        """累积摩擦制动热损 (kWh)。"""
+        return self.energy_calc._friction_brake_loss_j / 3_600_000
+
+    @property
+    def energy_regen_ratio(self) -> float:
+        """再生能量回收率。"""
+        t = self.energy_calc.traction_kwh
+        return self.energy_calc.regen_kwh / t if t > 0 else 0.0
+
+    @property
+    def energy_last_step(self) -> Optional[EnergyStepReport]:
+        """最近一步的能耗报告。"""
+        return self.energy_calc.last_step
+
+    @property
+    def energy_step_history(self):
+        """逐步能耗历史。"""
+        return self.energy_calc.step_history
+
+    def energy_summary(self) -> EnergyTripSummary:
+        """生成行程能耗汇总。"""
+        head_abs = self.position
+        total_mass = self.controller.consist.total_mass
+        return self.energy_calc.summary(
+            distance_m=head_abs,
+            total_mass_kg=total_mass,
+        )
+
+    def reset_energy(self):
+        """重置能耗计算器。"""
+        self.energy_calc.reset()
 
     def reset(self):
         self.controller.reset_states(start_segment_id=1, start_offset=0.0)
@@ -188,6 +252,7 @@ class VehicleUiAdapter:
         self._current_speed_limit = 22.0
         self.track_query.external_speed_limit = None
         self.last_report = None
+        self.reset_energy()
 
 
 class ManualControlAdapter:
