@@ -8,6 +8,7 @@
 协议参考: 《轨交多系统平台接口协议汇总.md》§2
 """
 
+import time
 import socket
 import threading
 import logging
@@ -43,6 +44,7 @@ class VehicleUDPClient:
 
         # 连接状态
         self.connected = False
+        self._last_recv_time = 0.0
 
     @property
     def last_commands(self) -> list[tuple[float, float]]:
@@ -100,10 +102,8 @@ class VehicleUDPClient:
                     trains = self._send_data_source()
                     data = pack_vehicle_udp(trains)
                     self._sock.sendto(data, remote)
-                    self.connected = True
                 except Exception as e:
                     logger.debug("车辆UDP发送失败: %s", e)
-                    self.connected = False
 
             # --- 接收 ---
             try:
@@ -112,11 +112,16 @@ class VehicleUDPClient:
                 self._last_commands = commands
                 if self._recv_callback:
                     self._recv_callback(commands)
+                self._last_recv_time = time.time()
                 self.connected = True
             except socket.timeout:
                 pass
             except Exception as e:
                 logger.debug("车辆UDP接收失败: %s", e)
+
+            # 接收超时检测 (5s无数据则标记断开)
+            if self.connected and time.time() - self._last_recv_time > 5:
+                self.connected = False
 
             # 精确控制周期
             elapsed = (time.perf_counter() - cycle_start) * 1000
