@@ -4,6 +4,7 @@
   - 车站表 (Sheet 11) → Station
   - 站台表 (Sheet 12) → Platform
   - Seg表  (Sheet 3)  → Segment
+  - 信号机表 (Sheet 9) → Signal
   - 静态限速表 (Sheet 15) → SpeedLimit
   - 坡度表 (Sheet 14) → Gradient
 
@@ -24,7 +25,8 @@ from src.track.data import (
 
 
 # 公里标解析: "K0+313.000" → 313.0 m,  "K12+500.000" → 12500.0 m
-_KM_PATTERN = re.compile(r"K(\d+)\+([\d.]+)")
+# 注意: 部分数据使用小写 k，统一处理
+_KM_PATTERN = re.compile(r"[Kk](\d+)\+([\d.]+)")
 
 
 def _parse_km(km_str) -> float:
@@ -113,6 +115,7 @@ class TrackLoader:
         self._load_platforms(wb)
         self._load_speed_limits(wb)
         self._load_gradients(wb)
+        self._load_signals(wb)
 
         wb.release_resources()
 
@@ -121,80 +124,146 @@ class TrackLoader:
         return self.track_data
 
     def load_demo_data(self) -> TrackData:
-        """加载演示用简化数据（不依赖 Excel 文件，用于测试）"""
+        """加载演示用简化数据（不依赖 Excel 文件，用于测试）
+
+        线路拓扑::
+
+            上行主线: seg1 ──→ seg2 ──→ seg3 ──→ seg4 ──→ seg9 ──→ seg10 ──→ seg11 ──→ seg12
+                     (站A)     (站B)     (站C)     (站D)      (站D)     (站C)     (站B)     (站A)
+                     <──────────── 上行 0~1000m ───────────><────────── 下行 1000~2000m ─────────>
+
+        上下行各 4 个区段（总长 2000m），每方向 4 个车站，无道岔侧线。
+        """
         td = self.track_data
 
-        # 主线 5 段 + 2 条道岔侧线（演示分叉可视化）
+        # ── 区段：上行主线 4 段 + 下行主线 4 段 ──
         td.segments = [
-            Segment(1, 758.0, 0, 2, end_lateral=6),
-            Segment(2, 850.0, 1, 3),
-            Segment(3, 750.0, 2, 4, end_lateral=7),
-            Segment(4, 700.0, 3, 5),
-            Segment(5, 600.0, 4, 0),
-            Segment(6, 420.0, 0, 0),
-            Segment(7, 380.0, 0, 0),
+            # seg_id, length, start_neighbor, end_neighbor
+            # ── 上行主线（0~1000m） ────────────────────────
+            Segment(1, 250.0, 0, 2),                          # 站A→站B
+            Segment(2, 250.0, 1, 3),                          # 站B→站C
+            Segment(3, 250.0, 2, 4),                          # 站C→站D
+            Segment(4, 250.0, 3, 9),                          # 站D→下行seg9
+            # ── 下行主线（1000~2000m） ──────────────────────
+            Segment(9, 250.0, 0, 10),                         # 站D→站C（下行）
+            Segment(10, 250.0, 9, 11),                        # 站C→站B（下行）
+            Segment(11, 250.0, 10, 12),                       # 站B→站A（下行）
+            Segment(12, 250.0, 11, 0),                        # 站A之后（下行）
         ]
 
+        # ── 车站：上行 4 站 + 下行 4 站 ────────────────────────
         td.stations = [
-            Station(1, "GGZ", 0.0, [1, 2]),
-            Station(2, "FSP", 758.0, [3, 4]),
-            Station(3, "XW", 1608.0, [5, 6]),
-            Station(4, "BDZ", 2358.0, [7, 8]),
-            Station(5, "GTG", 3058.0, [9, 10]),
+            # 上行车站（0~1000m）
+            Station(1, "站A(上行)", 0.0, [1, 2]),
+            Station(2, "站B(上行)", 250.0, [3, 4]),
+            Station(3, "站C(上行)", 500.0, [5, 6]),
+            Station(4, "站D(上行)", 750.0, [7, 8]),
+            # 下行车站（1000~2000m）
+            Station(5, "站A(下行)", 1750.0, [15, 16]),
+            Station(6, "站B(下行)", 1500.0, [13, 14]),
+            Station(7, "站C(下行)", 1250.0, [11, 12]),
+            Station(8, "站D(下行)", 1000.0, [9, 10]),
         ]
 
+        # ── 站台 ──────────────────────────────────────────────
         td.platforms = [
-            Platform(1, 0.0, 1, "down", "GGZ"),
-            Platform(2, 0.0, 1, "up", "GGZ"),
-            Platform(3, 758.0, 2, "down", "FSP"),
-            Platform(4, 758.0, 2, "up", "FSP"),
-            Platform(5, 1608.0, 3, "down", "XW"),
-            Platform(6, 1608.0, 3, "up", "XW"),
-            Platform(7, 2358.0, 4, "down", "BDZ"),
-            Platform(8, 2358.0, 4, "up", "BDZ"),
-            Platform(9, 3058.0, 5, "down", "GTG"),
-            Platform(10, 3058.0, 5, "up", "GTG"),
+            # 上行站台（在 seg1~seg4 上）
+            Platform(1, 0.0, 1, "down", "站A(上行)"),
+            Platform(2, 0.0, 1, "up", "站A(上行)"),
+            Platform(3, 250.0, 2, "down", "站B(上行)"),
+            Platform(4, 250.0, 2, "up", "站B(上行)"),
+            Platform(5, 500.0, 3, "down", "站C(上行)"),
+            Platform(6, 500.0, 3, "up", "站C(上行)"),
+            Platform(7, 750.0, 4, "down", "站D(上行)"),
+            Platform(8, 750.0, 4, "up", "站D(上行)"),
+            # 下行站台（在 seg9~seg12 上）
+            Platform(9, 0.0, 9, "down", "站D(下行)"),
+            Platform(10, 0.0, 9, "up", "站D(下行)"),
+            Platform(11, 0.0, 10, "down", "站C(下行)"),
+            Platform(12, 0.0, 10, "up", "站C(下行)"),
+            Platform(13, 0.0, 11, "down", "站B(下行)"),
+            Platform(14, 0.0, 11, "up", "站B(下行)"),
+            Platform(15, 0.0, 12, "down", "站A(下行)"),
+            Platform(16, 0.0, 12, "up", "站A(下行)"),
         ]
 
+        # ── 限速（上行 + 下行） ─────────────────
         td.speed_limits = [
-            SpeedLimit(1, 0.0, 400.0, 22.0),
-            SpeedLimit(1, 400.0, 758.0, 15.0),
-            SpeedLimit(2, 0.0, 300.0, 15.0),
-            SpeedLimit(2, 300.0, 850.0, 22.0),
-            SpeedLimit(3, 0.0, 200.0, 12.0),
-            SpeedLimit(3, 200.0, 750.0, 22.0),
-            SpeedLimit(4, 0.0, 350.0, 15.0),
-            SpeedLimit(4, 350.0, 700.0, 22.0),
-            SpeedLimit(5, 0.0, 600.0, 22.0),
-            SpeedLimit(6, 0.0, 420.0, 15.0),
-            SpeedLimit(7, 0.0, 380.0, 15.0),
+            # 上行主线
+            SpeedLimit(1, 0.0, 250.0, 22.0),
+            SpeedLimit(2, 0.0, 250.0, 22.0),
+            SpeedLimit(3, 0.0, 80.0, 12.0),
+            SpeedLimit(3, 80.0, 250.0, 22.0),
+            SpeedLimit(4, 0.0, 250.0, 22.0),
+            # 下行主线
+            SpeedLimit(9, 0.0, 250.0, 22.0),
+            SpeedLimit(10, 0.0, 250.0, 22.0),
+            SpeedLimit(11, 0.0, 80.0, 12.0),
+            SpeedLimit(11, 80.0, 250.0, 22.0),
+            SpeedLimit(12, 0.0, 250.0, 22.0),
         ]
 
+        # ── 坡度 ──────────────────────────────────────────────
         td.gradients = [
-            Gradient(1, 0.0, 200.0, 0.0),
-            Gradient(1, 200.0, 350.0, 5.0),
-            Gradient(1, 350.0, 500.0, -3.0),
-            Gradient(2, 0.0, 200.0, 0.0),
-            Gradient(2, 200.0, 350.0, 8.0),
-            Gradient(2, 350.0, 500.0, 0.0),
-            Gradient(3, 0.0, 200.0, -5.0),
-            Gradient(3, 200.0, 500.0, 0.0),
-            Gradient(4, 0.0, 200.0, 3.0),
-            Gradient(4, 200.0, 500.0, 0.0),
+            # 上行主线
+            Gradient(1, 0.0, 150.0, 0.0),
+            Gradient(1, 150.0, 250.0, 5.0),
+            Gradient(2, 0.0, 150.0, -3.0),
+            Gradient(2, 150.0, 250.0, 0.0),
+            Gradient(3, 0.0, 250.0, 8.0),
+            Gradient(4, 0.0, 250.0, -5.0),
+            # 下行主线
+            Gradient(9, 0.0, 250.0, 3.0),
+            Gradient(10, 0.0, 250.0, -2.0),
+            Gradient(11, 0.0, 150.0, 5.0),
+            Gradient(11, 150.0, 250.0, 0.0),
+            Gradient(12, 0.0, 250.0, -4.0),
         ]
 
-        # 演示信号机用于本地闭塞和红黄绿三态展示。
+        # ── 信号机 ────────────────────────────────────────────
         td.signals = [
-            Signal("S01", direction="up", seg_id=1, offset=200.0),
-            Signal("S02", direction="up", seg_id=1, offset=600.0),
-            Signal("S03", direction="up", seg_id=2, offset=300.0),
-            Signal("S04", direction="up", seg_id=3, offset=250.0),
-            Signal("S05", direction="up", seg_id=4, offset=300.0),
-            Signal("S06", direction="up", seg_id=5, offset=300.0),
+            # 上行信号
+            Signal("S01", direction="up", seg_id=1, offset=100.0),
+            Signal("S02", direction="up", seg_id=1, offset=220.0),
+            Signal("S03", direction="up", seg_id=2, offset=100.0),
+            Signal("S04", direction="up", seg_id=3, offset=100.0),
+            Signal("S05", direction="up", seg_id=4, offset=100.0),
+            Signal("S06", direction="up", seg_id=4, offset=220.0),
+            # 下行信号
+            Signal("S07", direction="down", seg_id=9, offset=100.0),
+            Signal("S08", direction="down", seg_id=9, offset=220.0),
+            Signal("S09", direction="down", seg_id=10, offset=100.0),
+            Signal("S10", direction="down", seg_id=11, offset=100.0),
+            Signal("S11", direction="down", seg_id=12, offset=100.0),
+            Signal("S12", direction="down", seg_id=12, offset=220.0),
         ]
 
         td.build_coordinates()
         return td
+
+    @staticmethod
+    def create_demo_routes():
+        """创建演示用预定义进路（上下行）。
+
+        Returns:
+            list[Route]: 7 条进路 ——
+              0: "自动"（空列表，由系统动态算路）
+              1: "上行全程" [1,2,3,4]
+              2: "下行全程" [9,10,11,12]
+              3: "下行站D→站C" [9,10]
+              4: "下行站C→站B" [10,11]
+              5: "下行站B→站A" [11,12]
+              6: "下行站D→站A" [9,10,11,12]  (直达)
+        """
+        from src.track.route import Route
+        return [
+            Route(0, "自动", []),
+            Route(1, "上行全程", [1, 2, 3, 4]),
+            Route(2, "下行全程", [9, 10, 11, 12]),
+            Route(3, "下行站D→站C", [9, 10]),
+            Route(4, "下行站C→站B", [10, 11]),
+            Route(5, "下行站B→站A", [11, 12]),
+        ]
 
     # ---- 内部加载方法 ----
     # 每个 sheet 的结构: 前 3 行元数据, 第 3 行(索引2)为表头, 从第 4 行(索引3)起为数据
@@ -347,7 +416,7 @@ class TrackLoader:
             start_offset = _cm_to_m(row[2])         # 起点偏移 (cm → m) (col 2)
             end_seg = _to_int(row[3])               # 坡度终点所处seg编号 (col 3)
             end_offset = _cm_to_m(row[4])           # 终点偏移 (cm → m) (col 4)
-            grad_val = _to_float(row[11])           # 坡度值 (col 11, ‰)
+            grad_val = _to_float(row[11]) / 10.0    # 坡度值 (0.1‰ → ‰)
             direction = _parse_direction(row[12])   # 倾斜方向 (col 12)
 
             # 对于起终点在不同 seg 的坡度，拆分为两段
@@ -366,3 +435,32 @@ class TrackLoader:
                     gradient=grad_val,
                     direction=direction,
                 ))
+
+    def _load_signals(self, wb):
+        """加载 信号机表 (Sheet 9)"""
+        try:
+            sheet = wb.sheet_by_name("信号机表")
+        except xlrd.biffh.XLRDError:
+            return
+
+        td = self.track_data
+        for r in range(4, sheet.nrows):
+            row = _get_row(sheet, r)
+            signal_id = str(row[1]).strip()
+            if not signal_id:
+                continue
+
+            seg_id = _to_int(row[4])           # 所处Seg编号 (col 4)
+            if seg_id == 0:
+                continue
+
+            # Excel 中偏移量单位为 cm，TrackData 内部统一使用 m。
+            offset = _cm_to_m(row[5])          # 所处Seg偏移量 (col 5)
+            direction = _parse_direction(row[6])  # 防护方向 (col 6)
+
+            td.signals.append(Signal(
+                signal_id=signal_id,
+                direction=direction,
+                seg_id=seg_id,
+                offset=offset,
+            ))

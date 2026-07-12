@@ -2,6 +2,8 @@
 
 import sqlite3
 import os
+import logging
+from statistics import mean
 from typing import Optional
 
 from src.track.data import (
@@ -11,6 +13,7 @@ from src.track.data import (
 
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "railway.db")
+logger = logging.getLogger(__name__)
 
 
 class DBLoader:
@@ -39,6 +42,7 @@ class DBLoader:
         conn.close()
 
         self.track_data.build_coordinates()
+        self._finalize_station_platforms()
         return self.track_data
 
     def _load_segments(self, cur):
@@ -71,7 +75,44 @@ class DBLoader:
                 seg_id=row["seg_id"],
                 direction=row["direction"],
                 station_name="",
+                station_id=row["station_id"] or 0,
             ))
+
+    def _finalize_station_platforms(self):
+        """关联站台与车站，并在内存中修复数据库缺失的车站里程。"""
+        platforms_by_station: dict[int, list[Platform]] = {}
+        for platform in self.track_data.platforms:
+            platforms_by_station.setdefault(platform.station_id, []).append(platform)
+
+        repaired = []
+        for station in self.track_data.stations:
+            platforms = platforms_by_station.get(station.station_id, [])
+            station.platform_ids = [platform.platform_id for platform in platforms]
+            for platform in platforms:
+                platform.station_name = station.name
+
+            if station.position > 0 or not platforms:
+                continue
+            candidates = []
+            for platform in platforms:
+                segment = self.track_data._seg_map.get(platform.seg_id)
+                if segment is not None:
+                    candidates.append(segment.abs_start + segment.length / 2.0)
+            if not candidates:
+                continue
+            station.position = mean(candidates)
+            for platform in platforms:
+                if platform.position <= 0:
+                    platform.position = station.position
+            repaired.append(station.name)
+
+        if repaired:
+            message = (
+                "数据库缺失车站里程，已按所属站台区段中心在内存中补齐: "
+                + ", ".join(repaired)
+            )
+            self.track_data.data_warnings.append(message)
+            logger.info(message)
 
     def _load_speed_limits(self, cur):
         cur.execute("SELECT * FROM speed_limits ORDER BY limit_id")

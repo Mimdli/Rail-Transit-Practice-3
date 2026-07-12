@@ -75,6 +75,81 @@ class SignalSystem:
                 aspect = SignalAspect.GREEN
             self.set_signal_aspect(sig.signal_id, aspect)
 
+    def update_from_dispatch(self, signals: list, track,
+                             occupancy: dict[int, frozenset[str]],
+                             locks: dict[int, str]):
+        """根据区段占用和调度进路锁闭生成联锁信号显示。"""
+        if not signals:
+            return
+        route_mode = bool(locks)
+        for signal in signals:
+            protected = self._protected_segment_id(signal, track)
+            if protected in occupancy:
+                aspect = SignalAspect.RED
+            elif route_mode:
+                aspect = (SignalAspect.GREEN if protected in locks
+                          else SignalAspect.RED)
+            else:
+                aspect = SignalAspect.GREEN
+            self.set_signal_aspect(signal.signal_id, aspect)
+
+        # 同方向红灯的前一架信号显示黄灯预告。
+        for direction in ("down", "up"):
+            ordered = [signal for signal in signals
+                       if self._normalize_direction(signal.direction) == direction]
+            ordered.sort(key=lambda signal: signal.position,
+                         reverse=direction == "up")
+            for current, ahead in zip(ordered, ordered[1:]):
+                if (self.get_signal_aspect(current) != SignalAspect.RED
+                        and self.get_signal_aspect(ahead) == SignalAspect.RED):
+                    self.set_signal_aspect(current.signal_id, SignalAspect.YELLOW)
+
+    def _protected_segment_id(self, signal, track) -> int:
+        segment = track._seg_map.get(signal.seg_id)
+        if segment is None:
+            return signal.seg_id
+        direction = self._normalize_direction(signal.direction)
+        neighbor = (segment.end_neighbor if direction == "down"
+                    else segment.start_neighbor)
+        if neighbor and neighbor != 65535 and neighbor in track._seg_map:
+            return neighbor
+        return signal.seg_id
+
+    @staticmethod
+    def _normalize_direction(direction: str) -> str:
+        value = str(direction or "").lower()
+        return "down" if value in ("down", "下行", "1") else "up"
+
+    def get_nearest_signal_for_direction(
+        self, position: float, direction: int, signals: list,
+        look_ahead: Optional[float] = None,
+        allowed_segment_ids: Optional[set[int]] = None,
+    ):
+        """获取物理运行方向前方最近的同向信号机。"""
+        max_distance = self.approach_range if look_ahead is None else look_ahead
+        expected = "down" if direction >= 0 else "up"
+        candidates = []
+        for signal in signals:
+            if (allowed_segment_ids is not None
+                    and signal.seg_id not in allowed_segment_ids):
+                continue
+            if self._normalize_direction(signal.direction) != expected:
+                continue
+            distance = direction * (signal.position - position)
+            if 0 < distance <= max_distance:
+                candidates.append((distance, signal))
+        return min(candidates, key=lambda item: item[0])[1] if candidates else None
+
+    def get_effective_speed_limit_for_direction(
+        self, position: float, direction: int, track_speed_limit: float,
+        signals: list,
+    ) -> float:
+        signal = self.get_nearest_signal_for_direction(
+            position, direction, signals)
+        if signal and self.get_signal_aspect(signal) == SignalAspect.YELLOW:
+            return min(track_speed_limit, self.yellow_speed_limit)
+        return track_speed_limit
+
     def _sort_signals(self, signals: list, direction: str) -> list:
         """按运行方向排列信号机"""
         reverse = direction == "down"

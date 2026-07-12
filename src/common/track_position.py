@@ -3,9 +3,13 @@
 阶段 1：表示列车在线路上的位置，支持沿线路推进。
 """
 
+from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.track.route import Route
 
 
 @dataclass
@@ -67,10 +71,31 @@ class ITrackQuery(ABC):
         ...
 
     @abstractmethod
-    def from_absolute(self, abs_pos: float) -> TrackPosition:
+    def from_absolute(self, abs_pos: float, hint_seg_id: Optional[int] = None) -> TrackPosition:
         """从线路绝对里程转换回 TrackPosition。
 
         用于微步积分后将绝对位置还原为区段坐标。
+        """
+        ...
+
+    @abstractmethod
+    def set_active_route(self, route: Optional["Route"]) -> None:
+        """设置当前活动的进路（Route）。
+
+        在道岔区域，from_absolute() 通过当前活动进路确定选择主线还是侧线。
+        设为 None 时，默认沿主线（forward neighbor 链）前进。
+
+        Args:
+            route: 要激活的 Route，None 表示无进路（默认主线）。
+        """
+        ...
+
+    @abstractmethod
+    def get_active_route(self) -> Optional["Route"]:
+        """获取当前活动的进路。
+
+        Returns:
+            当前活动的 Route，或 None。
         """
         ...
 
@@ -154,7 +179,7 @@ class MockTrackQuery(ITrackQuery):
                 break
         return offset
 
-    def from_absolute(self, abs_pos: float) -> TrackPosition:
+    def from_absolute(self, abs_pos: float, hint_seg_id: Optional[int] = None) -> TrackPosition:
         """从线路绝对里程转换为 TrackPosition。"""
         remaining = abs_pos
         for seg in self.segments:
@@ -164,3 +189,11 @@ class MockTrackQuery(ITrackQuery):
         # 在终点：返回最后一段的终点
         last = self.segments[-1]
         return TrackPosition(segment_id=last.id, offset=last.length)
+
+    def set_active_route(self, route: Optional["Route"]) -> None:
+        """Mock 实现：线性线路无道岔，不需要进路消歧。"""
+        pass
+
+    def get_active_route(self) -> Optional["Route"]:
+        """Mock 实现：始终返回 None。"""
+        return None

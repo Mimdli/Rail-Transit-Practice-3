@@ -1,9 +1,9 @@
 """AutoDriveController 单元测试
 
-测试 3 段式精确停车逻辑：
-    1. 巡航段（距离 > stop_distance）→ 按限速巡航
-    2. 比例减速段（0.5m < 距离 ≤ stop_distance）→ 速度随距离线性衰减
-    3. 紧急制动段（距离 ≤ 0.5m）→ 紧急制动停车
+测试物理制动曲线精确停车 + 停站状态机：
+    1. 巡航段（距离 > d_brake）→ 按限速巡航
+    2. 制动段（距离 ≤ d_brake）→ sqrt(2*a*d) 物理制动曲线
+    3. 停站段 → 自动开门 → 停站计时 → 关门发车
 """
 
 import sys
@@ -30,10 +30,10 @@ def test_auto_drive_initialization():
     auto = AutoDriveController(ctrl)
 
     assert auto.cruise_speed_factor == 0.9
-    assert auto.stop_distance == 20.0
-    assert auto.emergency_brake_distance == 0.5
     assert auto.approach_speed == 5.0
+    assert auto.dwell_time == 20.0
     assert auto.target_position is None
+    assert auto.station_phase.name == "CRUISING"
 
 
 def test_auto_drive_custom_params():
@@ -44,14 +44,12 @@ def test_auto_drive_custom_params():
     auto = AutoDriveController(
         ctrl,
         cruise_speed_factor=0.8,
-        stop_distance=30.0,
-        emergency_brake_distance=1.0,
         approach_speed=3.0,
+        dwell_time=30.0,
     )
     assert auto.cruise_speed_factor == 0.8
-    assert auto.stop_distance == 30.0
-    assert auto.emergency_brake_distance == 1.0
     assert auto.approach_speed == 3.0
+    assert auto.dwell_time == 30.0
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -92,7 +90,7 @@ def test_step_no_target_is_safe():
 
 
 # ═══════════════════════════════════════════════════════════════
-# 三阶段控制逻辑测试
+# 控制逻辑测试
 # ═══════════════════════════════════════════════════════════════
 
 def test_cruise_regime_sets_traction():
@@ -117,7 +115,7 @@ def test_deceleration_regime_brakes_when_overspeed():
     track = MockTrackQuery()
     env = MockEnvironment(WeatherType.DRY)
     ctrl = VehicleController(CONSIST_4M2T, track, env)
-    auto = AutoDriveController(ctrl, stop_distance=50.0, approach_speed=1.0)
+    auto = AutoDriveController(ctrl, approach_speed=1.0)
 
     # 先加速到较高速度（多跑一些步）
     ctrl.set_throttle(1.0)
@@ -139,31 +137,43 @@ def test_deceleration_regime_brakes_when_overspeed():
 
 
 def test_emergency_brake_regime():
-    """距离 ≤ 0.5m 时应施加紧急制动。"""
+    """距离 ≤ 0.5m 且仍在移动时应施加紧急制动。"""
     track = MockTrackQuery()
     env = MockEnvironment(WeatherType.DRY)
     ctrl = VehicleController(CONSIST_4M2T, track, env)
     auto = AutoDriveController(ctrl)
 
-    # 设置极近距离目标
+    # 先让列车获得一些速度
+    ctrl.set_throttle(1.0)
+    for _ in range(50):  # ~1.65s 加速
+        ctrl.step(0.033)
+
+    speed_before = ctrl.head_speed
+    assert speed_before > 0.5, f"列车应有一定速度，实际 {speed_before:.2f}"
+
+    # 设置极近距离目标（0.3m 前方），列车仍在移动中
     head_offset = ctrl.states[0].position.offset
     auto.set_target(TrackPosition(segment_id=1, offset=head_offset + 0.3))
     auto.step()
 
-    assert ctrl.brake_level == 1.0, "紧急制动段应最大制动"
+    assert ctrl.brake_level == 1.0, f"紧急制动段应最大制动, brake={ctrl.brake_level}"
     assert ctrl.throttle == 0.0
 
 
 def test_auto_drive_sets_running_mode():
-    """step() 应自动将运行模式设为 AUTOMATIC。"""
+    """step() 不强制修改运行模式——由调用者负责设置。"""
     track = MockTrackQuery()
     env = MockEnvironment(WeatherType.DRY)
     ctrl = VehicleController(CONSIST_4M2T, track, env)
     auto = AutoDriveController(ctrl)
 
-    assert ctrl.running_mode == RunningMode.MANUAL  # 默认
+    assert ctrl.running_mode == RunningMode.MANUAL  # 默认手动
+
+    # auto_drive 不自动切换模式，调用者需显式设置
+    ctrl.set_running_mode(RunningMode.AUTOMATIC)
     auto.set_target(TrackPosition(segment_id=1, offset=500.0))
     auto.step()
+    # 模式保持不变（由调用者管理）
     assert ctrl.running_mode == RunningMode.AUTOMATIC
 
 
@@ -182,8 +192,9 @@ def test_auto_drive_full_stop():
 
     # 头车从 offset=0 开始
     target_offset = 200.0  # 200m 前方停车
-    auto = AutoDriveController(ctrl, stop_distance=30.0)
+    auto = AutoDriveController(ctrl)
     auto.set_target(TrackPosition(segment_id=1, offset=target_offset))
+    ctrl.set_running_mode(RunningMode.AUTOMATIC)  # 调用者负责设置模式
 
     max_steps = 2000  # 最多 ~66 秒
     min_steps = 30    # 至少运行 30 步 (~1s) 以克服 PT1 初始延迟

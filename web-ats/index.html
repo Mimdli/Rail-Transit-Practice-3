@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>轨道交通仿真综合监控平台</title>
+  <style>
+    :root {
+      --bg: #080d11; --panel: #0d1419; --panel-2: #101a20; --line: #24323b;
+      --text: #dce8ed; --muted: #73858e; --cyan: #39d0d8; --red: #ff5b62;
+      --amber: #e9b44c; --green: #5bd28a; --rail: #43545e;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body { font: 13px/1.4 "Microsoft YaHei UI", "Segoe UI", sans-serif; color: var(--text); background: var(--bg); }
+    button { font: inherit; color: inherit; }
+    .app { height: 100vh; display: grid; grid-template-rows: 72px 1fr 184px; }
+    .topbar { display: grid; grid-template-columns: 280px 1fr auto; align-items: center; padding: 0 22px; border-bottom: 1px solid var(--line); background: #0a1116; }
+    .brand { display: flex; align-items: center; gap: 12px; letter-spacing: .04em; }
+    .brand-mark { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--cyan); color: var(--cyan); font: 700 18px "Segoe UI"; transform: skew(-8deg); }
+    .brand strong { display: block; font-size: 15px; }
+    .brand small { color: var(--muted); font-size: 10px; letter-spacing: .16em; }
+    .system-strip { display: flex; justify-content: center; gap: 22px; }
+    .system-strip span { color: #a5b3ba; white-space: nowrap; }
+    .dot { display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px color-mix(in srgb, var(--green) 60%, transparent); }
+    .dot.off { background: #53616a; box-shadow: none; }
+    .top-actions { display: flex; align-items: center; gap: 10px; }
+    .clock { padding-right: 16px; border-right: 1px solid var(--line); text-align: right; }
+    .clock strong { display: block; font: 500 20px "Segoe UI"; letter-spacing: .08em; }
+    .clock small { color: var(--muted); }
+    .button { padding: 8px 13px; border: 1px solid #33454f; background: #111b21; cursor: pointer; transition: .18s ease; }
+    .button:hover { border-color: var(--cyan); color: var(--cyan); }
+    .button.active { color: #061013; background: var(--cyan); border-color: var(--cyan); }
+
+    .workspace { min-height: 0; display: grid; grid-template-columns: 176px minmax(640px, 1fr) 282px; }
+    .sidebar { border-right: 1px solid var(--line); background: #0a1116; padding: 18px 12px; }
+    .section-label { margin: 0 12px 10px; color: #586a73; font-size: 10px; letter-spacing: .18em; }
+    .nav { display: grid; gap: 3px; }
+    .nav button { position: relative; width: 100%; padding: 11px 12px; border: 0; background: transparent; color: #85969e; text-align: left; cursor: pointer; }
+    .nav button::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 2px; background: transparent; }
+    .nav button:hover { color: var(--text); background: #0e181e; }
+    .nav button.active { color: var(--text); background: #111d23; }
+    .nav button.active::before { background: var(--cyan); box-shadow: 0 0 9px var(--cyan); }
+    .nav .num { float: right; color: #52626b; font: 10px "Segoe UI"; }
+    .sidebar-meta { position: absolute; bottom: 136px; left: 24px; color: #53636c; font-size: 10px; }
+
+    .main { min-width: 0; min-height: 0; display: grid; grid-template-rows: 46px 1fr; background-color: #0a1014; background-image: linear-gradient(rgba(57,208,216,.025) 1px, transparent 1px), linear-gradient(90deg, rgba(57,208,216,.025) 1px, transparent 1px); background-size: 32px 32px; }
+    .toolbar { display: flex; align-items: center; justify-content: space-between; padding: 0 18px; border-bottom: 1px solid var(--line); background: rgba(10,17,22,.9); }
+    .view-tabs, .layer-tools { display: flex; gap: 4px; }
+    .tool { padding: 6px 10px; border: 0; color: #71858e; background: transparent; cursor: pointer; }
+    .tool:hover, .tool.active { color: var(--cyan); background: rgba(57,208,216,.07); }
+    .tool.active::before { content: "●"; font-size: 7px; margin-right: 6px; vertical-align: 2px; }
+    .map { position: relative; min-height: 0; overflow: hidden; padding: 24px 26px 12px; }
+    .map-title { position: absolute; top: 22px; left: 28px; z-index: 2; }
+    .map-title h1 { margin: 0; font-size: 17px; font-weight: 500; }
+    .map-title p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+    .map-badge { position: absolute; top: 24px; right: 28px; color: var(--green); font-size: 11px; }
+    .track-svg { width: 100%; height: 100%; min-height: 430px; }
+    .rail { fill: none; stroke: var(--rail); stroke-width: 4; }
+    .rail.locked { stroke: var(--amber); stroke-width: 7; opacity: .9; }
+    .rail.occupied { stroke: var(--red); stroke-width: 8; }
+    .platform { stroke: #71838c; stroke-width: 2; }
+    .station text { fill: #91a2aa; font-size: 11px; text-anchor: middle; }
+    .station circle { fill: #0b1217; stroke: #657780; stroke-width: 2; }
+    .signal { stroke: #0a1014; stroke-width: 2; }
+    .train { cursor: pointer; filter: drop-shadow(0 0 8px rgba(57,208,216,.25)); transition: filter .2s ease; }
+    .train:hover, .train.selected { filter: drop-shadow(0 0 11px rgba(57,208,216,.8)) brightness(1.12); }
+    .train rect { fill: #d9edf0; stroke: var(--cyan); stroke-width: 2; }
+    .train text { fill: #071014; font-size: 11px; font-weight: 700; text-anchor: middle; }
+    .train-tag { fill: var(--text); font-size: 10px; text-anchor: middle; }
+    .direction { fill: #53656e; font-size: 10px; letter-spacing: .18em; }
+    .legend { position: absolute; left: 28px; bottom: 18px; display: flex; gap: 18px; color: #768891; font-size: 10px; }
+    .legend i { display: inline-block; width: 18px; height: 3px; margin: 0 6px 3px 0; background: var(--rail); }
+    .legend .l-red { background: var(--red); } .legend .l-amber { background: var(--amber); } .legend .l-cyan { background: var(--cyan); }
+
+    .inspector { border-left: 1px solid var(--line); background: var(--panel); overflow: auto; }
+    .inspector-head { padding: 20px; border-bottom: 1px solid var(--line); }
+    .eyebrow { color: var(--cyan); font-size: 10px; letter-spacing: .16em; }
+    .inspector h2 { margin: 7px 0 2px; font-size: 24px; font-weight: 500; }
+    .state-line { color: var(--green); font-size: 12px; }
+    .speed { display: flex; align-items: baseline; gap: 6px; margin-top: 18px; }
+    .speed strong { font: 300 46px "Segoe UI"; letter-spacing: -.04em; }
+    .speed span { color: #84969f; }
+    .speedbar { height: 3px; background: #26343c; }
+    .speedbar span { display: block; width: 77%; height: 100%; background: var(--cyan); box-shadow: 0 0 8px rgba(57,208,216,.5); }
+    .metrics { padding: 13px 20px; }
+    .metric { display: flex; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid rgba(36,50,59,.7); }
+    .metric span { color: var(--muted); } .metric b { font-weight: 500; }
+    .metric .safe { color: var(--green); }
+    .inspector-actions { padding: 8px 20px 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .danger { border-color: #71373c; color: #ff8c91; }
+    .danger:hover { border-color: var(--red); color: white; background: #4c2025; }
+
+    .dock { display: grid; grid-template-columns: 176px 1fr; border-top: 1px solid var(--line); background: #090f13; }
+    .alarm-count { display: flex; align-items: center; gap: 12px; padding: 0 22px; border-right: 1px solid var(--line); }
+    .alarm-count strong { font: 400 30px "Segoe UI"; color: var(--amber); }
+    .dock-main { min-width: 0; display: grid; grid-template-rows: 38px 1fr; }
+    .dock-tabs { display: flex; align-items: end; gap: 2px; border-bottom: 1px solid #1f2b32; padding-left: 14px; }
+    .dock-tabs button { padding: 8px 13px; border: 0; background: transparent; color: #657780; cursor: pointer; }
+    .dock-tabs button.active { color: var(--text); border-bottom: 2px solid var(--cyan); }
+    .dock-tabs { justify-content: space-between; align-items: center; padding: 0 14px; }
+    .log-filters { display: flex; gap: 4px; overflow-x: auto; }
+    .log-filters button { padding: 5px 10px; border: 1px solid transparent; background: transparent; color: #71838c; cursor: pointer; white-space: nowrap; }
+    .log-filters button.active { color: var(--cyan); border-color: #31545a; background: rgba(57,208,216,.07); }
+    .log { overflow: auto; padding: 7px 18px 12px; color: #87979f; }
+    .log-row { display: grid; grid-template-columns: 92px 72px 90px minmax(240px,1fr) 92px 80px; gap: 8px; padding: 4px 0; border-bottom: 1px solid rgba(36,50,59,.45); }
+    .log-row time { color: #556871; font-family: Consolas, monospace; }
+    .log-row .ok { color: var(--green); } .log-row .warn { color: var(--amber); }
+    .log-row .critical { color: var(--red); }
+    .log-empty { padding: 25px 0; color: var(--muted); text-align: center; }
+    .inline-form { display: flex; align-items: end; gap: 8px; padding: 12px 0 18px; border-bottom: 1px solid var(--line); }
+    .field { display: grid; gap: 5px; min-width: 110px; }
+    .field label { color: var(--muted); font-size: 10px; }
+    .field input, .field select { height: 34px; padding: 0 9px; border: 1px solid #33454f; color: var(--text); background: #0b1318; font: inherit; }
+    .field input:focus, .field select:focus { outline: 1px solid var(--cyan); border-color: var(--cyan); }
+    .button:disabled { opacity: .45; cursor: not-allowed; }
+
+    .modal-backdrop { position: fixed; inset: 0; display: grid; place-items: center; z-index: 10; background: rgba(2,7,10,.72); backdrop-filter: blur(4px); opacity: 0; pointer-events: none; transition: opacity .2s; }
+    .modal-backdrop.open { opacity: 1; pointer-events: auto; }
+    .modal { width: 430px; border: 1px solid #3b4a52; background: #10181e; box-shadow: 0 24px 90px #000; transform: translateY(10px); transition: transform .2s; }
+    .open .modal { transform: none; }
+    .modal header { padding: 18px 20px; border-bottom: 1px solid var(--line); }
+    .modal header strong { display: block; font-size: 16px; color: #ff9ba0; }
+    .modal .content { padding: 18px 20px; color: #9aabb3; }
+    .modal .content p { margin: 0 0 14px; color: var(--text); }
+    .modal .content dl { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: 0; }
+    .modal dt { color: #657780; } .modal dd { margin: 0; text-align: right; }
+    .modal footer { padding: 14px 20px; display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--line); }
+    .toast { position: fixed; right: 24px; bottom: 136px; z-index: 20; padding: 12px 16px; border-left: 3px solid var(--green); background: #13221c; box-shadow: 0 12px 40px #0008; transform: translateX(120%); transition: transform .3s ease; }
+    .toast.show { transform: none; }
+    .workspace { position: relative; }
+    .subpage { position: absolute; z-index: 5; inset: 0 0 0 176px; display: none; overflow: auto; background: #0a1014; animation: pageIn .22s ease; }
+    .subpage.open { display: block; }
+    @keyframes pageIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .page-head { height: 78px; display: flex; align-items: center; justify-content: space-between; padding: 0 28px; border-bottom: 1px solid var(--line); background: #0b1217; }
+    .page-head h1 { margin: 0 0 4px; font-size: 20px; font-weight: 500; } .page-head p { margin: 0; color: var(--muted); font-size: 11px; }
+    .page-body { height: calc(100% - 78px); min-height: 600px; display: grid; }
+    .split { grid-template-columns: minmax(520px, 1fr) 360px; }
+    .pane { min-width: 0; padding: 22px 26px; border-right: 1px solid var(--line); overflow: auto; }
+    .pane:last-child { border-right: 0; }
+    .pane-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .pane-title h2 { margin: 0; font-size: 14px; font-weight: 500; } .pane-title span { color: var(--muted); font-size: 10px; }
+    .data-table { width: 100%; border-collapse: collapse; }
+    .data-table th { padding: 10px 12px; border-bottom: 1px solid #35454e; color: #62747d; font-size: 10px; font-weight: 500; text-align: left; letter-spacing: .08em; }
+    .data-table td { padding: 13px 12px; border-bottom: 1px solid #1d2930; color: #a8b7be; }
+    .data-table tr[data-select] { cursor: pointer; } .data-table tbody tr:hover, .data-table tr.selected { background: rgba(57,208,216,.06); }
+    .data-table tr.selected td:first-child { box-shadow: inset 2px 0 var(--cyan); color: var(--cyan); }
+    .status { display: inline-flex; align-items: center; gap: 6px; } .status::before { content:""; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+    .status.warn::before { background: var(--amber); } .status.stop::before { background: var(--red); } .status.off::before { background: #53616a; }
+    .command-hero { padding: 16px 0 22px; border-bottom: 1px solid var(--line); }
+    .command-hero strong { display:block; font: 300 34px "Segoe UI"; } .command-hero span { color: var(--green); }
+    .command-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 18px; }
+    .command-grid .button { text-align: left; } .command-grid .wide { grid-column: 1/-1; }
+    .big-speed { display: grid; place-items: center; min-height: 265px; border-bottom: 1px solid var(--line); background: radial-gradient(circle, rgba(57,208,216,.07), transparent 55%); }
+    .big-speed strong { font: 300 92px "Segoe UI"; letter-spacing: -.07em; } .big-speed small { color: var(--muted); font-size: 14px; }
+    .arc { width: 330px; height: 8px; margin-top: -48px; background: linear-gradient(90deg,var(--cyan) 77%,#26343c 77%); box-shadow: 0 0 14px rgba(57,208,216,.25); }
+    .chart { position: relative; height: 220px; margin-top: 20px; border-left: 1px solid #31414a; border-bottom: 1px solid #31414a; background-image: linear-gradient(rgba(57,208,216,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(57,208,216,.04) 1px,transparent 1px); background-size: 44px 44px; overflow:hidden; }
+    .chart svg { width:100%; height:100%; } .chart-label { position:absolute; top:8px; left:12px; color:var(--muted); font-size:10px; }
+    .kv-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 22px; } .kv { display:flex; justify-content:space-between; padding:11px 0; border-bottom:1px solid #1e2b32; } .kv span{color:var(--muted)}
+    .signal-canvas { position:relative; min-height:430px; margin-top:12px; border:1px solid #213039; background-color:#080e12; background-image:radial-gradient(#25343d 1px,transparent 1px); background-size:20px 20px; overflow:hidden; }
+    .signal-canvas svg { width:100%; height:100%; min-height:430px; } .device-list { display:grid; gap:0; }
+    .device { display:grid; grid-template-columns:58px 1fr auto; gap:10px; padding:12px 0; border-bottom:1px solid #202d34; align-items:center; } .device code{color:var(--cyan)} .device small{color:var(--muted)}
+    .topology { display:grid; grid-template-columns:repeat(5,1fr); align-items:center; gap:18px; margin:42px 0 52px; }
+    .node { padding:18px 10px; border:1px solid #344750; text-align:center; background:#0d171c; } .node.core { border-color:var(--cyan); box-shadow:0 0 22px rgba(57,208,216,.09); }
+    .connector { height:1px; background:linear-gradient(90deg,#344750,var(--cyan),#344750); }
+    .hexbox { margin-top:15px; padding:14px; border:1px solid #263740; color:#8ca1aa; background:#070c0f; font:12px/1.8 Consolas,monospace; word-spacing:8px; }
+    .power-state { display:grid; grid-template-columns:1fr 1fr; align-items:center; min-height:240px; border-bottom:1px solid var(--line); }
+    .power-value strong { display:block; font:300 62px "Segoe UI"; color:var(--green); } .power-value span{color:var(--muted)}
+    .power-line { position:relative; height:54px; background:linear-gradient(90deg,var(--green),var(--green)) center/100% 3px no-repeat; } .power-line i{position:absolute;top:19px;width:16px;height:16px;border:3px solid var(--green);background:#0a1014;transform:rotate(45deg)}
+    .scene-grid { display:grid; grid-template-columns:repeat(3,1fr); border-top:1px solid var(--line); border-left:1px solid var(--line); } .scene { min-height:150px; padding:20px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); cursor:pointer; } .scene:hover{background:#101a20}.scene.active{box-shadow:inset 0 2px var(--cyan);background:rgba(57,208,216,.05)} .scene h3{margin:28px 0 5px;font-size:15px}.scene p{margin:0;color:var(--muted);font-size:11px}
+    .timeline { height:72px; display:flex; align-items:center; gap:14px; border-bottom:1px solid var(--line); } .timeline .track{flex:1;height:3px;background:#2a3941;position:relative}.timeline .track span{display:block;width:64%;height:100%;background:var(--cyan)}.timeline .track i{position:absolute;left:64%;top:-6px;width:15px;height:15px;border-radius:50%;background:var(--cyan)}
+    .score { font:300 68px "Segoe UI"; color:var(--cyan); } .score small{font-size:12px;color:var(--muted)}
+    @media (max-width: 1100px) { .workspace { grid-template-columns: 150px 1fr 250px; } .system-strip span:nth-child(n+3) { display:none; } .sidebar-meta { display:none; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><div class="brand-mark">RT</div><div><strong>轨道交通仿真综合监控平台</strong><small>RAIL TRANSIT · ATS CONTROL</small></div></div>
+      <div class="system-strip">
+        <span id="backendStatus"><i class="dot off"></i>后端连接中</span><span id="signalStatus"><i class="dot off"></i>信号未连接</span><span id="plcStatus"><i class="dot off"></i>司机台未连接</span><span id="visionStatus"><i class="dot off"></i>视景未连接</span>
+      </div>
+      <div class="top-actions"><div class="clock"><strong id="clock">09:42:31</strong><small>仿真时间 · <span id="rate">5×</span></small></div><button class="button" id="speedBtn">倍速</button><button class="button" id="pauseBtn">暂停</button></div>
+    </header>
+
+    <section class="workspace">
+      <aside class="sidebar">
+        <p class="section-label">运行控制</p>
+        <nav class="nav">
+          <button class="active" data-page="overview">综合运行总览 <span class="num">01</span></button><button data-page="dispatch">调度控制 <span class="num">02</span></button><button data-page="train">单车运行监控 <span class="num">03</span></button><button data-page="signal">信号与联锁 <span class="num">04</span></button><button data-page="power">供电监控 <span class="num">05</span></button>
+        </nav>
+        <p class="section-label" style="margin-top:24px">系统工具</p>
+        <nav class="nav"><button data-page="interface">接口通信 <span class="num">06</span></button><button data-page="scene">数据与场景 <span class="num">07</span></button><button data-page="replay">回放与评价 <span class="num">08</span></button></nav>
+        <div class="sidebar-meta">WEB ATS<br>BUILD 2026.07</div>
+      </aside>
+
+      <main class="main">
+        <div class="toolbar">
+          <div class="view-tabs"><button class="tool active">运营图</button><button class="tool">信号图</button></div>
+          <div class="layer-tools"><button class="tool active">列车</button><button class="tool active">信号</button><button class="tool">限速</button><button class="tool">坡度</button><button class="tool">Link</button></div>
+        </div>
+        <div class="map">
+          <div class="map-title"><h1>房山线 · 全线运行态势</h1><p id="mapSummary">13 站 · 3 列车在线 · 数据刷新 100 ms</p></div><div class="map-badge"><i class="dot"></i>运营正常</div>
+          <svg class="track-svg" id="overviewTrackSvg" viewBox="0 0 1100 540" role="img" aria-label="后端主干线实时运行图"><text x="550" y="270" text-anchor="middle" fill="#73858e">正在加载后端线路拓扑…</text></svg>
+          <div class="legend"><span><i class="l-red"></i>列车占用</span><span><i class="l-amber"></i>进路锁闭</span><span><i class="l-cyan"></i>选中列车</span><span><i></i>空闲区段</span></div>
+        </div>
+      </main>
+
+      <aside class="inspector">
+        <div class="inspector-head"><div class="eyebrow">当前选中列车</div><h2 id="trainName">--</h2><div class="state-line"><i class="dot"></i><span id="trainState">等待实时数据</span></div><div class="speed"><strong id="trainSpeed">0.0</strong><span>km/h</span></div><div class="speedbar"><span id="speedBar"></span></div></div>
+        <div class="metrics"><div class="metric"><span>运行方向</span><b id="direction">--</b></div><div class="metric"><span>当前区段</span><b id="section">--</b></div><div class="metric"><span>下一站</span><b id="nextStation">--</b></div><div class="metric"><span>站距</span><b id="distance">--</b></div><div class="metric"><span>线路限速</span><b id="limit">--</b></div><div class="metric"><span>牵引 / 制动</span><b id="tractionBrake">--</b></div><div class="metric"><span>供电状态</span><b class="safe" id="overviewPower">--</b></div><div class="metric"><span>车门状态</span><b id="overviewDoors">--</b></div></div>
+        <div class="inspector-actions"><button class="button" id="detailBtn">单车详情</button><button class="button danger" id="emergencyBtn">紧急停车</button></div>
+      </aside>
+      <section class="subpage" id="subpage" aria-live="polite"></section>
+    </section>
+
+    <footer class="dock">
+      <div class="alarm-count"><strong>02</strong><div><b>活动报警</b><br><span style="color:#697a83">1 条待确认</span></div></div>
+      <div class="dock-main"><div class="dock-tabs"><div class="log-filters" id="logFilters"><button class="active" data-log-train="">全部日志</button><button data-log-train="system">系统</button></div><span id="logCount">等待实时日志</span></div><div class="log" id="eventLog"><div class="log-empty">正在连接仿真后端…</div></div></div>
+    </footer>
+  </div>
+
+  <div class="modal-backdrop" id="modal"><div class="modal"><header><strong>确认紧急停车命令</strong><span>该操作将立即切除牵引并施加最大制动力</span></header><div class="content"><p>确认对 <b id="modalTrain">2车</b> 下发紧急停车命令？</p><dl><dt>当前速度</dt><dd id="modalSpeed">61.4 km/h</dd><dt>当前位置</dt><dd>Link 38 / Seg 127</dd><dt>预计制动距离</dt><dd>246 m</dd></dl></div><footer><button class="button" id="cancelBtn">取消</button><button class="button danger" id="confirmBtn">确认紧急停车</button></footer></div></div>
+  <div class="toast" id="toast">✓ 2车紧急停车命令已执行，车辆进入紧急制动状态。</div>
+  <script>
+    const trains = {
+      1:{speed:'43.8',state:'ATO 正常运行',direction:'上行',section:'苏庄—良乡南关',next:'良乡南关',distance:'716 m',limit:'70 km/h',signal:'● 绿灯'},
+      2:{speed:'61.4',state:'ATO 正常运行',direction:'下行',section:'良乡大学城北—良乡大学城',next:'良乡大学城',distance:'483 m',limit:'80 km/h',signal:'● 绿灯'},
+      3:{speed:'0.0',state:'站台扣车',direction:'下行',section:'稻田站台',next:'长阳',distance:'—',limit:'60 km/h',signal:'● 红灯'}
+    };
+    const pageTemplates = {
+      dispatch: `<header class="page-head"><div><h1>调度控制</h1><p>列车增删、运营交路与行车命令 · 命令结果同步写入单车日志</p></div></header><div class="page-body split"><section class="pane"><div class="pane-title"><h2>全线列车</h2><span id="liveTrainCount">等待实时数据</span></div><form class="inline-form" id="addTrainForm"><div class="field"><label for="newTrainId">列车编号</label><input id="newTrainId" value="2车" maxlength="20" required></div><div class="field"><label for="newTrainStation">始发站</label><select id="newTrainStation"></select></div><div class="field"><label for="newTrainDirection">方向</label><select id="newTrainDirection"><option value="1">下行</option><option value="-1">上行</option></select></div><button class="button active" type="submit">添加列车</button></form><table class="data-table"><thead><tr><th>列车</th><th>状态</th><th>方向</th><th>速度</th><th>下一站</th><th>交路</th></tr></thead><tbody id="dispatchTrainRows"></tbody></table><div class="chart"><span class="chart-label">运行图 · 距离 / 仿真时间</span><svg viewBox="0 0 700 210" preserveAspectRatio="none"><path d="M0 180 L170 125 L340 98 L520 42 L700 20" fill="none" stroke="#39d0d8" stroke-width="2"/><path d="M0 40 L180 75 L370 118 L520 145 L700 185" fill="none" stroke="#73858e" stroke-width="2"/></svg></div></section><aside class="pane"><div class="eyebrow">当前选中列车</div><div class="command-hero"><strong id="dispatchSelected">1车</strong><span><i class="dot"></i><span id="dispatchState">等待状态</span></span></div><div class="kv"><span>当前位置</span><b id="dispatchPosition">—</b></div><div class="kv"><span>当前交路</span><b id="dispatchPlan">—</b></div><div class="kv"><span>驾驶模式</span><b>ATO</b></div><div class="command-grid"><button class="button" data-command="depart">发车</button><button class="button" data-command="hold">扣车</button><button class="button" data-command="release">解除扣车</button><button class="button" data-command="restore">解除紧急</button><button class="button" data-command="plan">设置主线交路</button><button class="button danger" data-command="emergency-stop">紧急停车</button><button class="button danger wide" id="removeTrainBtn">删除当前列车</button></div></aside></div>`,
+      train: `<header class="page-head"><div><h1>单车运行监控</h1><p id="monitorSubtitle">选择列车查看独立运行状态</p></div><div class="field"><label for="monitorTrainSelect">监控列车</label><select id="monitorTrainSelect"></select></div></header><div class="page-body split"><section class="pane"><div class="big-speed"><div><strong id="monitorSpeed">0.0</strong> <small>km/h</small><div style="text-align:center;color:#73858e">允许速度 <span id="monitorLimit">--</span> km/h</div></div><div class="arc" id="monitorSpeedArc"></div></div><div class="pane-title" style="margin-top:18px"><h2>当前运行位置</h2><span id="monitorPosition">--</span></div><table class="data-table"><tbody><tr><td>运行状态</td><td id="monitorStatus">--</td></tr><tr><td>当前交路</td><td id="monitorPlan">--</td></tr><tr><td>目标车站</td><td id="monitorTarget">--</td></tr><tr><td>距目标站</td><td id="monitorDistance">--</td></tr></tbody></table></section><aside class="pane"><div class="pane-title"><h2>车辆实时状态</h2><span>100 ms</span></div><div class="kv-grid"><div class="kv"><span>加速度</span><b id="monitorAcceleration">--</b></div><div class="kv"><span>牵引级位</span><b id="monitorThrottle">--</b></div><div class="kv"><span>制动级位</span><b id="monitorBrake">--</b></div><div class="kv"><span>牵引力</span><b id="monitorTractiveForce">--</b></div><div class="kv"><span>总制动力</span><b id="monitorBrakeForce">--</b></div><div class="kv"><span>累计净能耗</span><b id="monitorEnergy">--</b></div><div class="kv"><span>供电</span><b id="monitorPower">--</b></div><div class="kv"><span>车门</span><b id="monitorDoors">--</b></div></div><div class="command-grid"><button class="button" data-command="depart">发车</button><button class="button" data-command="hold">扣车</button><button class="button" data-command="release">解除扣车</button><button class="button danger" data-command="emergency-stop">紧急停车</button></div></aside></div>`,
+      signal: `<header class="page-head"><div><h1>信号与联锁</h1><p>主线取自校对后的 Link 链，车站与侧线取自后端语义线路模型</p></div><span class="status" id="signalRealtimeState">等待数据</span></header><div class="page-body split"><section class="pane"><div class="pane-title"><h2>全线联锁图</h2><span id="signalSummary">正在同步线路拓扑</span></div><div class="signal-canvas"><svg id="signalTrackSvg" viewBox="0 0 1100 430" role="img" aria-label="后端主干线实时联锁图"></svg></div></section><aside class="pane"><div class="pane-title"><h2>实时设备状态</h2><span id="signalDeviceCount">0 项</span></div><div class="device-list" id="signalDeviceList"><div class="log-empty">等待后端快照…</div></div></aside></div>`,
+      power: `<header class="page-head"><div><h1>供电监控</h1><p>当前模型支持正常、低电压、断电与恢复四种供电状态</p></div><span class="status">全线供电状态实时同步</span></header><div class="page-body split"><section class="pane"><div class="power-state"><div class="power-value"><span>当前牵引能力</span><strong id="powerValue">100%</strong><span id="powerLabel">供电正常 · 无降级</span></div><div class="power-line"><i style="left:8%"></i><i style="left:32%"></i><i style="left:58%"></i><i style="left:84%"></i></div></div><div class="pane-title" style="margin-top:24px"><h2>全线供电区段</h2><span>4 区段</span></div><table class="data-table"><tbody><tr><td>PS-01 郭公庄—长阳</td><td><span class="status">正常</span></td><td>牵引能力跟随全线状态</td></tr><tr><td>PS-02 长阳—良乡大学城</td><td><span class="status">正常</span></td><td>牵引能力跟随全线状态</td></tr><tr><td>PS-03 良乡大学城—苏庄</td><td><span class="status">正常</span></td><td>牵引能力跟随全线状态</td></tr><tr><td>PS-04 苏庄—燕山</td><td><span class="status">正常</span></td><td>牵引能力跟随全线状态</td></tr></tbody></table></section><aside class="pane"><div class="pane-title"><h2>故障场景注入</h2><span>真实后端控制</span></div><p style="color:var(--muted)">切换后端 PowerSupply 状态；断电将切除列车牵引。</p><div class="command-grid"><button class="button active" data-power="NORMAL">正常供电</button><button class="button" data-power="LOW_VOLTAGE">模拟低电压</button><button class="button danger" data-power="POWER_OFF">模拟断电</button><button class="button" data-power="RECOVERING">恢复供电</button></div><div class="kv" style="margin-top:24px"><span>线路网压</span><b>未接入 / 1500 V</b></div><div class="kv"><span>线路电流</span><b>未接入</b></div><div class="kv"><span>恢复倒计时</span><b>—</b></div></aside></div>`,
+      interface: `<header class="page-head"><div><h1>接口通信</h1><p>多系统连接状态、通信周期与报文统计</p></div><div style="display:flex;align-items:center;gap:12px"><span id="networkToggleStatus" style="color:var(--muted);font-size:11px">网络未启动</span><button class="button" id="networkToggleBtn">联调连接</button><button class="button" onclick="showToast('✓ 日志导出功能待实现')">导出通信日志</button></div></header><div class="page-body" style="grid-template-rows:auto 1fr;padding:0 28px"><div class="topology"><div class="node" id="topoNode_vehicle_udp">车辆UDP<br><small>UDP · 20ms</small><br><span id="topoStatus_vehicle_udp"><i class="dot off"></i>未连接</span></div><div class="node" id="topoNode_signal_gateway">信号网关<br><small>UDP · 250ms</small><br><span id="topoStatus_signal_gateway"><i class="dot off"></i>未连接</span></div><div class="node core">仿真核心<br><small>接口网关</small><br><span style="color:var(--green);font-size:10px">● 运行中</span></div><div class="node" id="topoNode_plc">司机台PLC<br><small>TCP · 100ms</small><br><span id="topoStatus_plc"><i class="dot off"></i>未连接</span></div><div class="node" id="topoNode_cab_display">司机台显示<br><small>TCP · 100ms</small><br><span id="topoStatus_cab_display"><i class="dot off"></i>未连接</span></div></div><div style="text-align:center;margin:-8px 0 16px"><div class="node" id="topoNode_vision" style="display:inline-block;padding:8px 28px">视景系统<br><small>UDP · 100ms · 单向</small><br><span id="topoStatus_vision"><i class="dot off"></i>未连接</span></div></div><div style="display:grid;grid-template-columns:1.1fr .9fr;gap:28px;min-height:0"><section><div class="pane-title"><h2>通信状态</h2><span id="interfaceSummary">等待数据</span></div><table class="data-table"><thead><tr><th>子系统</th><th>协议</th><th>周期</th><th>状态</th><th>已发送</th><th>已接收</th><th>延迟</th></tr></thead><tbody id="interfaceTableBody"></tbody></table></section><aside><div class="pane-title"><h2>通信详情</h2><span id="interfaceDetailLabel">实时</span></div><div class="kv-grid" id="interfaceDetailGrid"></div><div class="pane-title" style="margin-top:18px"><h2>发送报文</h2><span id="sentPacketLabel">Hex</span></div><div class="hexbox" id="interfaceSentHex" style="font-size:11px;max-height:145px;overflow:auto;white-space:pre-wrap"></div><div class="pane-title" style="margin-top:12px"><h2>接收报文</h2><span id="recvPacketLabel">Hex</span></div><div class="hexbox" id="interfaceRecvHex" style="font-size:11px;max-height:145px;overflow:auto;white-space:pre-wrap"></div></aside></div></div>`,
+      scene: `<header class="page-head"><div><h1>数据与场景</h1><p>线路数据总览、运行环境与故障演示配置</p></div><button class="button active" data-demo="场景配置已应用">应用当前场景</button></header><div class="page-body" style="display:block;padding:24px 28px"><div class="kv-grid" style="grid-template-columns:repeat(4,1fr);gap:24px"><div><div class="eyebrow">STATIONS</div><div class="score">13</div><span style="color:var(--muted)">运营车站</span></div><div><div class="eyebrow">SEGMENTS</div><div class="score">319</div><span style="color:var(--muted)">轨道区段</span></div><div><div class="eyebrow">SWITCHES</div><div class="score">60</div><span style="color:var(--muted)">道岔组</span></div><div><div class="eyebrow">SIGNALS</div><div class="score">157</div><span style="color:var(--muted)">信号设备</span></div></div><div class="pane-title" style="margin-top:34px"><h2>运行场景</h2><span>选择一个演示配置</span></div><div class="scene-grid"><div class="scene active"><span class="status">READY</span><h3>正常早高峰</h3><p>3 列车 · ATO · 正常供电</p></div><div class="scene"><span class="status warn">FAULT</span><h3>区段占用冲突</h3><p>验证进路拒绝与解释反馈</p></div><div class="scene"><span class="status stop">FAULT</span><h3>牵引供电中断</h3><p>PS-03 区段模拟断电</p></div><div class="scene"><span class="status warn">WEATHER</span><h3>低黏着运行</h3><p>雨雪天气 · 制动距离增加</p></div><div class="scene"><span class="status off">COMMS</span><h3>视景通信中断</h3><p>UDP 接收超时与告警</p></div><div class="scene"><span class="status">CUSTOM</span><h3>自定义场景</h3><p>配置列车、位置与故障组合</p></div></div></div>`,
+      replay: `<header class="page-head"><div><h1>运行回放与评价</h1><p>记录 2026-07-12 · 场景：正常早高峰 · 时长 18分42秒</p></div><div><button class="button">导出报告</button> <button class="button active">开始回放</button></div></header><div class="page-body split"><section class="pane"><div class="timeline"><button class="button">▶</button><time>09:42:31</time><div class="track"><span></span><i></i></div><time>09:49:12</time></div><div class="pane-title" style="margin-top:22px"><h2>速度回放 · 2车</h2><span>允许速度 / 实际速度</span></div><div class="chart" style="height:300px"><svg viewBox="0 0 800 280" preserveAspectRatio="none"><path d="M0 225 C80 210 95 80 190 90 S300 190 390 82 S520 65 600 145 S720 90 800 55" fill="none" stroke="#39d0d8" stroke-width="3"/><path d="M0 55 H180 V38 H390 V72 H590 V45 H800" fill="none" stroke="#e9b44c" stroke-width="2" stroke-dasharray="8 6"/><line x1="510" x2="510" y1="0" y2="280" stroke="#ff5b62" stroke-dasharray="3 4"/></svg></div><div class="log-row" style="margin-top:10px"><time>09:42:29</time><span class="warn">事件</span><span>2车进路建立，进入良乡大学城区间</span></div></section><aside class="pane"><div class="eyebrow">OPERATION SCORE</div><div class="score">92<small> / 100</small></div><div class="kv"><span>停车精度</span><b>96</b></div><div class="kv"><span>运行平稳性</span><b>91</b></div><div class="kv"><span>安全操作</span><b>100</b></div><div class="kv"><span>能耗表现</span><b>83</b></div><div class="pane-title" style="margin-top:28px"><h2>关键事件</h2><span>3 条</span></div><div class="device-list"><div class="device"><code>09:38</code><div>停车误差 +0.32 m</div><span class="status">正常</span></div><div class="device"><code>09:42</code><div>进路 R-202 建立</div><span class="status">成功</span></div><div class="device"><code>09:45</code><div>接近限速 · 提前制动</div><span class="status warn">提示</span></div></div></aside></div>`
+    };
+    let selectedTrainId='1车', seconds=9*3600+42*60+31, rate=5, paused=false, liveState=null, socket=null, snapshotTimer=null, logTrain='';
+    const $=id=>document.getElementById(id);
+    const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    function selectTrain(id){const trainId=String(id).endsWith('车')?String(id):`${id}车`,t=liveState?.trains.find(item=>item.id===trainId);if(!t)return;selectedTrainId=trainId;document.querySelectorAll('.train').forEach(x=>x.classList.toggle('selected',x.dataset.train===trainId));$('trainName').textContent=t.id;$('trainSpeed').textContent=t.speedKmh.toFixed(1);$('trainState').textContent=t.blockedReason||t.status;$('direction').textContent=t.direction;$('section').textContent=`Seg ${t.segmentId} / ${t.offset.toFixed(1)} m`;$('nextStation').textContent=t.targetStation||'待设置';$('distance').textContent=t.targetDistance==null?'--':`${t.targetDistance.toFixed(0)} m`;$('limit').textContent=`${t.speedLimitKmh.toFixed(0)} km/h`;$('tractionBrake').textContent=`${t.tractiveForceKn.toFixed(0)} / ${t.brakeForceKn.toFixed(0)} kN`;$('overviewPower').textContent=liveState.power.label;$('overviewDoors').textContent=t.doors.left?'左门开启':t.doors.right?'右门开启':'关闭锁闭';$('speedBar').style.width=`${Math.min(100,t.speedKmh/Math.max(1,t.speedLimitKmh)*100)}%`;const monitor=$('monitorTrainSelect');if(monitor){monitor.value=trainId;renderTrainMonitor(t)}}
+    document.querySelectorAll('.tool').forEach(b=>b.addEventListener('click',()=>{ if(b.parentElement.classList.contains('view-tabs')) b.parentElement.querySelectorAll('.tool').forEach(x=>x.classList.remove('active')); b.classList.toggle('active'); }));
+    document.querySelectorAll('.nav button').forEach(b=>b.addEventListener('click',()=>{
+      document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active')); b.classList.add('active');
+      const page=b.dataset.page, sub=$('subpage');
+      if(page==='overview'){ sub.classList.remove('open'); sub.innerHTML=''; return; }
+      sub.innerHTML=pageTemplates[page]; sub.classList.add('open'); bindSubpage();
+    }));
+    function bindSubpage(){
+      document.querySelectorAll('#subpage [data-select]').forEach(row=>row.onclick=()=>{row.closest('tbody').querySelectorAll('tr').forEach(x=>x.classList.remove('selected'));row.classList.add('selected')});
+      document.querySelectorAll('#subpage [data-demo]').forEach(btn=>btn.onclick=()=>showToast('✓ '+btn.dataset.demo));
+      document.querySelectorAll('#subpage .scene').forEach(card=>card.onclick=()=>{card.parentElement.querySelectorAll('.scene').forEach(x=>x.classList.remove('active'));card.classList.add('active')});
+      document.querySelectorAll('#subpage [data-command]').forEach(btn=>btn.onclick=()=>sendTrainCommand(btn.dataset.command));
+      document.querySelectorAll('#subpage [data-power]').forEach(btn=>btn.onclick=async()=>{const result=await api('/api/power',{method:'POST',body:JSON.stringify({status:btn.dataset.power})});if(result.ok){document.querySelectorAll('#subpage [data-power]').forEach(x=>x.classList.remove('active'));btn.classList.add('active')}});
+      const addForm=$('addTrainForm');if(addForm){const station=$('newTrainStation');station.innerHTML=(liveState?.stations||[]).map(s=>`<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');addForm.onsubmit=addTrain;$('removeTrainBtn').onclick=removeSelectedTrain;}
+      const monitor=$('monitorTrainSelect');if(monitor){monitor.innerHTML=(liveState?.trains||[]).map(t=>`<option value="${escapeHtml(t.id)}">${escapeHtml(t.id)}</option>`).join('');monitor.value=selectedTrainId;monitor.onchange=()=>selectTrain(monitor.value);}
+      renderLiveSubpage();
+    }
+    function showToast(message){ $('toast').textContent=message; $('toast').classList.add('show'); setTimeout(()=>$('toast').classList.remove('show'),2600); }
+    $('logFilters').onclick=event=>{const button=event.target.closest('[data-log-train]');if(!button)return;logTrain=button.dataset.logTrain;renderLogs();};
+    $('detailBtn').onclick=()=>document.querySelector('[data-page="train"]').click();
+    $('emergencyBtn').onclick=()=>{const train=liveState?.trains.find(t=>t.id===selectedTrainId);if(!train)return;$('modalTrain').textContent=train.id;$('modalSpeed').textContent=train.speedKmh.toFixed(1)+' km/h';$('modal').classList.add('open'); };
+    $('cancelBtn').onclick=()=> $('modal').classList.remove('open');
+    $('modal').onclick=e=>{ if(e.target===$('modal')) $('modal').classList.remove('open'); };
+    $('confirmBtn').onclick=async()=>{ $('modal').classList.remove('open');await api(`/api/trains/${encodeURIComponent(selectedTrainId)}/emergency-stop`,{method:'POST'}); };
+    $('pauseBtn').onclick=async()=>{ paused=!paused; await api(`/api/simulation/${paused?'pause':'resume'}`,{method:'POST'},false); $('pauseBtn').textContent=paused?'继续':'暂停'; $('pauseBtn').classList.toggle('active',paused); };
+    $('speedBtn').onclick=async()=>{ rate=rate===5?1:rate===1?2:5; await api('/api/simulation/'+rate,{method:'POST'},false); $('rate').textContent=rate+'×'; };
+    setInterval(()=>{ if(!paused) seconds+=rate; const h=String(Math.floor(seconds/3600)%24).padStart(2,'0'),m=String(Math.floor(seconds/60)%60).padStart(2,'0'),s=String(seconds%60).padStart(2,'0'); $('clock').textContent=`${h}:${m}:${s}`; },1000);
+    const initialPage=new URLSearchParams(location.search).get('page') || location.hash.replace('#page=','');
+    if(initialPage && pageTemplates[initialPage]) document.querySelector(`[data-page="${initialPage}"]`).click();
+    async function api(path,options={},notify=true){
+      try{const response=await fetch(path,{headers:{'Content-Type':'application/json'},...options});const result=await response.json();if(notify)showToast((result.ok?'✓ ':'✕ ')+result.message);return result}catch(error){if(notify)showToast('✕ 后端未连接');return {ok:false,message:error.message}}
+    }
+    async function sendTrainCommand(command){
+      const trainId=(document.getElementById('dispatchSelected')?.textContent||document.getElementById('monitorTrainSelect')?.value||selectedTrainId).trim();
+      if(command==='plan') return api(`/api/trains/${encodeURIComponent(trainId)}/plan`,{method:'POST',body:JSON.stringify({plan_id:'mainline_loop'})});
+      return api(`/api/trains/${encodeURIComponent(trainId)}/${command}`,{method:'POST'});
+    }
+    async function addTrain(event){event.preventDefault();const button=event.submitter;button.disabled=true;button.textContent='添加中…';const body={train_id:$('newTrainId').value.trim(),station_id:Number($('newTrainStation').value),direction:Number($('newTrainDirection').value),plan_id:'mainline_loop'};const result=await api('/api/trains',{method:'POST',body:JSON.stringify(body)});button.disabled=false;button.textContent='添加列车';if(result.ok)$('newTrainId').value=`${(liveState?.trains.length||1)+1}车`;}
+    async function removeSelectedTrain(){const trainId=$('dispatchSelected').textContent.trim();if(!confirm(`确认删除 ${trainId}？该车当前进路将同时释放。`))return;await api(`/api/trains/${encodeURIComponent(trainId)}`,{method:'DELETE'});}
+    function connectBackend(){
+      if(location.protocol==='file:'){ $('backendStatus').innerHTML='<i class="dot off"></i>演示模式'; return; }
+      refreshSnapshot();
+      const protocol=location.protocol==='https:'?'wss':'ws'; socket=new WebSocket(`${protocol}://${location.host}/ws/realtime`);
+      socket.onopen=()=>{if(snapshotTimer){clearInterval(snapshotTimer);snapshotTimer=null}$('backendStatus').innerHTML='<i class="dot"></i>仿真核心正常'};
+      socket.onmessage=event=>applySnapshot(JSON.parse(event.data));
+      socket.onclose=()=>{$('backendStatus').innerHTML='<i class="dot off"></i>实时通道断开 · 快照轮询';if(!snapshotTimer)snapshotTimer=setInterval(refreshSnapshot,1000);setTimeout(connectBackend,3000)};
+    }
+    async function refreshSnapshot(){try{const response=await fetch('/api/snapshot',{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);applySnapshot(await response.json());if(!socket||socket.readyState!==WebSocket.OPEN)$('backendStatus').innerHTML='<i class="dot"></i>仿真核心正常 · HTTP'}catch(error){$('backendStatus').innerHTML='<i class="dot off"></i>后端未连接'}}
+    function applySnapshot(state){
+      liveState=state; seconds=Math.floor(state.simTime); paused=state.paused; rate=state.speedMultiplier;
+      const h=String(Math.floor(seconds/3600)%24).padStart(2,'0'),m=String(Math.floor(seconds/60)%60).padStart(2,'0'),s=String(seconds%60).padStart(2,'0');$('clock').textContent=`${h}:${m}:${s}`;$('mapSummary').textContent=`${state.stations.length} 站 · ${state.trains.length} 列车在线 · 数据刷新 100 ms`;
+      $('rate').textContent=rate+'×';$('pauseBtn').textContent=paused?'继续':'暂停';$('pauseBtn').classList.toggle('active',paused);
+      const net=state.network||{};setSystemStatus('signalStatus',net.signal_gateway,'信号');setSystemStatus('plcStatus',net.plc,'司机台');setSystemStatus('visionStatus',net.vision,'视景');
+      if(!state.trains.some(t=>t.id===selectedTrainId)&&state.trains[0])selectedTrainId=state.trains[0].id;renderOverviewTrack();if(state.trains.length)selectTrain(selectedTrainId);renderLiveSubpage();renderLogs();
+    }
+    function setSystemStatus(id,online,label){$(id).innerHTML=`<i class="dot ${online?'':'off'}"></i>${label}${online?'已连接':'未连接'}`}
+    function renderLiveSubpage(){
+      if(!liveState)return;const rows=$('dispatchTrainRows');if(rows){const requested=$('dispatchSelected')?.textContent.trim(),current=liveState.trains.some(t=>t.id===requested)?requested:liveState.trains[0]?.id;rows.innerHTML=liveState.trains.map(t=>`<tr data-live-id="${escapeHtml(t.id)}" class="${t.id===current?'selected':''}"><td>${escapeHtml(t.id)}</td><td><span class="status ${t.emergency?'stop':t.held?'warn':''}">${escapeHtml(t.status)}</span></td><td>${escapeHtml(t.direction)}</td><td>${t.speedKmh.toFixed(1)} km/h</td><td>${escapeHtml(t.targetStation||'—')}</td><td>${escapeHtml(t.servicePlan||'—')}</td></tr>`).join('');$('liveTrainCount').textContent=liveState.trains.length+' 列在线';rows.querySelectorAll('tr').forEach(row=>row.onclick=()=>selectDispatchTrain(row.dataset.liveId));if(current)selectDispatchTrain(current)}
+      if($('powerValue')){$('powerValue').textContent=Math.round(liveState.power.tractionCapability*100)+'%';$('powerLabel').textContent=liveState.power.label}
+      const monitor=$('monitorTrainSelect');if(monitor){const ids=liveState.trains.map(t=>t.id),current=ids.includes(monitor.value)?monitor.value:selectedTrainId;monitor.innerHTML=liveState.trains.map(t=>`<option value="${escapeHtml(t.id)}">${escapeHtml(t.id)}</option>`).join('');monitor.value=current;const train=liveState.trains.find(t=>t.id===current);if(train)renderTrainMonitor(train)}
+      renderSignalState();
+      renderInterfacePage();
+    }
+    function selectDispatchTrain(id){const t=liveState.trains.find(x=>x.id===id);if(!t)return;$('dispatchSelected').textContent=t.id;$('dispatchState').textContent=t.status;$('dispatchPosition').textContent=`Seg ${t.segmentId} / ${t.offset.toFixed(1)} m`;$('dispatchPlan').textContent=t.servicePlan||'未设置';document.querySelectorAll('#dispatchTrainRows tr').forEach(x=>x.classList.toggle('selected',x.dataset.liveId===id))}
+    function renderTrainMonitor(t){$('monitorSubtitle').textContent=`${t.id} · ATO ${t.direction} · ${t.status}`;$('monitorSpeed').textContent=t.speedKmh.toFixed(1);$('monitorLimit').textContent=t.speedLimitKmh.toFixed(0);$('monitorSpeedArc').style.background=`linear-gradient(90deg,var(--cyan) ${Math.min(100,t.speedKmh/Math.max(1,t.speedLimitKmh)*100)}%,#26343c 0)`;$('monitorPosition').textContent=`Seg ${t.segmentId} / ${t.offset.toFixed(1)} m`;$('monitorStatus').textContent=t.blockedReason||t.status;$('monitorPlan').textContent=t.servicePlan||'未设置';$('monitorTarget').textContent=t.targetStation||'待设置';$('monitorDistance').textContent=t.targetDistance==null?'--':`${t.targetDistance.toFixed(0)} m`;$('monitorAcceleration').textContent=`${t.acceleration.toFixed(2)} m/s²`;$('monitorThrottle').textContent=`${Math.round(t.throttle*100)}%`;$('monitorBrake').textContent=`${Math.round(t.brakeLevel*100)}%`;$('monitorTractiveForce').textContent=`${t.tractiveForceKn.toFixed(1)} kN`;$('monitorBrakeForce').textContent=`${t.brakeForceKn.toFixed(1)} kN`;$('monitorEnergy').textContent=`${t.energyKwh.toFixed(3)} kWh`;$('monitorPower').textContent=liveState.power.label;$('monitorDoors').textContent=t.doors.left?'左门开启':t.doors.right?'右门开启':'关闭锁闭';}
+    function renderOverviewTrack(){const svg=$('overviewTrackSvg'),line=liveState?.line;if(!svg||!line)return;const directions=line.directions||{},all=[...(directions.down||[]),...(directions.up||[])];if(!all.length)return;const min=Math.min(...all.map(link=>link.start_m)),max=Math.max(...all.map(link=>link.end_m)),x=position=>55+(position-min)/Math.max(1,max-min)*990,occupancy=liveState.occupancy||{},locks=liveState.locks||{},parts=['<text x="22" y="214" fill="#73858e">下行</text><text x="22" y="344" fill="#73858e">上行</text>'];[['down',210],['up',338]].forEach(([direction,y])=>(directions[direction]||[]).forEach(link=>{const id=String(link.link_id),color=occupancy[id]?'#ff5b62':locks[id]?'#e9b44c':'#43545e',width=occupancy[id]?9:locks[id]?7:4;parts.push(`<line x1="${x(link.start_m).toFixed(1)}" y1="${y}" x2="${x(link.end_m).toFixed(1)}" y2="${y}" stroke="${color}" stroke-width="${width}"/>`)}));(line.stations||[]).forEach(station=>{const sx=x(station.position);parts.push(`<g class="station"><circle cx="${sx.toFixed(1)}" cy="210" r="5"/><circle cx="${sx.toFixed(1)}" cy="338" r="5"/><text x="${sx.toFixed(1)}" y="279">${escapeHtml(station.name)}</text></g>`)});(liveState.trains||[]).filter(t=>t.linkPosition!=null).forEach(t=>{const tx=x(t.linkPosition),ty=t.directionCode>=0?210:338,active=t.id===selectedTrainId?' selected':'';parts.push(`<g class="train${active}" data-train="${escapeHtml(t.id)}" transform="translate(${tx.toFixed(1)} ${ty})"><rect x="-25" y="-14" width="50" height="28" rx="3"/><text y="4">${escapeHtml(t.id)}</text><text class="train-tag" y="-28">${t.speedKmh.toFixed(1)} km/h</text></g>`)});svg.innerHTML=parts.join('');svg.querySelectorAll('.train').forEach(node=>node.onclick=()=>selectTrain(node.dataset.train));}
+    function renderSignalState(){const list=$('signalDeviceList');if(!list||!liveState)return;const occupancy=Object.entries(liveState.occupancy||{}),locks=Object.entries(liveState.locks||{}),restricted=(liveState.signals||[]).filter(signal=>signal.aspect!=='GREEN').slice(0,12),items=[];occupancy.forEach(([segment,owners])=>items.push(`<div class="device"><code>SEG ${escapeHtml(segment)}</code><div>轨道区段<br><small>占用列车 ${escapeHtml(owners.join('、'))}</small></div><span class="status stop">占用</span></div>`));locks.forEach(([segment,owner])=>items.push(`<div class="device"><code>SEG ${escapeHtml(segment)}</code><div>进路锁闭<br><small>锁闭列车 ${escapeHtml(owner)}</small></div><span class="status warn">锁闭</span></div>`));restricted.forEach(signal=>{const isRed=signal.aspect==='RED';items.push(`<div class="device"><code>${escapeHtml(signal.id)}</code><div>信号机 · ${isRed?'红灯':'黄灯'}<br><small>区段 ${escapeHtml(signal.segmentId)} · ${escapeHtml(signal.direction)}</small></div><span class="status ${isRed?'stop':'warn'}">${isRed?'防护':'注意'}</span></div>`)});list.innerHTML=items.join('')||'<div class="log-empty">当前无占用、锁闭或限制信号</div>';$('signalDeviceCount').textContent=`${items.length} 项`;$('signalSummary').textContent=`占用 ${occupancy.length} 区段 · 锁闭 ${locks.length} 区段 · 限制信号 ${restricted.length} 架`;$('signalRealtimeState').textContent='实时同步';renderSignalTrack();}
+    function renderSignalTrack(){const svg=$('signalTrackSvg'),line=liveState?.line;if(!svg||!line)return;const directions=line.directions||{},all=[...(directions.down||[]),...(directions.up||[])];if(!all.length){svg.innerHTML='<text x="550" y="215" text-anchor="middle" fill="#73858e">后端未提供 Link 主线</text>';return;}const min=Math.min(...all.map(link=>link.start_m)),max=Math.max(...all.map(link=>link.end_m)),x=position=>55+(position-min)/Math.max(1,max-min)*990,occupancy=liveState.occupancy||{},locks=liveState.locks||{},parts=[];parts.push('<text x="24" y="150" fill="#73858e">下行</text><text x="24" y="290" fill="#73858e">上行</text>');[['down',145],['up',285]].forEach(([direction,y])=>(directions[direction]||[]).forEach(link=>{const id=String(link.link_id),color=occupancy[id]?'#ff5b62':locks[id]?'#e9b44c':'#4a5c65',width=occupancy[id]?9:locks[id]?7:4;parts.push(`<line x1="${x(link.start_m).toFixed(1)}" y1="${y}" x2="${x(link.end_m).toFixed(1)}" y2="${y}" stroke="${color}" stroke-width="${width}" data-link="${id}"/>`)}));(line.branches||[]).forEach((branch,index)=>{const bx=x(branch.anchor_pos),base=index%2?285:145,end=base+(index%2?55:-55);parts.push(`<path d="M${bx.toFixed(1)} ${base} L${bx.toFixed(1)} ${end} l28 0" fill="none" stroke="#60737d" stroke-width="2"/><text x="${(bx+32).toFixed(1)}" y="${end+4}" fill="#73858e" font-size="9">${escapeHtml(branch.role)}</text>`)});(line.stations||[]).forEach(station=>{const sx=x(station.position);parts.push(`<line x1="${sx.toFixed(1)}" y1="137" x2="${sx.toFixed(1)}" y2="293" stroke="#2c3d46"/><circle cx="${sx.toFixed(1)}" cy="145" r="5" fill="#0a1014" stroke="#91a2aa"/><circle cx="${sx.toFixed(1)}" cy="285" r="5" fill="#0a1014" stroke="#91a2aa"/><text x="${sx.toFixed(1)}" y="222" text-anchor="middle" fill="#91a2aa" font-size="10">${escapeHtml(station.name)}</text>`)});(liveState.trains||[]).filter(train=>train.linkPosition!=null).forEach(train=>{const tx=x(train.linkPosition),ty=train.directionCode>=0?145:285;parts.push(`<rect x="${(tx-20).toFixed(1)}" y="${ty-13}" width="40" height="26" rx="3" fill="#d9edf0" stroke="#39d0d8"/><text x="${tx.toFixed(1)}" y="${ty+4}" text-anchor="middle" fill="#071014" font-size="10" font-weight="700">${escapeHtml(train.id)}</text>`)});svg.innerHTML=parts.join('');}
+    const INTERFACE_KEYS=['vehicle_udp','signal_gateway','plc','vision','cab_display'];
+    function renderInterfacePage(){
+      const stats=liveState?.network_stats;
+      if(!stats||!$('interfaceTableBody'))return;
+      const net=liveState.network||{};
+      // Update network toggle button state
+      const started=liveState.network_started;
+      const btn=$('networkToggleBtn');
+      const statusLabel=$('networkToggleStatus');
+      if(btn){
+        btn.textContent=started?'断开连接':'联调连接';
+        btn.className='button'+(started?' danger':'');
+        // Attach click handler (re-attach each render to avoid stale closures)
+        btn.onclick=async()=>{
+          const isStarting=btn.textContent==='联调连接';
+          btn.disabled=true;
+          btn.textContent='操作中...';
+          try{
+            const ep=isStarting?'/api/network/start':'/api/network/stop';
+            const r=await(await fetch(ep,{method:'POST'})).json();
+            showToast(r.message||(isStarting?'连接已启动':'连接已断开'));
+          }catch(e){showToast('操作失败: '+e.message);}
+          btn.disabled=false;
+        };
+      }
+      if(statusLabel){
+        statusLabel.textContent=started?'网络已启动 - 等待连接':statusLabel.textContent;
+      }
+      let totalSent=0,totalRecv=0,connectedCount=0;
+      INTERFACE_KEYS.forEach(key=>{
+        const s=stats[key];
+        if(!s)return;
+        totalSent+=s.packets_sent||0;
+        totalRecv+=s.packets_received||0;
+        if(s.connected)connectedCount++;
+        // Update topology node
+        const topoStatus=$('topoStatus_'+key);
+        if(topoStatus){
+          const dotClass=s.connected?'':'off';
+          topoStatus.innerHTML=`<i class="dot ${dotClass}"></i>${s.connected?'已连接':'未连接'}`;
+        }
+        const topoNode=$('topoNode_'+key);
+        if(topoNode){
+          topoNode.style.borderColor=s.connected?'var(--green)':'var(--line)';
+          topoNode.style.boxShadow=s.connected?'0 0 12px rgba(91,210,138,.15)':'none';
+        }
+      });
+      $('interfaceSummary').textContent=`${connectedCount}/5 已连接 · 发送 ${totalSent} · 接收 ${totalRecv}`;
+      // Update status label with real connections
+      const isStarted=liveState.network_started;
+      const l=$('networkToggleStatus');
+      if(l){
+        if(!isStarted)l.textContent='网络未启动';
+        else if(connectedCount>0)l.textContent=`已连接 ${connectedCount}/5 子系统`;
+        else l.textContent='网络已启动 - 等待连接';
+      }
+      // Log raw data to console for F12 inspection
+      if($('interfaceTableBody'))console.log('[接口通信] network_stats:', JSON.parse(JSON.stringify(stats)));
+      // Build table
+      const rows=INTERFACE_KEYS.map(key=>{
+        const s=stats[key];
+        if(!s)return '';
+        const latency=s.last_recv_ago!=null?`${s.last_recv_ago} ms`:s.last_send_ago!=null?`${s.last_send_ago} ms`:'—';
+        const statusClass=s.connected?'status':['vehicle_udp','signal_gateway','plc'].includes(key)?'status off':'status off';
+        const statusText=s.connected?'已连接':'未连接';
+        const sentStr=Number(s.packets_sent||0).toLocaleString();
+        const recvStr=Number(s.packets_received||0).toLocaleString();
+        const sel=key==='signal_gateway'?' class="selected"':'';
+        return `<tr${sel} data-iface="${key}"><td>${s.name}</td><td>${s.protocol}</td><td>${s.cycle_ms} ms</td><td><span class="${statusClass}">${statusText}</span></td><td>${sentStr}</td><td>${recvStr}</td><td>${latency}</td></tr>`;
+      }).join('');
+      $('interfaceTableBody').innerHTML=rows;
+      // Click handler for detail
+      $('interfaceTableBody').onclick=e=>{
+        const tr=e.target.closest('tr[data-iface]');
+        if(!tr)return;
+        $('interfaceTableBody').querySelectorAll('tr').forEach(x=>x.classList.remove('selected'));
+        tr.classList.add('selected');
+        console.log('[接口通信] 选中子系统详情:', JSON.parse(JSON.stringify(stats[tr.dataset.iface])));
+        renderInterfaceDetail(stats[tr.dataset.iface]);
+      };
+      // Show first detail
+      const firstKey=INTERFACE_KEYS.find(k=>stats[k]);
+      if(firstKey){
+        $('interfaceTableBody').querySelector('tr.selected')?.classList.remove('selected');
+        const firstRow=$('interfaceTableBody').querySelector('tr');
+        if(firstRow){firstRow.classList.add('selected');renderInterfaceDetail(stats[firstRow.dataset.iface]);}
+      }
+    }
+    function renderInterfaceDetail(s){
+      if(!s||!$('interfaceDetailGrid'))return;
+      $('interfaceDetailLabel').textContent=s.name+' · 详情';
+      const items=[
+        {k:'协议类型',v:s.protocol},
+        {k:'通信周期',v:`${s.cycle_ms} ms`},
+        {k:'通信方向',v:s.bidirectional?'双向':'单向（仅发送）'},
+        {k:'连接状态',v:s.connected?'已连接':'未连接'},
+        {k:'已发送报文',v:Number(s.packets_sent||0).toLocaleString()},
+        {k:'已接收报文',v:Number(s.packets_received||0).toLocaleString()},
+        {k:'最近发送',v:s.last_send_ago!=null?`${s.last_send_ago} ms 前`:'从未'},
+        {k:'最近接收',v:s.last_recv_ago!=null?`${s.last_recv_ago} ms 前`:'从未'},
+      ];
+      $('interfaceDetailGrid').innerHTML=items.map(item=>`<div class="kv"><span>${item.k}</span><b>${item.v}</b></div>`).join('');
+      // Hex dump
+      const sentHex=s.last_sent_packet_hex||'';
+      const recvHex=s.last_recv_packet_hex||'';
+      $('interfaceSentHex').textContent=sentHex||'（暂无发送报文）';
+      $('interfaceRecvHex').textContent=recvHex||'（暂无接收报文）';
+      const sentBytes=sentHex?(sentHex.split(/\s+/).length||0):0;
+      const recvBytes=recvHex?(recvHex.split(/\s+/).length||0):0;
+      $('sentPacketLabel').textContent=sentBytes?`${sentBytes} B`:'Hex';
+      $('recvPacketLabel').textContent=recvBytes?`${recvBytes} B`:'Hex';
+      // cab_display 额外显示两个屏的报文
+      if(s.last_network_packet_hex){
+        $('sentPacketLabel').textContent='网络屏 '+(sentBytes?`${sentBytes} B`:'');
+        // 在发送报文下方追加信号屏hex
+        const extraHex=s.last_signal_packet_hex||'';
+        if(extraHex){
+          $('interfaceSentHex').textContent='--- 网络屏 ---\n'+(sentHex||'')+'\n\n--- 信号屏 ---\n'+extraHex;
+          $('sentPacketLabel').textContent='网络/'+((extraHex.split(/\s+/).length||0)+sentBytes)+' B';
+        }
+      }
+    }
+    function renderLogs(){if(!liveState)return;const trainIds=liveState.trains.map(t=>t.id);$('logFilters').innerHTML=`<button class="${logTrain===''?'active':''}" data-log-train="">全部日志</button><button class="${logTrain==='system'?'active':''}" data-log-train="system">系统</button>${trainIds.map(id=>`<button class="${logTrain===id?'active':''}" data-log-train="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join('')}`;const filtered=(liveState.events||[]).filter(e=>logTrain===''||(logTrain==='system'?!e.train_id:e.train_id===logTrain)).slice().reverse();$('logCount').textContent=`${filtered.length} 条 · 最近 120 条`;if(!filtered.length){$('eventLog').innerHTML='<div class="log-empty">当前筛选下暂无日志</div>';return;}$('eventLog').innerHTML=filtered.map(e=>{const level=e.severity==='CRITICAL'?'critical':e.severity==='WARNING'?'warn':'ok';const minutes=String(Math.floor(e.timestamp/60)).padStart(2,'0'),secs=(e.timestamp%60).toFixed(1).padStart(4,'0');return `<div class="log-row"><time>${minutes}:${secs}</time><span class="${level}">${escapeHtml(e.severity)}</span><span>${escapeHtml(e.train_id||'系统')}</span><span>${escapeHtml(e.description)}</span><span>${escapeHtml(e.source)}</span><span>${e.speed?`${(e.speed*3.6).toFixed(1)} km/h`:'—'}</span></div>`}).join('');}
+    connectBackend();
+  </script>
+</body>
+</html>

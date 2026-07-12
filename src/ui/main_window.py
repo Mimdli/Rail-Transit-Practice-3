@@ -1,29 +1,41 @@
 """主窗口 — 应用程序主界面"""
 
+import logging
+from html import escape
+
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGroupBox, QTextEdit,
-    QLabel, QComboBox, QTabWidget, QSplitter
+    QLabel, QComboBox, QTabWidget, QSplitter, QScrollArea, QFrame,
+    QPushButton, QButtonGroup, QApplication, QCheckBox,
 )
 from PyQt5.QtCore import QTimer, Qt
 
 from src.ui.dashboard import Dashboard
 from src.ui.controls import ControlPanel
+from src.ui.semantic_track_view import SemanticTrackViewWidget
 from src.ui.track_view import TrackViewWidget
-from src.ui.charts import ForcePanel
+from src.ui.charts import ForcePanel, EnergyPanel
+from src.ui.dispatch_view import DispatchView
 from src.vehicle.vehicle_controller import VehicleController
 from src.vehicle.auto_drive import AutoDriveController
-from src.vehicle.enums import RunningMode, DoorSide, LoadLevel
+from src.vehicle.route_manager import RouteManager
+from src.vehicle.enums import RunningMode, DoorSide, LoadLevel, StationPhase, ControlLevel
 from src.vehicle.environment import MockEnvironment, WeatherType
 from src.common.consist import CONSIST_4M2T
 from src.track.adapter import TrackDataAdapter
 from src.track.db_loader import DBLoader
 from src.track.loader import TrackLoader
+from src.track.route import Route
 from src.signal.system import SignalSystem, SignalAspect
 from src.power.supply import PowerSupply, PowerStatus
 from src.door.interlock import DoorInterlock
 from src.logger.recorder import Recorder
 from src.logger.evaluator import Evaluator
-from src.network import NetworkManager
+from src.network.manager import NetworkManager
+
+logger = logging.getLogger(__name__)
+from src.dispatch import DispatchManager, ServicePlan
+from src.dispatch.train_manager import resolve_station_track_position
 
 
 class MainWindow(QMainWindow):
@@ -32,7 +44,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("轨道交通模拟系统")
-        self.setMinimumSize(1400, 860)
+        self.setMinimumSize(1360, 820)
 
         # 初始化核心模块
         self._init_modules()
@@ -44,14 +56,12 @@ class MainWindow(QMainWindow):
         # 定时器
         self.timer = QTimer()
         self.timer.timeout.connect(self._update)
-        self._timer_ms = 100
-        self._physics_substeps = 3  # 每帧多次积分，兼顾稳定性与实时性
-        self.timer.start(self._timer_ms)
+        self.timer.start(100)  # 100ms 刷新
 
     def _init_modules(self):
         """初始化所有核心模块"""
         # ── 线路数据 ─────────────────────────────────────────────
-        self.data_mode = "demo"
+        self.data_mode = "database"
         self.track = self._load_track_data(self.data_mode)
         self.track_adapter = TrackDataAdapter(self.track)
 
@@ -64,29 +74,62 @@ class MainWindow(QMainWindow):
             track=self.track_adapter,
             env=self.env,
         )
-        self.auto_drive = AutoDriveController(self.controller)
+        # 初始位置优先放在首站，避免数据库线路的区段顺序影响列车起点。
+        if self.track.stations:
+            first_station = min(self.track.stations, key=lambda item: item.position)
+            start = resolve_station_track_position(
+                self.track, first_station, direction=1)
+            self.controller.reset_states(start.segment_id, start.offset)
+
+        # ── 联锁（需在 route_manager / auto_drive 之前创建） ────
+        self.interlock = DoorInterlock(self.controller, self.track, self.track_adapter)
+
+        # ── 进路管理器（独立于驾驶模式） ──────────────────────────
+        self.route_manager = RouteManager(self.track_adapter)
+
+        # ── 自动驾驶控制器 ────────────────────────────────────────
+        self.auto_drive = AutoDriveController(
+            self.controller, self.interlock,
+            route_manager=self.route_manager,
+        )
+
+        # ── 进路（路线选择） ────────────────────────────────────
+        self.routes = TrackLoader.create_demo_routes()
+        self.route_manager.set_available_routes(self.routes)
+        # 默认选中"自动"进路
+        auto_route = next((r for r in self.routes if r.is_auto), self.routes[0])
+        self.route_manager.set_route(auto_route)
 
         # ── 旧版兼容引用（供联锁/日志模块中未迁移的代码使用） ────
         self.vehicle = self.controller  # 兼容别名
 
-        # ── 信号 / 供电 / 联锁 / 日志 ────────────────────────────
+        # ── 信号 / 供电 / 日志 ────────────────────────────────────
         self.signal_system = SignalSystem()
         self.power_supply = PowerSupply()
-        self.interlock = DoorInterlock(self.controller, self.track, self.track_adapter)
         self.recorder = Recorder()
+        self.recorder.start()
         self.evaluator = Evaluator()
 
-        # ── 网络通信（可选，启动时不连接外部） ─────────────────
-        self.network = NetworkManager()
-        self._setup_network_callbacks()
-        self._network_mode = False
+        # ── 多列车调度 ───────────────────────────────────────────
+        self._create_dispatch_manager()
+        self.active_train_id = "1车"
 
-        self.front_train_positions: list[float] = [300.0]
         self._last_signal_aspects: dict[str, SignalAspect] = {}
+        self._overspeed_active: dict[str, bool] = {}
         self._last_status_log_time: float = -1.0
         self._displayed_event_count: int = 0
         self.sim_time: float = 0.0
-        self.recorder.record("系统", "系统启动，当前数据源: 演示数据")
+
+        # ── 网络通信（默认关闭，通过界面开关切换） ──────────────────
+        self._network_mode: bool = False
+        self.network = NetworkManager()
+
+        # ── 时间加速 ────────────────────────────────────────────
+        self.speed_multiplier: int = 1
+        self.fast_forward_active: bool = False
+        self.fast_forward_cancelled: bool = False
+
+        self.recorder.record("系统", "系统启动，当前数据源: 数据库线路")
 
     def _init_ui(self):
         """初始化界面"""
@@ -97,6 +140,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
 
         layout.addWidget(self._create_data_source_bar())
+        layout.addWidget(self._create_speed_control_bar())
 
         self.tabs = QTabWidget()
         self.tabs.setObjectName("mainTabs")
@@ -106,6 +150,7 @@ class MainWindow(QMainWindow):
         sim_layout = QVBoxLayout(sim_page)
         sim_layout.setContentsMargins(0, 0, 0, 0)
         sim_layout.setSpacing(0)
+        sim_layout.addWidget(self._create_train_control_bar())
 
         sim_splitter = QSplitter(Qt.Vertical)
         sim_splitter.setObjectName("simSplitter")
@@ -113,48 +158,92 @@ class MainWindow(QMainWindow):
         self.dashboard = Dashboard(
             self.controller, self.track, self.track_adapter,
             self.signal_system, self.power_supply,
+            auto_drive=self.auto_drive,
+            route_manager=self.route_manager,
         )
         self.control_panel = ControlPanel(
             self.controller, self.auto_drive, self.interlock,
             self.track_adapter, self.recorder, show_log=False,
+            route_manager=self.route_manager,
         )
+        self.control_panel.populate_routes(self.routes)
+        self.control_panel.populate_stations(self.track.stations)
+        self.control_panel.consist_changed.connect(self._on_consist_changed)
+        self.control_panel.mode_change_requested.connect(self.set_driving_mode)
 
         top_content = QWidget()
         top_layout = QHBoxLayout(top_content)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(0)
         top_layout.addWidget(self.dashboard, stretch=5)
-        top_layout.addWidget(self.control_panel, stretch=2)
+        control_scroll = QScrollArea()
+        control_scroll.setWidgetResizable(True)
+        control_scroll.setFrameShape(QFrame.NoFrame)
+        control_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        control_scroll.setMinimumWidth(320)
+        control_scroll.setWidget(self.control_panel)
+        top_layout.addWidget(control_scroll, stretch=2)
 
         sim_splitter.addWidget(top_content)
         sim_splitter.addWidget(self._create_log_panel())
-        sim_splitter.setSizes([640, 180])
+        sim_splitter.setSizes([690, 150])
         sim_splitter.setCollapsible(0, False)
         sim_splitter.setCollapsible(1, True)
         sim_layout.addWidget(sim_splitter)
 
         self.track_view = TrackViewWidget(self.track)
+        self.track_view.segment_clicked.connect(self._on_track_clicked)
+        self.semantic_track_view = SemanticTrackViewWidget(self.track)
         self.force_panel = ForcePanel()
+        self.energy_panel = EnergyPanel()
+        self.dispatch_view = DispatchView(self.dispatch)
+        self.dispatch_view.operation_finished.connect(
+            lambda _message, _ok: self._refresh_train_selector())
+        self.dispatch_view.selected_train_changed.connect(
+            self._select_active_train)
 
         self.tabs.addTab(sim_page, "运行仿真")
+        self.tabs.addTab(self.dispatch_view, "调度中心")
+        self.tabs.addTab(self.semantic_track_view, "运营线路图")
         self.tabs.addTab(self.track_view, "线路可视化")
         self.tabs.addTab(self.force_panel, "力学分析")
+        self.tabs.addTab(self.energy_panel, "能耗分析")
+
+    def _create_train_control_bar(self) -> QWidget:
+        """运行仿真页的受控列车切换条。"""
+        bar = QWidget()
+        bar.setObjectName("trainControlBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(16, 6, 16, 6)
+        layout.setSpacing(8)
+        label = QLabel("当前受控列车")
+        label.setObjectName("dataSourceTitle")
+        self.active_train_combo = QComboBox()
+        self.active_train_combo.setObjectName("dataSourceCombo")
+        self.active_train_combo.currentIndexChanged.connect(
+            self._on_active_train_changed)
+        self.active_train_hint = QLabel("驾驶按钮、仪表盘和力学分析将跟随所选列车")
+        self.active_train_hint.setObjectName("dataSourceStatus")
+        layout.addWidget(label)
+        layout.addWidget(self.active_train_combo)
+        layout.addWidget(self.active_train_hint, stretch=1)
+        self._refresh_train_selector()
+        return bar
 
     def _create_data_source_bar(self) -> QWidget:
         """创建数据源切换条"""
         bar = QWidget()
         bar.setObjectName("dataSourceBar")
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(16, 10, 16, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 7, 16, 6)
+        layout.setSpacing(8)
 
         title = QLabel("线路数据源")
         title.setObjectName("dataSourceTitle")
         self.data_source_combo = QComboBox()
         self.data_source_combo.setObjectName("dataSourceCombo")
-        self.data_source_combo.addItem("演示数据", "demo")
         self.data_source_combo.addItem("数据库线路", "database")
-        self.data_source_combo.addItem("外部系统", "network")
+        self.data_source_combo.addItem("演示数据（备用）", "demo")
         self.data_source_combo.currentIndexChanged.connect(self._on_data_source_changed)
 
         self.data_source_status = QLabel(self._data_source_summary())
@@ -163,7 +252,159 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
         layout.addWidget(self.data_source_combo)
         layout.addWidget(self.data_source_status, stretch=1)
+
+        # 联调模式开关
+        self.network_toggle = QCheckBox("联调模式")
+        self.network_toggle.setObjectName("networkToggle")
+        self.network_toggle.setChecked(self._network_mode)
+        self.network_toggle.toggled.connect(self._on_network_toggle)
+        layout.addWidget(self.network_toggle)
+
         return bar
+
+    def _create_speed_control_bar(self) -> QWidget:
+        """创建仿真倍速与跳站控制条"""
+        bar = QWidget()
+        bar.setObjectName("speedControlBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(16, 6, 16, 7)
+        layout.setSpacing(6)
+
+        title = QLabel("仿真速度")
+        title.setObjectName("speedSectionLabel")
+        layout.addWidget(title)
+
+        self._speed_group = QButtonGroup(self)
+        self._speed_group.setExclusive(True)
+        for multiplier in (1, 2, 5, 10):
+            button = QPushButton(f"{multiplier}x")
+            button.setObjectName("speedButton")
+            button.setCheckable(True)
+            button.clicked.connect(
+                lambda _checked, value=multiplier: self._on_speed_multiplier_changed(value)
+            )
+            self._speed_group.addButton(button)
+            layout.addWidget(button)
+            if multiplier == 1:
+                button.setChecked(True)
+
+        separator = QLabel("|")
+        separator.setObjectName("speedSeparator")
+        layout.addWidget(separator)
+
+        self._fast_forward_button = QPushButton("跳到下一站")
+        self._fast_forward_button.setObjectName("speedBarPrimary")
+        self._fast_forward_button.clicked.connect(self._on_fast_forward)
+        layout.addWidget(self._fast_forward_button)
+
+        self._cancel_button = QPushButton("取消")
+        self._cancel_button.setObjectName("speedBarDanger")
+        self._cancel_button.clicked.connect(self._on_cancel_fast_forward)
+        self._cancel_button.setVisible(False)
+        layout.addWidget(self._cancel_button)
+
+        self._speed_status_label = QLabel("")
+        self._speed_status_label.setObjectName("speedStatusLabel")
+        layout.addWidget(self._speed_status_label)
+        layout.addStretch()
+        return bar
+
+    def _create_dispatch_manager(self):
+        """创建调度域并把现有主控制器注册为1车。"""
+        self.dispatch = DispatchManager(
+            self.track, self.recorder, self.signal_system)
+        self.dispatch.trains.register_existing(
+            "1车", self.controller, self.auto_drive, self.track_adapter)
+        self.dispatch.occupancy.update(self.dispatch.trains.values())
+        station_ids = tuple(
+            station.station_id
+            for station in sorted(self.track.stations, key=lambda item: item.position)
+        )
+        if len(station_ids) >= 2:
+            first = self.dispatch.trains.get_station(station_ids[0]).name
+            last = self.dispatch.trains.get_station(station_ids[-1]).name
+            self.dispatch.add_service_plan(ServicePlan(
+                "mainline_loop", f"{first} ⇆ {last}", station_ids,
+                turnback=True, dwell_time=5.0,
+            ))
+
+    def _available_routes(self):
+        """数据库使用动态算路，演示线路保留预定义侧线进路。"""
+        if self.data_mode == "demo":
+            return TrackLoader.create_demo_routes()
+        return [Route(0, "自动（数据库拓扑）", [])]
+
+    def _active_runtime(self):
+        runtime = self.dispatch.trains.get(getattr(self, "active_train_id", "1车"))
+        return runtime or next(iter(self.dispatch.trains.values()), None)
+
+    def _refresh_train_selector(self):
+        if not hasattr(self, "active_train_combo"):
+            return
+        current = getattr(self, "active_train_id", "1车")
+        runtimes = tuple(self.dispatch.trains.values())
+        existing_ids = tuple(
+            self.active_train_combo.itemData(index)
+            for index in range(self.active_train_combo.count())
+        )
+        runtime_ids = tuple(runtime.train_id for runtime in runtimes)
+        if existing_ids == runtime_ids:
+            self.active_train_combo.blockSignals(True)
+            for index, runtime in enumerate(runtimes):
+                self.active_train_combo.setItemText(
+                    index, f"{runtime.train_id} · {runtime.status.value}")
+            self.active_train_combo.blockSignals(False)
+            self._update_active_train_hint()
+            return
+        self.active_train_combo.blockSignals(True)
+        self.active_train_combo.clear()
+        for runtime in runtimes:
+            self.active_train_combo.addItem(
+                f"{runtime.train_id} · {runtime.status.value}", runtime.train_id)
+        index = self.active_train_combo.findData(current)
+        if index < 0 and self.active_train_combo.count():
+            index = 0
+            current = self.active_train_combo.itemData(0)
+        self.active_train_combo.setCurrentIndex(index)
+        self.active_train_combo.blockSignals(False)
+        if current:
+            self.active_train_id = current
+            self._bind_active_runtime()
+
+    def _on_active_train_changed(self):
+        train_id = self.active_train_combo.currentData()
+        if train_id:
+            self.active_train_id = train_id
+            self._bind_active_runtime()
+
+    def _select_active_train(self, train_id: str):
+        """调度表选择与运行仿真的当前受控列车保持一致。"""
+        self._refresh_train_selector()
+        index = self.active_train_combo.findData(train_id)
+        if index >= 0 and self.active_train_combo.currentIndex() != index:
+            self.active_train_combo.setCurrentIndex(index)
+
+    def _bind_active_runtime(self):
+        runtime = self._active_runtime()
+        if runtime is None or not hasattr(self, "dashboard"):
+            return
+        door_interlock = DoorInterlock(
+            runtime.controller, self.track, runtime.track_adapter)
+        self.dashboard.bind_runtime(
+            runtime.controller, runtime.track_adapter, runtime.train_id)
+        self.control_panel.bind_runtime(
+            runtime.controller, runtime.auto_drive, door_interlock,
+            runtime.track_adapter, runtime.train_id, runtime)
+        self._update_active_train_hint()
+
+    def _update_active_train_hint(self):
+        runtime = self._active_runtime()
+        if runtime is None or not hasattr(self, "active_train_hint"):
+            return
+        self.active_train_hint.setText(
+            f"{runtime.status.value} · {runtime.direction_label} · "
+            f"{runtime.head_abs:.1f} m · {runtime.speed_kmh:.1f} km/h"
+        )
 
     def _load_track_data(self, mode: str):
         """按模式加载线路数据"""
@@ -176,21 +417,6 @@ class MainWindow(QMainWindow):
         mode = self.data_source_combo.currentData()
         if mode == self.data_mode:
             return
-
-        # 切换到外部系统模式
-        if mode == "network":
-            self._network_mode = True
-            self.data_mode = "network"
-            self.network.start()
-            self.recorder.record("系统", "切换到外部系统模式，网络通信已启动")
-            self.data_source_status.setText("外部系统 | 连接中...")
-            self._refresh_connection_status()
-            return
-
-        # 从外部系统切回本地模式
-        if self._network_mode:
-            self._network_mode = False
-            self.network.stop()
 
         try:
             new_track = self._load_track_data(mode)
@@ -213,38 +439,68 @@ class MainWindow(QMainWindow):
         # 更新 controller 的线路和环境引用
         self.controller.track = self.track_adapter
         self.env.track = self.track_adapter
-        # 找到 BFS 根区段（abs_start == 0），而非列表第一个
-        start_seg_id = 1
-        for seg in track.segments:
-            if abs(seg.abs_start) < 0.01:
-                start_seg_id = seg.seg_id
-                break
-        if start_seg_id == 1 and track.segments:
-            start_seg_id = track.segments[0].seg_id
-        self.controller.reset_states(start_segment_id=start_seg_id, start_offset=0.0)
-        self.controller.running_mode = RunningMode.MANUAL
+        self.route_manager.track_adapter = self.track_adapter
+        self.controller.direction = 1
+        # 切换线路后重新落位到首站；没有车站时回退到线路起始区段。
+        if track.stations:
+            first_station = min(track.stations, key=lambda item: item.position)
+            start = resolve_station_track_position(
+                track, first_station, direction=1)
+            self.controller.reset_states(start.segment_id, start.offset)
+        elif track.segments:
+            self.controller.reset_states(track.segments[0].seg_id, 0.0)
+        self.controller.set_running_mode(RunningMode.MANUAL)
+        self.routes = TrackLoader.create_demo_routes()
+        self.route_manager.set_available_routes(self.routes)
+        self.route_manager.set_route(self.routes[0])
+        if hasattr(self, "control_panel"):
+            self.control_panel.populate_routes(self.routes)
 
         self.signal_system.clear_signal_aspects()
         self.interlock.track = track
         self.interlock.track_adapter = self.track_adapter
         self.dashboard.track = track
         self.dashboard.track_adapter = self.track_adapter
+        self._create_dispatch_manager()
+
+        # 重建车站下拉框
+        self.control_panel.populate_stations(track.stations)
 
         # 重建线路可视化并立即将列车绘制到新线路上
+        self.semantic_track_view.set_track_data(track, self._data_source_label())
         self.track_view.set_track_data(track, self._data_source_label())
+        if hasattr(self, "dispatch_view"):
+            self.dispatch_view.set_manager(self.dispatch)
+        self.active_train_id = "1车"
+        self._refresh_train_selector()
         car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
-        car_segs = [s.position.segment_id for s in self.controller.states]
-        self.track_view.set_train_position(car_abs, self.controller, car_segs)
+        self.semantic_track_view.set_train_position(car_abs, self.controller)
+        self.track_view.set_train_position(car_abs, self.controller)
 
-        self.front_train_positions = self._default_front_train_positions()
         self._last_signal_aspects.clear()
+        self._overspeed_active.clear()
         self._last_status_log_time = -1.0
         self.sim_time = 0.0
         self.power_supply.reset()
         self.data_source_status.setText(self._data_source_summary())
         self.recorder.record("系统", f"切换数据源: {self._data_source_label()}")
+        # 重新连接点击导航信号（track_view 已被重建）
+        self.track_view.segment_clicked.connect(self._on_track_clicked)
         self.dashboard.refresh()
         self.force_panel.clear()
+        self.energy_panel.clear()
+
+    def _on_consist_changed(self, new_consist):
+        """编组变更后更新列车可视化。"""
+        runtime = self._active_runtime()
+        if runtime is None:
+            return
+        car_abs = [runtime.track_adapter.to_absolute(s.position)
+                   for s in runtime.controller.states]
+        self.track_view.set_train_position(car_abs, runtime.controller)
+        self.dashboard.refresh()
+        self.recorder.record("系统",
+                             f"编组变更为 {len(new_consist)} 车")
 
     def _default_front_train_positions(self) -> list[float]:
         """根据线路长度放置一个演示前车，供闭塞逻辑展示"""
@@ -255,44 +511,35 @@ class MainWindow(QMainWindow):
 
     def _data_source_label(self) -> str:
         """当前数据源展示名称"""
-        if self.data_mode == "database":
-            return "数据库线路"
-        if self.data_mode == "network":
-            return "外部系统"
-        return "演示数据"
+        return "数据库线路" if self.data_mode == "database" else "演示数据"
 
     def _data_source_summary(self) -> str:
         """当前数据源摘要"""
-        if self.data_mode == "network":
-            status = self.network.connection_status
-            parts = [self._data_source_label()]
-            if status["vehicle_udp"]:
-                parts.append("车辆UDP ✓")
-            if status["signal_gateway"]:
-                parts.append("信号网关 ✓")
-            if status["plc"]:
-                parts.append("PLC ✓")
-            if not any(status.values()):
-                parts.append("未连接")
-            return " | ".join(parts)
         if not hasattr(self, "track"):
             return ""
-        return (
-            f"{self._data_source_label()} | "
-            f"区段 {len(self.track.segments)} | "
-            f"车站 {len(self.track.stations)} | "
-            f"信号 {len(self.track.signals)} | "
-            f"总长 {self.track.total_length():.0f} m"
-        )
+        parts = [
+            f"{self._data_source_label()}",
+            f"区段 {len(self.track.segments)}",
+            f"车站 {len(self.track.stations)}",
+            f"信号 {len(self.track.signals)}",
+            f"总长 {self.track.total_length():.0f} m",
+        ]
+        if self._network_mode:
+            parts.append("联调模式")
+        summary = " | ".join(parts)
+        warnings = getattr(self.track, "data_warnings", [])
+        if warnings:
+            summary += f" | 已修复缺失字段 {len(warnings)} 项"
+        return summary
 
     # ── 辅助方法 ──────────────────────────────────────────────────
 
     def _head_abs_position(self) -> float:
         """获取头车在线路上的绝对位置 (m)，供信号/日志等旧接口使用。"""
-        states = self.controller.states
-        if not states:
+        runtime = self._active_runtime()
+        if runtime is None:
             return 0.0
-        return self.track_adapter.to_absolute(states[0].position)
+        return runtime.head_abs
 
     def _head_gradient(self) -> float:
         """获取头车当前位置的坡度 (‰)。"""
@@ -309,107 +556,437 @@ class MainWindow(QMainWindow):
     # ── 主更新循环 ──────────────────────────────────────────────
 
     def _update(self):
-        """定时更新"""
-        # 仿真时间与 UI 刷新对齐（原 dt=0.033 仅 1/3 实时，体感极慢）
-        dt_frame = self._timer_ms / 1000.0
-        dt = dt_frame / self._physics_substeps
+        """定时更新，支持倍速推进和调度列车统一刷新。"""
+        dt = 0.033  # 30fps 仿真步长
 
-        # ---- 网络模式：从外部系统注入数据 ----
-        if self._network_mode:
-            self._network_update_step(dt_frame)
+        # ── 网络模式：从外部系统注入数据 ──────────────────────
+        if getattr(self, '_network_mode', False):
+            self._network_update_step(dt)
             self.dashboard.refresh()
-            car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
-            car_segs = [s.position.segment_id for s in self.controller.states]
-            self.track_view.set_train_position(car_abs, self.controller, car_segs)
             self._update_log_display()
             return
 
-        # ---- 本地模式：原有逻辑 ----
-        head_abs = self._head_abs_position()
-        head_speed = self.controller.head_speed
+        batch_size = 500 if self.fast_forward_active else self.speed_multiplier
+        report = None
+        head_speed = 0.0
+        track_limit = 0.0
 
-        self.signal_system.update_aspects_by_occupancy(
-            self.track.signals, self.front_train_positions
+        for step_i in range(batch_size):
+            if self.fast_forward_cancelled:
+                self.fast_forward_active = False
+                self.fast_forward_cancelled = False
+                self._cancel_button.setVisible(False)
+                self._fast_forward_button.setEnabled(True)
+                self.recorder.record(
+                    "操作", "取消快进",
+                    self._head_abs_position(), self.controller.head_speed,
+                )
+                break
+
+            active_runtime = self._active_runtime()
+            if active_runtime is None:
+                return
+            active_controller = active_runtime.controller
+            head_abs = self._head_abs_position()
+            head_speed = active_controller.head_speed
+
+            track_limit = self.track.get_speed_limit_at(head_abs)
+            effective_limit = self.signal_system.get_effective_speed_limit_for_direction(
+                head_abs, active_controller.direction,
+                track_limit, self.track.signals
+            )
+
+            # ── 供电状态影响牵引能力（系统级安全切断，旁路模式门禁）─
+            if not self.power_supply.can_traction():
+                self.controller.traction.set_throttle(0.0, bypass_mode_check=True)
+
+            # ── 自动驾驶 ──────────────────────────────────────────
+            if self.controller.running_mode == RunningMode.AUTOMATIC:
+                self.auto_drive.step(dt)
+
+            reports = self.dispatch.step(dt)
+            self._record_signal_changes()
+            report = reports.get(active_runtime.train_id, active_controller.last_report)
+            self.power_supply.step(dt)
+            self.recorder.step(dt)
+            self.sim_time += dt
+
+            self.evaluator.update_max_speed(head_speed)
+            self._record_status_snapshot(effective_limit)
+
+            overspeed = head_speed > effective_limit + 0.5
+            was_overspeed = self._overspeed_active.get(
+                active_runtime.train_id, False)
+            if overspeed and not was_overspeed:
+                self.recorder.record(
+                    "超速",
+                    f"超速: {head_speed * 3.6:.1f} km/h",
+                    head_abs, head_speed,
+                    train_id=active_runtime.train_id,
+                    source="protection", severity="WARNING",
+                )
+            self._overspeed_active[active_runtime.train_id] = overspeed
+
+            if self.fast_forward_active and self._check_fast_forward_stop():
+                self.fast_forward_active = False
+                self._cancel_button.setVisible(False)
+                self._fast_forward_button.setEnabled(True)
+                break
+
+            if self.fast_forward_active and step_i % 50 == 0:
+                QApplication.processEvents()
+
+        active_runtime = self._active_runtime()
+        if active_runtime is None:
+            return
+        active_controller = active_runtime.controller
+
+        self.dashboard.refresh(report)
+        car_abs = [
+            active_runtime.track_adapter.to_absolute(s.position)
+            for s in active_controller.states
+        ]
+        self.track_view.set_train_position(car_abs, active_controller)
+        self.semantic_track_view.set_dispatch_state(
+            self.dispatch.trains.values(), self.dispatch.occupancy.snapshot,
+            {signal.signal_id: self.signal_system.get_signal_aspect(signal)
+             for signal in self.track.signals})
+        self._refresh_train_selector()
+        self.dispatch_view.refresh()
+        self._update_log_display()
+        self._update_speed_status()
+
+        if report is not None:
+            self.force_panel.feed(
+                self.sim_time,
+                head_speed * 3.6,
+                report.max_coupler_force / 1000,
+                track_limit * 3.6,
+            )
+            self.force_panel.set_report(report)
+
+        # ── 能耗数据 ──────────────────────────────────────
+        ctrl = active_controller
+        last_energy = ctrl.energy_last_step
+        if last_energy is not None:
+            self.energy_panel.feed(
+                self.sim_time,
+                last_energy.traction_power_kw,
+                last_energy.regen_power_kw,
+                last_energy.aux_energy_j / last_energy.dt / 1000 if last_energy.dt > 0 else 0,
+                last_energy.net_energy_j / last_energy.dt / 1000 if last_energy.dt > 0 else 0,
+                ctrl.energy_traction_kwh,
+                ctrl.energy_regen_kwh,
+                ctrl.energy_net_kwh,
+            )
+            trip = ctrl.energy_summary()
+            self.energy_panel.update_summary(
+                traction_kwh=ctrl.energy_traction_kwh,
+                regen_kwh=ctrl.energy_regen_kwh,
+                friction_kwh=ctrl.energy_friction_loss_kwh,
+                aux_kwh=ctrl.energy_aux_kwh,
+                net_kwh=ctrl.energy_net_kwh,
+                regen_ratio=ctrl.energy_regen_ratio,
+                kwh_per_car_km=trip.kwh_per_car_km,
+                kwh_per_1000t_km=trip.kwh_per_1000_ton_km,
+                distance_m=trip.trip_distance_m,
+            )
+
+    # ── 时间加速控制 ─────────────────────────────────────────────
+
+    def _on_speed_multiplier_changed(self, multiplier: int):
+        """切换普通仿真倍速；切换时退出跳站快进。"""
+        self.speed_multiplier = multiplier
+        if self.fast_forward_active:
+            self.fast_forward_active = False
+            self.fast_forward_cancelled = False
+            self._cancel_button.setVisible(False)
+            self._fast_forward_button.setEnabled(True)
+            self.recorder.record(
+                "操作", f"切换至 {multiplier}x，退出快进",
+                self._head_abs_position(), self.controller.head_speed,
+            )
+
+    def set_driving_mode(self, mode: RunningMode):
+        """统一驾驶模式切换入口。
+
+        处理模式切换的所有副作用：
+        - 关门（安全）
+        - MANUAL → 重置 ATO 状态、施加常用制动、同步手柄
+        - AUTOMATIC → 查找下一站、设目标
+        - UI 反馈（模式显示更新 + 过渡提示）
+
+        由 ControlPanel.mode_change_requested 信号和 _on_fast_forward 调用。
+
+        Args:
+            mode: 目标驾驶模式。
+        """
+        if self.controller.running_mode == mode:
+            return  # 已在目标模式
+
+        # 先关门（安全：不允许门开着切换模式）
+        self.controller.close_door()
+
+        if mode == RunningMode.MANUAL:
+            self.auto_drive.reset_state()
+            self.controller.set_running_mode(RunningMode.MANUAL)
+            self.controller.command_stop(brake_level=0.4)
+            self.recorder.record("操作", "切换手动模式",
+                                 self._head_abs_position(), self.controller.head_speed)
+            # UI 反馈
+            self.control_panel._update_mode_display()
+            self.control_panel._sync_handle_button(ControlLevel.SERVICE_BRAKE)
+            self.control_panel._show_mode_transition(
+                True, "✓ 已切换至手动驾驶 — 请操作司控器手柄")
+
+        elif mode == RunningMode.AUTOMATIC:
+            head_abs = self._head_abs_position()
+            next_station = self.auto_drive.find_next_station(head_abs)
+            if next_station is None:
+                self.recorder.record("操作", "切换自动失败: 无前方车站",
+                                     head_abs, self.controller.head_speed)
+                self.control_panel._show_mode_transition(
+                    False, "✗ 切换失败: 无前方车站")
+                return
+            target = self.track_adapter.from_absolute(next_station.position)
+            self.auto_drive.set_target(target)
+            self.controller.set_running_mode(RunningMode.AUTOMATIC)
+            self.recorder.record("操作", f"切换自动模式，目标: {next_station.name}",
+                                 head_abs, self.controller.head_speed)
+            # UI 反馈
+            self.control_panel._update_mode_display()
+            self.control_panel._show_mode_transition(
+                True, f"✓ 已切换至自动驾驶 → 目标: {next_station.name}")
+
+    def _on_fast_forward(self):
+        """自动驾驶到下一站，并用批量步进加速推进。"""
+        runtime = self._active_runtime()
+        if runtime is None:
+            return
+        head_abs = self._head_abs_position()
+        next_station = self.track.get_nearest_station_ahead(head_abs)
+        if next_station is None:
+            self.recorder.record(
+                "操作", "无前方车站可跳转",
+                head_abs, runtime.controller.head_speed,
+            )
+            return
+
+        # 如果已在自动驾驶中，记录目标覆盖警告
+        if self.controller.running_mode == RunningMode.AUTOMATIC:
+            old_target = self.auto_drive.target_position
+            self.recorder.record(
+                "操作",
+                f"快进覆盖当前自动目标 → {next_station.name}",
+                head_abs, self.controller.head_speed,
+            )
+
+        # 设置目标并切换到自动驾驶（通过统一入口）
+        target = self.track_adapter.from_absolute(next_station.position)
+        self.auto_drive.set_target(target)
+        self.set_driving_mode(RunningMode.AUTOMATIC)
+
+        self.fast_forward_active = True
+        self.fast_forward_cancelled = False
+        self._cancel_button.setVisible(True)
+        self._fast_forward_button.setEnabled(False)
+        self.recorder.record(
+            "操作",
+            f"快进至 {next_station.name} ({next_station.position:.0f}m)",
+            head_abs, runtime.controller.head_speed,
         )
-        self._record_signal_changes()
+
+    def _on_cancel_fast_forward(self):
+        """取消正在进行的跳站快进。"""
+        self.fast_forward_cancelled = True
+
+    def _check_fast_forward_stop(self) -> bool:
+        """检查跳站快进是否应停止。"""
+        runtime = self._active_runtime()
+        if runtime is None:
+            return True
+        head_abs = self._head_abs_position()
+        head_speed = runtime.controller.head_speed
+        distance = runtime.auto_drive.distance_to_target
+
+        # 1. 到站进入停站阶段（优先判断，此时列车已精确停稳）
+        if self.auto_drive.station_phase == StationPhase.DWELL:
+            self.recorder.record(
+                "操作", "已到站，自动开门",
+                head_abs, head_speed,
+            )
+            return True
+
+        # 2. 已到目标附近且停止
+        if self.controller.is_stopped and distance is not None and distance < 5.0:
+            self.recorder.record(
+                "操作", "列车已停稳",
+                head_abs, head_speed,
+            )
+            return True
 
         track_limit = self.track.get_speed_limit_at(head_abs)
         effective_limit = self.signal_system.get_effective_speed_limit(
-            head_abs, track_limit, self.track.signals
+            head_abs, track_limit, self.track.signals,
         )
+        if head_speed > effective_limit + 3.0:
+            runtime.controller.emergency_brake()
+            self.recorder.record(
+                "超速",
+                f"严重超速，快进中止: {head_speed * 3.6:.1f} km/h",
+                head_abs, head_speed,
+            )
+            return True
 
-        if not self.power_supply.can_traction():
-            self.controller.set_throttle(0.0)
+        total_len = self.track.total_length()
+        if head_abs >= total_len - 10.0:
+            runtime.controller.emergency_brake()
+            self.recorder.record("操作", "已达线路终点，快进中止", head_abs, head_speed)
+            return True
 
-        if self.controller.running_mode == RunningMode.AUTOMATIC:
-            self.auto_drive.step()
+        for sig in self.track.signals:
+            aspect = self.signal_system.get_signal_aspect(sig)
+            if aspect == SignalAspect.RED and head_abs > sig.position and head_abs - sig.position < 50:
+                self.recorder.record(
+                    "红灯违规", f"闯红灯 {sig.signal_id}，快进中止",
+                    head_abs, head_speed,
+                )
+                return True
 
-        report = None
-        for _ in range(self._physics_substeps):
-            report = self.controller.step(dt)
-        self.power_supply.step(dt_frame)
-        self.recorder.step(dt_frame)
-        self.sim_time += dt_frame
+        return False
 
-        self.evaluator.update_max_speed(head_speed)
-        self._record_status_snapshot(effective_limit)
+    def _update_speed_status(self):
+        """刷新速度控制栏状态。"""
+        if self.fast_forward_active:
+            runtime = self._active_runtime()
+            distance = runtime.auto_drive.distance_to_target if runtime else None
+            if distance is None:
+                self._speed_status_label.setText("快进中…")
+            else:
+                self._speed_status_label.setText(f"快进中… 距目标 {distance:.0f} m")
+        else:
+            self._speed_status_label.setText(
+                f"当前 {self.speed_multiplier}x  |  sim {self.sim_time:.1f}s"
+            )
 
-        if head_speed > effective_limit + 0.5:
-            self.recorder.record("超速",
-                f"超速: {head_speed * 3.6:.1f} km/h", head_abs, head_speed)
-
-        self.dashboard.refresh(report)
-        car_abs = [self.track_adapter.to_absolute(s.position) for s in self.controller.states]
-        car_segs = [s.position.segment_id for s in self.controller.states]
-        self.track_view.set_train_position(car_abs, self.controller, car_segs)
-        self._update_log_display()
-
-        self.force_panel.feed(
-            self.sim_time,
-            head_speed * 3.6,
-            report.max_coupler_force / 1000,
-            track_limit * 3.6,
-        )
-        self.force_panel.set_report(report)
+    # ── 网络通信（外部系统模式） ────────────────────────────────
 
     def _network_update_step(self, dt: float):
-        """网络模式下的仿真步进：使用外部数据驱动"""
-        # 1. 发送本地车辆状态到外部平台
+        """网络模式下的仿真步进"""
+        head_abs = self._head_abs_position()
         head_speed = self.controller.head_speed
         head_accel = self.controller.states[0].acceleration if self.controller.states else 0.0
-        head_pos = self._head_abs_position()
+        curr_station = self._find_current_station(head_abs)
+
+        # 1. 车辆UDP：发送本车状态 → 总控
         self.network.set_vehicle_send_source(lambda: [
-            (head_accel, head_speed, head_pos)
+            (head_accel, head_speed, head_abs)
         ] * 20)
 
-        # 2. 读取外部平台指令，通过旧版控制器接口设置
+        # 2. 车辆UDP：读取外部平台指令
         cmds = self.network.vehicle_commands
         if cmds and len(cmds) > 0:
             cmd, pct = cmds[0]
-            if cmd == 1:  # 加速
-                self.controller.set_throttle(float(pct) / 100.0)
-            elif cmd == 2:  # 减速
-                self.controller.set_brake(float(pct) / 100.0)
-            elif cmd == 0:  # 惰行
-                self.controller.set_throttle(0.0)
-                self.controller.set_brake(0.0)
+            if cmd == 1:
+                self.controller.traction.set_throttle(float(pct) / 100.0, bypass_mode_check=True)
+            elif cmd == 2:
+                self.controller.traction.set_brake(float(pct) / 100.0, bypass_mode_check=True)
+            elif cmd == 0:
+                self.controller.traction.set_throttle(0.0, bypass_mode_check=True)
 
-        # 3. 发送信号状态到总控
+        # 3. 信号网关：发送信号/道岔状态
         switches = []
         signals = [(s.signal_id, self._aspect_to_protocol(
             self.signal_system.get_signal_aspect(s))) for s in self.track.signals]
         self.network.set_signal_send_source(lambda: (switches, signals[:20]))
 
-        # 4. 推进本地仿真
+        # 4. 视景系统：发送 TCMS2VIEW
+        self._feed_vision_data(head_abs, head_speed, head_accel, signals)
+
+        # 5. 司机台显示屏：发送网络屏 + 信号屏数据
+        self._feed_cab_display(head_abs, head_speed, head_accel, curr_station)
+
+        # 6. 推进本地仿真
         self.controller.step(dt)
         self.recorder.step(dt)
         self.sim_time += dt
 
-        # 5. 定期刷新连接状态
+        # 7. 刷新连接状态
         self._refresh_connection_status()
+
+    def _feed_vision_data(self, head_abs: float, head_speed: float,
+                          head_accel: float, signal_aspects: list):
+        """为视景系统准备 TCMS2VIEW 数据"""
+        sig_states = [s[1] for s in signal_aspects]
+        sw_states = [0x01] * min(self.track.switches_count if hasattr(self.track, 'switches_count') else 0, 29)
+        speed_mms = int(head_speed * 1000)                     # m/s → mm/s
+        accel_pct = min(100, max(0, int(abs(head_accel) / 1.1 * 100)))
+        run_state = 0x11 if head_accel > 0.01 else (0x12 if head_accel < -0.01 else 0x13)
+        pos_mm = int(head_abs * 1000)
+
+        def _vision_source():
+            return {
+                "signal_states": sig_states,
+                "switch_states": sw_states,
+                "speed_mms": speed_mms,
+                "accel_pct": accel_pct,
+                "run_state": run_state,
+                "position_mm": pos_mm,
+                "edge_id": self._abs_to_edge_id(head_abs),
+                "direction": self._get_run_dir(),
+                "other_trains": self._get_other_trains(),
+            }
+
+        self.network.set_vision_data_source(_vision_source)
+
+    def _feed_cab_display(self, head_abs: float, head_speed: float,
+                          head_accel: float, curr_station: int):
+        """为司机台显示屏准备数据"""
+        track_limit = self.track.get_speed_limit_at(head_abs) if hasattr(self, 'track') else 0
+        effective_limit = self.signal_system.get_effective_speed_limit(
+            head_abs, track_limit, self.track.signals) if hasattr(self, 'track') else track_limit
+
+        net_data = {
+            "speed": head_speed,
+            "acceleration": head_accel,
+            "speed_limit": effective_limit,
+            "run_mode": self.controller.running_mode.value if self.controller.running_mode else 0,
+            "run_dir": self._get_run_dir(),
+            "power_pull": 80 if self.controller.throttle > 0 else 0,
+            "net_pressure": 750 if self.power_supply.can_traction() else 0,
+            "curr_station": curr_station,
+            "next_station": self._find_next_station(head_abs),
+            "end_station": curr_station,
+            "power_state": self.power_supply.status.value if hasattr(self.power_supply, 'status') else 0,
+            "door_states": self._get_door_states(),
+            "has_power": self.power_supply.can_traction(),
+        }
+
+        sig_data = {
+            "speed": head_speed,
+            "acceleration": head_accel,
+            "speed_limit": effective_limit,
+            "mode": 5,  # RM mode default
+            "run_dir": self._get_run_dir(),
+            "curr_station": curr_station,
+            "next_station": self._find_next_station(head_abs),
+            "end_station": curr_station,
+            "pull_switch": 1 if self.controller.throttle > 0 else 0,
+            "pull_state": self.controller.traction_level if hasattr(self.controller, 'traction_level') else 0,
+            "brake_state": self.controller.brake_level if hasattr(self.controller, 'brake_level') else 0,
+            "urgency_stop": 1 if self.controller.emergency_brake else 0,
+            "event_id": 0,
+            "sig_state": self._get_front_signal_state(),
+            "train_no": 1,
+            "next_station_dist": self._distance_to_next_station(head_abs),
+        }
+
+        self.network.set_cab_network_source(lambda: net_data)
+        self.network.set_cab_signal_source(lambda: sig_data)
 
     def _aspect_to_protocol(self, aspect) -> int:
         """将内部 SignalAspect 映射为协议灯色码"""
+        from src.signal.system import SignalAspect
         mapping = {
             SignalAspect.RED: 0x01,
             SignalAspect.YELLOW: 0x02,
@@ -417,28 +994,226 @@ class MainWindow(QMainWindow):
         }
         return mapping.get(aspect, 0x00)
 
+    def _get_run_dir(self) -> int:
+        """获取运行方向: 0=上行, 1=下行"""
+        return 0
+
+    def _abs_to_edge_id(self, head_abs: float) -> int:
+        """根据绝对位置获取边号（区段号）"""
+        if hasattr(self, 'track') and hasattr(self.track, '_seg_map'):
+            for sid, seg in self.track._seg_map.items():
+                if seg.abs_start <= head_abs <= seg.abs_start + seg.length:
+                    return sid
+        return 0
+
+    def _get_other_trains(self) -> list:
+        """获取调度系统中的其他列车，供视景协议发送。"""
+        others = []
+        for runtime in self.dispatch.trains.values():
+            if runtime.train_id == "1车":
+                continue
+            others.append({
+                "dist": max(0, int(runtime.head_abs - self._head_abs_position())),
+                "edge": runtime.controller.states[0].position.segment_id,
+                "dir": 1 if runtime.controller.direction > 0 else 2,
+                "speed_cms": int(runtime.controller.head_speed * 100),
+            })
+        return others
+
+    def _get_door_states(self) -> list[int]:
+        """获取6节车门的开关状态"""
+        runtime = self._active_runtime()
+        controller = runtime.controller if runtime else self.controller
+        door_open = controller.left_door_open or controller.right_door_open
+        states = []
+        for i in range(6):
+            state = 0  # 0=关门, 1=开门
+            if door_open:
+                state = 1
+            states.append(state)
+        return states
+
+    def _find_current_station(self, head_abs: float) -> int:
+        """查找当前所在车站ID"""
+        if not hasattr(self, 'track'):
+            return 0
+        for st in self.track.stations:
+            if abs(st.position - head_abs) < 50:
+                return st.station_id if hasattr(st, 'station_id') else 0
+        return 0
+
+    def _find_next_station(self, head_abs: float) -> int:
+        """查找下一站ID"""
+        if not hasattr(self, 'track'):
+            return 0
+        next_id = 0
+        for st in self.track.stations:
+            if st.position > head_abs + 20:
+                next_id = st.station_id if hasattr(st, 'station_id') else 0
+                break
+        return next_id
+
+    def _distance_to_next_station(self, head_abs: float) -> float:
+        """距下一站距离 (m)"""
+        if not hasattr(self, 'track'):
+            return 0.0
+        for st in self.track.stations:
+            if st.position > head_abs + 20:
+                return st.position - head_abs
+        return 0.0
+
+    def _get_front_signal_state(self) -> int:
+        """获取前方信号机状态"""
+        return 0
+
+    def _on_network_toggle(self, checked: bool):
+        """联调模式开关"""
+        self._network_mode = checked
+        if checked:
+            logger.info("切换为联调模式：启动网络通信")
+            self._setup_network_callbacks()
+            self.network.start()
+        else:
+            logger.info("切换为本地模式：停止网络通信")
+            self.network.stop()
+        self._refresh_connection_status()
+
     def _refresh_connection_status(self):
         """刷新连接状态显示"""
         if not self._network_mode:
             return
-        self.data_source_status.setText(self._data_source_summary())
+        parts = [self._data_source_summary()]
+        # 各模块连接状态
+        try:
+            n = self.network
+            statuses = []
+            if hasattr(n.vehicle_udp, 'connected'):
+                statuses.append(("车", "🟢" if n.vehicle_udp.connected else "🔴"))
+            if hasattr(n.signal_gateway, 'connected'):
+                statuses.append(("信", "🟢" if n.signal_gateway.connected else "🔴"))
+            if hasattr(n.plc, 'connected'):
+                statuses.append(("PLC", "🟢" if n.plc.connected else "🔴"))
+            if hasattr(n.vision, 'connected'):
+                statuses.append(("视", "🟢" if n.vision.connected else "🔴"))
+            if hasattr(n.cab_display, 'connected'):
+                statuses.append(("显", "🟢" if n.cab_display.connected else "🔴"))
+            if statuses:
+                parts.append(" | ".join(f"{k}{v}" for k, v in statuses))
+        except Exception:
+            pass
+        self.data_source_status.setText(" | ".join(parts))
 
     def _setup_network_callbacks(self):
-        """设置网络模块的回调函数"""
+        """设置网络模块的回调"""
         def on_vehicle_recv(commands):
             pass
         def on_signal_recv(data: bytes):
             pass
         def on_plc_recv(data: dict):
-            if "handle_position" in data:
-                pass
+            if not self._network_mode:
+                return
+            # 主手柄牵引极位
+            traction = data.get("traction_level", 0)
+            if traction > 0:
+                self.controller.traction.set_throttle(traction / 100.0, bypass_mode_check=True)
+            # 制动极位
+            brake = data.get("brake_level", 0)
+            if brake > 0 and hasattr(self.controller, 'brake'):
+                self.controller.brake.set_brake_level(brake / 100.0)
+            # 方向
+            if data.get("dir_forward"):
+                if hasattr(self.controller, 'set_direction'):
+                    self.controller.set_direction(1)
+            elif data.get("dir_backward"):
+                if hasattr(self.controller, 'set_direction'):
+                    self.controller.set_direction(-1)
+            # 紧急制动
+            if data.get("btn_emergency_brake"):
+                if hasattr(self.controller, 'emergency_brake'):
+                    self.controller.emergency_brake.apply()
         self.network.set_vehicle_recv_callback(on_vehicle_recv)
         self.network.set_signal_recv_callback(on_signal_recv)
         self.network.set_plc_recv_callback(on_plc_recv)
 
+    # ── 点击导航（调试模式） ──────────────────────────────────
+
+    def _on_track_clicked(self, seg_id: int, abs_pos: float):
+        """线路可视化区段点击 → 自动驾驶导航到目标位置。
+
+        自动计算从头车当前位置到目标区段终点的进路，
+        包括侧线段（查找预定义进路或沿主线+侧线组合算路）。
+
+        Args:
+            seg_id: 被点击的区段 ID。
+            abs_pos: 点击位置对应的线路绝对坐标 (m)。
+        """
+        from src.track.route import Route, compute_mainline_route
+        runtime = self._active_runtime()
+        if runtime is None:
+            return
+
+        # 目标位置：点击区段的终点
+        seg = self.track._seg_map.get(seg_id)
+        if seg is None:
+            return
+        target_abs = seg.abs_start + seg.length
+        target = runtime.track_adapter.from_absolute(target_abs)
+
+        # 计算进路
+        route = self._compute_route_to_segment(target.segment_id)
+        if route is not None:
+            self.route_manager.set_route(route)
+            self.control_panel.route_combo.blockSignals(True)
+            # 在下拉框中选中对应进路
+            for i in range(self.control_panel.route_combo.count()):
+                if self.control_panel.route_combo.itemText(i) == route.name:
+                    self.control_panel.route_combo.setCurrentIndex(i)
+                    break
+            self.control_panel.route_combo.blockSignals(False)
+
+        # 设置目标（不强制切换驾驶模式，由用户决定）
+        self.auto_drive.set_target(target)
+        # 在可视化上显示目标标记
+        if self.track_view.view:
+            self.track_view.view.set_target_marker(target_abs)
+        seg_name = f"侧线{seg_id - 4}" if seg_id > 4 else f"主线 seg{seg_id}"
+        self.recorder.record("操作",
+            f"{runtime.train_id} 点击导航 → {seg_name} 终点 ({target_abs:.0f}m)",
+            self._head_abs_position(), runtime.controller.head_speed)
+
+    def _compute_route_to_segment(self, target_seg_id: int):
+        """计算从头车到目标区段的进路。
+
+        优先在预定义进路中查找，若无则尝试主线自动路由。
+        对于侧线目标，查找包含该 seg_id 的预定义侧线进路。
+
+        Returns:
+            Route 或 None（找不到合适进路时使用自动模式）。
+        """
+        from src.track.route import Route
+
+        runtime = self._active_runtime()
+        if runtime is None or not runtime.controller.states:
+            return None
+
+        # 目标在主线（1-4）→ 自动算路
+        if target_seg_id in (1, 2, 3, 4):
+            return Route(0, "自动", [])
+
+        # 目标在侧线 → 查找预定义进路
+        for r in self.route_manager.available_routes:
+            if r.is_auto:
+                continue
+            if r.last_seg_id == target_seg_id:
+                return r
+
+        # 无匹配进路 → 自动模式兜底
+        return Route(0, "自动", [])
+
     def closeEvent(self, event):
         """关闭窗口"""
         self.timer.stop()
+        self.recorder.close()
         if self._network_mode:
             self.network.stop()
         event.accept()
@@ -465,29 +1240,29 @@ class MainWindow(QMainWindow):
                 border: 1px solid #d8dee8;
                 border-radius: 8px;
             }
-            #dataSourceBar {
+            #dataSourceBar, #speedControlBar, #trainControlBar {
                 background: #ffffff;
                 border-bottom: 1px solid #d8dee8;
             }
             #dataSourceTitle {
                 color: #1d2939;
-                font-size: 16px;
+                font-size: 15px;
                 font-weight: 800;
             }
             #dataSourceStatus {
                 color: #475467;
-                font-size: 14px;
+                font-size: 13px;
                 font-weight: 650;
             }
             QComboBox#dataSourceCombo {
-                min-width: 150px;
-                min-height: 34px;
+                min-width: 132px;
+                min-height: 30px;
                 border: 1px solid #cbd5e1;
                 border-radius: 6px;
-                padding: 4px 10px;
+                padding: 3px 9px;
                 background: #f8fafc;
                 color: #172033;
-                font-size: 15px;
+                font-size: 14px;
                 font-weight: 700;
             }
             QTabWidget::pane {
@@ -497,9 +1272,9 @@ class MainWindow(QMainWindow):
             QTabBar::tab {
                 background: #e5eaf2;
                 color: #475467;
-                padding: 11px 22px;
+                padding: 9px 18px;
                 margin-right: 2px;
-                font-size: 15px;
+                font-size: 14px;
                 font-weight: 700;
             }
             QTabBar::tab:selected {
@@ -570,23 +1345,160 @@ class MainWindow(QMainWindow):
             }
             QGroupBox {
                 color: #1d2939;
-                font-size: 15px;
+                font-size: 14px;
                 font-weight: 800;
-                margin-top: 10px;
-                padding: 8px 6px 6px 6px;
+                margin-top: 8px;
+                padding: 7px 6px 6px 6px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 left: 8px;
                 padding: 0 3px;
             }
+            /* ── 驾驶模式大块（在全局 QGroupBox 之后） ── */
+            QGroupBox#modeGroup {
+                margin-top: 0;
+                background: #ffffff;
+                border: 2px solid #cbd5e1;
+                border-radius: 10px;
+            }
+            QGroupBox#modeGroup::title {
+                font-size: 16px;
+                color: #1d2939;
+            }
+            QLabel#modeIndicator {
+                font-size: 20px;
+                font-weight: 800;
+            }
+            QLabel#modeDesc {
+                color: #64748b;
+                font-size: 14px;
+                font-weight: 500;
+                padding: 0 2px;
+            }
+            QPushButton#modeToggleBtn {
+                min-height: 48px;
+                border-radius: 8px;
+                border: 2px solid #6366f1;
+                background: #eef2ff;
+                color: #4338ca;
+                font-size: 17px;
+                font-weight: 800;
+            }
+            QPushButton#modeToggleBtn:hover {
+                background: #e0e7ff;
+                border-color: #4f46e5;
+            }
+            /* ── 司控器手柄按钮 ── */
+            QPushButton#tractionHandleBtn {
+                min-height: 48px;
+                min-width: 52px;
+                border-radius: 6px;
+                border: 2px solid #86efac;
+                background: #f0fdf4;
+                color: #166534;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 2px 4px;
+            }
+            QPushButton#tractionHandleBtn:checked {
+                background: #16a34a;
+                color: #ffffff;
+                border-color: #16a34a;
+            }
+            QPushButton#tractionHandleBtn:hover:!checked {
+                background: #dcfce7;
+                border-color: #4ade80;
+            }
+            QPushButton#coastHandleBtn {
+                min-height: 48px;
+                min-width: 52px;
+                border-radius: 6px;
+                border: 2px solid #cbd5e1;
+                background: #f8fafc;
+                color: #475569;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 2px 4px;
+            }
+            QPushButton#coastHandleBtn:checked {
+                background: #64748b;
+                color: #ffffff;
+                border-color: #64748b;
+            }
+            QPushButton#coastHandleBtn:hover:!checked {
+                background: #f1f5f9;
+                border-color: #94a3b8;
+            }
+            QPushButton#brakeHandleBtn {
+                min-height: 48px;
+                min-width: 52px;
+                border-radius: 6px;
+                border: 2px solid #fca5a5;
+                background: #fef2f2;
+                color: #991b1b;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 2px 4px;
+            }
+            QPushButton#brakeHandleBtn:checked {
+                background: #dc2626;
+                color: #ffffff;
+                border-color: #dc2626;
+            }
+            QPushButton#brakeHandleBtn:hover:!checked {
+                background: #fee2e2;
+                border-color: #f87171;
+            }
+            /* ── 手柄百分比条 ── */
+            QFrame#handleBarFrame {
+                background: transparent;
+                border: 0;
+                margin: 0;
+                padding: 0;
+            }
+            QProgressBar#brakeBar {
+                background: #f1f5f9;
+                border: 1px solid #e2e8f0;
+                border-radius: 4px;
+                margin: 0;
+            }
+            QProgressBar#brakeBar::chunk {
+                background: qlineargradient(x1:1, x2:0, stop:0 #dc2626, stop:1 #fca5a5);
+                border-radius: 3px;
+            }
+            QProgressBar#tractionBar {
+                background: #f1f5f9;
+                border: 1px solid #e2e8f0;
+                border-radius: 4px;
+                margin: 0;
+            }
+            QProgressBar#tractionBar::chunk {
+                background: qlineargradient(x1:0, x2:1, stop:0 #86efac, stop:1 #16a34a);
+                border-radius: 3px;
+            }
+            QLabel#handlePctLabel {
+                font-size: 16px;
+                font-weight: 800;
+                color: #64748b;
+                padding: 2px 4px;
+            }
+            QLabel#handleLevelLabel {
+                color: #334155;
+                font-size: 14px;
+                font-weight: 700;
+                padding: 4px 8px;
+                background: #f8fafc;
+                border: 1px solid #e2e8f0;
+                border-radius: 5px;
+            }
             QPushButton {
-                min-height: 44px;
+                min-height: 36px;
                 border-radius: 7px;
                 border: 1px solid #cbd5e1;
                 background: #ffffff;
                 color: #172033;
-                font-size: 16px;
+                font-size: 14px;
                 font-weight: 700;
             }
             QPushButton:hover {
@@ -607,6 +1519,101 @@ class MainWindow(QMainWindow):
                 background: #dc2626;
                 border-color: #dc2626;
                 color: #ffffff;
+            }
+            QPushButton#smallButton {
+                min-height: 28px;
+                font-size: 14px;
+                padding: 2px 6px;
+            }
+            #speedSectionLabel {
+                color: #1d2939;
+                font-size: 15px;
+                font-weight: 800;
+                margin-right: 8px;
+            }
+            QPushButton#speedButton {
+                min-height: 28px;
+                min-width: 40px;
+                max-width: 48px;
+                border-radius: 5px;
+                background: #f8fafc;
+                color: #475467;
+                font-size: 13px;
+                padding: 2px 6px;
+            }
+            QPushButton#speedButton:checked {
+                background: #2563eb;
+                color: #ffffff;
+                border-color: #2563eb;
+            }
+            QPushButton#speedBarPrimary, QPushButton#speedBarDanger {
+                min-height: 28px;
+                border-radius: 5px;
+                font-size: 13px;
+                padding: 2px 10px;
+            }
+            QPushButton#speedBarPrimary {
+                background: #2563eb;
+                border-color: #2563eb;
+                color: #ffffff;
+            }
+            QPushButton#speedBarDanger {
+                background: #dc2626;
+                border-color: #dc2626;
+                color: #ffffff;
+            }
+            #speedSeparator {
+                color: #cbd5e1;
+                font-size: 16px;
+                margin: 0 6px;
+            }
+            #speedStatusLabel {
+                color: #475467;
+                font-size: 13px;
+                font-weight: 650;
+            }
+            QLineEdit {
+                min-height: 34px;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                padding: 4px 9px;
+                background: #ffffff;
+                color: #172033;
+            }
+            QTableWidget {
+                background: #ffffff;
+                alternate-background-color: #f8fafc;
+                border: 1px solid #d8dee8;
+                border-radius: 7px;
+                gridline-color: #e5eaf2;
+                selection-background-color: #dbeafe;
+                selection-color: #172033;
+            }
+            QHeaderView::section {
+                background: #f1f5f9;
+                color: #334155;
+                border: 0;
+                border-bottom: 1px solid #cbd5e1;
+                padding: 8px 7px;
+                font-weight: 800;
+            }
+            #dispatchLineView {
+                background: #ffffff;
+                border: 1px solid #d8dee8;
+                border-radius: 8px;
+            }
+            #dispatchFeedback {
+                background: #eff6ff;
+                border: 1px solid #bfdbfe;
+                border-radius: 7px;
+                color: #1e3a8a;
+                padding: 9px 12px;
+                font-weight: 700;
+            }
+            #dispatchFeedback[result="error"] {
+                background: #fef2f2;
+                border-color: #fecaca;
+                color: #991b1b;
             }
             #statusHint {
                 background: #fff7ed;
@@ -636,8 +1643,8 @@ class MainWindow(QMainWindow):
                 border-bottom: 0;
                 border-radius: 0;
                 margin: 0;
-                padding: 14px 16px 10px 16px;
-                font-size: 17px;
+                padding: 10px 14px 8px 14px;
+                font-size: 15px;
                 font-weight: 800;
                 color: #1d2939;
             }
@@ -647,16 +1654,20 @@ class MainWindow(QMainWindow):
         """创建横跨底部的运行日志区域"""
         log_group = QGroupBox("运行日志")
         log_group.setObjectName("bottomLogGroup")
-        log_group.setMinimumHeight(230)
-        log_group.setMaximumHeight(320)
+        log_group.setMinimumHeight(165)
+        log_group.setMaximumHeight(245)
         log_layout = QVBoxLayout(log_group)
         log_layout.setContentsMargins(16, 14, 16, 12)
         log_layout.setSpacing(8)
 
+        self.log_summary = QLabel()
+        self.log_summary.setObjectName("dataSourceStatus")
+        log_layout.addWidget(self.log_summary)
+
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setObjectName("logText")
-        self.log_text.setMinimumHeight(180)
+        self.log_text.setMinimumHeight(120)
         log_layout.addWidget(self.log_text)
         return log_group
 
@@ -666,16 +1677,25 @@ class MainWindow(QMainWindow):
             self.log_text.append(self._format_log_event(event))
         self._displayed_event_count = len(self.recorder.events)
         self.log_text.moveCursor(self.log_text.textCursor().End)
+        summary = self.recorder.get_summary()
+        evaluation = self.evaluator.evaluate(self.recorder)
+        self.log_summary.setText(
+            f"事件 {summary['总事件数']}  |  "
+            f"警告 {summary['警告事件数']}  |  "
+            f"严重 {summary['严重事件数']}  |  "
+            f"运行评价 {evaluation['综合得分']:.1f} 分·{evaluation['评价等级']}"
+        )
 
     def _format_log_event(self, event) -> str:
         """把事件格式化成清晰的分块日志"""
         color = self._event_color(event.event_type)
         meta = f"位置 {event.position:.1f} m · 速度 {event.speed * 3.6:.1f} km/h"
-        description = event.description.replace("状态快照: ", "")
+        description = escape(event.description.replace("状态快照: ", ""))
+        train = f" · {escape(event.train_id)}" if event.train_id else ""
         return (
             "<div style='margin:0 0 8px 0;'>"
             f"<span style='color:#93c5fd;'>[{event.timestamp:5.1f}s]</span> "
-            f"<span style='color:{color}; font-weight:700;'>● {event.event_type}</span> "
+            f"<span style='color:{color}; font-weight:700;'>● {escape(event.event_type)}{train}</span> "
             f"<span style='color:#f8fafc;'>{description}</span>"
             f"<div style='color:#94a3b8; font-size:12px; margin-top:1px;'>{meta}</div>"
             "</div>"
@@ -683,9 +1703,9 @@ class MainWindow(QMainWindow):
 
     def _event_color(self, event_type: str) -> str:
         """按事件类型区分日志颜色"""
-        if event_type in ("紧急制动", "超速", "红灯违规"):
+        if event_type in ("紧急制动", "超速", "红灯违规", "列车碰撞"):
             return "#f87171"
-        if event_type == "信号":
+        if event_type in ("信号", "安全防护", "列车接近"):
             return "#fbbf24"
         if event_type == "状态":
             return "#38bdf8"
@@ -695,15 +1715,23 @@ class MainWindow(QMainWindow):
 
     def _record_signal_changes(self):
         """记录信号显示变化，避免日志中重复写入相同状态"""
+        runtime = self._active_runtime()
+        speed = runtime.controller.head_speed if runtime else 0.0
         for sig in self.track.signals:
             aspect = self.signal_system.get_signal_aspect(sig)
             last_aspect = self._last_signal_aspects.get(sig.signal_id)
+            # 首次扫描只建立基线，避免数据库近百架信号机淹没日志。
+            if last_aspect is None:
+                self._last_signal_aspects[sig.signal_id] = aspect
+                continue
             if aspect != last_aspect:
                 self.recorder.record(
                     "信号",
                     f"{sig.signal_id} {aspect.value}",
                     sig.position,
-                    self.controller.head_speed,
+                    speed,
+                    train_id=runtime.train_id if runtime else "",
+                    source="signal", entity_id=sig.signal_id,
                 )
                 self._last_signal_aspects[sig.signal_id] = aspect
 
@@ -713,8 +1741,12 @@ class MainWindow(QMainWindow):
             return
 
         head_abs = self._head_abs_position()
-        nearest_signal = self.signal_system.get_nearest_signal_ahead(
-            head_abs, self.track.signals
+        runtime = self._active_runtime()
+        if runtime is None:
+            return
+        nearest_signal = self.signal_system.get_nearest_signal_for_direction(
+            head_abs, runtime.controller.direction, self.track.signals,
+            look_ahead=float("inf"),
         )
         if nearest_signal:
             aspect = self.signal_system.get_signal_aspect(nearest_signal)
@@ -722,12 +1754,16 @@ class MainWindow(QMainWindow):
         else:
             signal_text = "无前方信号"
 
-        mode = "自动" if self.controller.running_mode == RunningMode.AUTOMATIC else "手动"
-        head_accel = self.controller.states[0].acceleration if self.controller.states else 0.0
+        controller = runtime.controller
+        mode = "自动" if controller.running_mode == RunningMode.AUTOMATIC else "手动"
+        head_accel = controller.states[0].acceleration if controller.states else 0.0
         description = (
             f"状态快照: 模式 {mode} · 加速度 {head_accel:+.2f} m/s² · "
             f"限速 {effective_limit * 3.6:.0f} km/h · "
             f"信号 {signal_text} · 供电 {self.power_supply.status.value}"
         )
-        self.recorder.record("状态", description, head_abs, self.controller.head_speed)
+        self.recorder.record(
+            "状态", f"{runtime.train_id} · {description}",
+            head_abs, controller.head_speed,
+            train_id=runtime.train_id, source="simulation")
         self._last_status_log_time = self.sim_time

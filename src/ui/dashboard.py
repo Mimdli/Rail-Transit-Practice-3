@@ -11,13 +11,18 @@
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame, QProgressBar
 from PyQt5.QtCore import Qt
 
+from typing import TYPE_CHECKING
 from src.vehicle.vehicle_controller import VehicleController
-from src.vehicle.enums import RunningMode, LoadLevel
+from src.vehicle.enums import RunningMode, LoadLevel, StationPhase, VehicleState
 from src.vehicle.force_report import ForceReport, CarForceReport
 from src.common.track_position import ITrackQuery
 from src.track.data import TrackData
 from src.signal.system import SignalSystem, SignalAspect
 from src.power.supply import PowerSupply
+
+if TYPE_CHECKING:
+    from src.vehicle.auto_drive import AutoDriveController
+    from src.vehicle.route_manager import RouteManager
 
 
 class StatusIndicator(QFrame):
@@ -53,13 +58,17 @@ class Dashboard(QWidget):
 
     def __init__(self, controller: VehicleController, track: TrackData,
                  track_adapter: ITrackQuery,
-                 signal_system: SignalSystem, power_supply: PowerSupply):
+                 signal_system: SignalSystem, power_supply: PowerSupply,
+                 auto_drive: "AutoDriveController | None" = None,
+                 route_manager: "RouteManager | None" = None):
         super().__init__()
         self.controller = controller
         self.track = track
         self.track_adapter = track_adapter
         self.signal_system = signal_system
         self.power_supply = power_supply
+        self.auto_drive = auto_drive
+        self.route_manager = route_manager
         self._last_report: ForceReport = None
         self.setObjectName("dashboard")
         self._init_ui()
@@ -71,12 +80,12 @@ class Dashboard(QWidget):
 
         # 标题行：名称 + 编组信息
         title_row = QHBoxLayout()
-        title = QLabel("运行状态")
-        title.setObjectName("pageTitle")
+        self.title_label = QLabel("运行状态 · 1车")
+        self.title_label.setObjectName("pageTitle")
         self.consist_label = QLabel(self._consist_text())
         self.consist_label.setObjectName("indicatorLabel")
         self.consist_label.setStyleSheet("color: #667085; font-size: 13px; font-weight: 700; padding-top: 4px;")
-        title_row.addWidget(title)
+        title_row.addWidget(self.title_label)
         title_row.addStretch()
         title_row.addWidget(self.consist_label)
         layout.addLayout(title_row)
@@ -110,6 +119,21 @@ class Dashboard(QWidget):
         grid2.addWidget(self.brake_indicator, 0, 2)
         grid2.addWidget(self.coupler_indicator, 0, 3)
         layout.addLayout(grid2)
+
+        # ── 能耗行：净电耗 / 牵引电耗 / 再生回收 / 再生率 ──────
+        grid3 = QGridLayout()
+        grid3.setSpacing(6)
+
+        self.net_energy_indicator = StatusIndicator("净电耗", "kWh")
+        self.traction_energy_indicator = StatusIndicator("牵引电耗", "kWh")
+        self.regen_energy_indicator = StatusIndicator("再生回收", "kWh")
+        self.regen_ratio_indicator = StatusIndicator("再生率", "%")
+
+        grid3.addWidget(self.net_energy_indicator, 0, 0)
+        grid3.addWidget(self.traction_energy_indicator, 0, 1)
+        grid3.addWidget(self.regen_energy_indicator, 0, 2)
+        grid3.addWidget(self.regen_ratio_indicator, 0, 3)
+        layout.addLayout(grid3)
 
         # ── 电空制动 + 黏着状态（新增） ──────────────────────────
         detail_grid = QGridLayout()
@@ -149,22 +173,24 @@ class Dashboard(QWidget):
         self.next_station_label = QLabel("下一站: --")
         self.distance_label = QLabel("下一站距离: --")
         self.mode_label = QLabel("模式: 手动")
+        self.route_label = QLabel("进路: --")
         self.signal_label = QLabel("信号: --")
         self.power_label = QLabel("供电: --")
         self.door_label = QLabel("车门: 关闭")
 
         for lbl in [self.station_label, self.next_station_label, self.distance_label,
-                     self.mode_label, self.signal_label, self.power_label, self.door_label]:
+                     self.mode_label, self.route_label, self.signal_label, self.power_label, self.door_label]:
             lbl.setObjectName("infoLabel")
             lbl.setMinimumHeight(22)
 
         info_grid.addWidget(self.mode_label, 0, 0)
-        info_grid.addWidget(self.signal_label, 0, 1)
-        info_grid.addWidget(self.power_label, 0, 2)
-        info_grid.addWidget(self.station_label, 1, 0)
-        info_grid.addWidget(self.next_station_label, 1, 1)
-        info_grid.addWidget(self.distance_label, 1, 2)
-        info_grid.addWidget(self.door_label, 2, 0)
+        info_grid.addWidget(self.route_label, 0, 1)
+        info_grid.addWidget(self.signal_label, 0, 2)
+        info_grid.addWidget(self.power_label, 1, 0)
+        info_grid.addWidget(self.station_label, 1, 1)
+        info_grid.addWidget(self.next_station_label, 1, 2)
+        info_grid.addWidget(self.distance_label, 2, 0)
+        info_grid.addWidget(self.door_label, 2, 1)
 
         info_frame = QFrame()
         info_frame.setObjectName("infoPanel")
@@ -213,6 +239,15 @@ class Dashboard(QWidget):
 
         layout.addStretch()
 
+    def bind_runtime(self, controller: VehicleController,
+                     track_adapter: ITrackQuery, train_id: str):
+        """切换运行仿真页正在监控的列车。"""
+        self.controller = controller
+        self.track_adapter = track_adapter
+        self.train_id = train_id
+        self.title_label.setText(f"运行状态 · {train_id}")
+        self.refresh(controller.last_report)
+
     # ── 刷新 ────────────────────────────────────────────────────
 
     def refresh(self, report: ForceReport = None):
@@ -223,6 +258,8 @@ class Dashboard(QWidget):
         """
         self._last_report = report
         ctrl = self.controller
+        # 方向统一为正负 1，供前方信号和下一站距离计算使用。
+        direction = 1 if ctrl.direction >= 0 else -1
 
         # ── 头车绝对位置 ───────────────────────────────────────
         head_abs = 0.0
@@ -255,23 +292,24 @@ class Dashboard(QWidget):
 
         # ── 力分量（从 report 取头车数据） ──────────────────────
         if report is not None and report.cars:
-            head = report.cars[0]
-            self.traction_indicator.set_value(f"{head.tractive_force / 1000:.0f}",
-                                              "#2563eb" if head.tractive_force > 1 else "#333")
-            self.brake_indicator.set_value(f"{abs(head.brake_force) / 1000:.0f}",
-                                           "#dc2626" if abs(head.brake_force) > 1 else "#333")
+            total_trac = sum(c.tractive_force for c in report.cars)
+            total_brake = sum(abs(c.brake_force) for c in report.cars)
+            self.traction_indicator.set_value(f"{total_trac / 1000:.0f}",
+                                              "#2563eb" if total_trac > 1 else "#333")
+            self.brake_indicator.set_value(f"{total_brake / 1000:.0f}",
+                                           "#dc2626" if total_brake > 1 else "#333")
 
             # 电空制动拆分
-            e_brake_kn = abs(head.electric_brake_force) / 1000
-            f_brake_kn = abs(head.friction_brake_force) / 1000
+            e_brake_kn = sum(abs(c.electric_brake_force) for c in report.cars) / 1000
+            f_brake_kn = sum(abs(c.friction_brake_force) for c in report.cars) / 1000
             self.electric_brake_label.setText(f"电制动: {e_brake_kn:.0f} kN")
             self.friction_brake_label.setText(f"空制动: {f_brake_kn:.0f} kN")
 
             # 黏着状态
-            if head.traction_limited:
+            if any(c.traction_limited for c in report.cars):
                 self.adhesion_label.setText("黏着: ⚠ 空转!")
                 self.adhesion_label.setStyleSheet("color: #dc2626; font-size: 17px; font-weight: 700;")
-            elif head.brake_limited:
+            elif any(c.brake_limited for c in report.cars):
                 self.adhesion_label.setText("黏着: ⚠ 滑行!")
                 self.adhesion_label.setStyleSheet("color: #dc2626; font-size: 17px; font-weight: 700;")
             else:
@@ -292,15 +330,68 @@ class Dashboard(QWidget):
         else:
             self.coupler_indicator.set_value("--")
 
-        # ── 运行模式 ───────────────────────────────────────────
+        # ── 能耗指标 ───────────────────────────────────────────
+        try:
+            net_kwh = ctrl.energy_net_kwh
+            trac_kwh = ctrl.energy_traction_kwh
+            regen_kwh = ctrl.energy_regen_kwh
+            regen_ratio = ctrl.energy_regen_ratio
+            self.net_energy_indicator.set_value(f"{net_kwh:.3f}",
+                "#f59e0b" if net_kwh > 0 else "#333")
+            self.traction_energy_indicator.set_value(f"{trac_kwh:.3f}",
+                "#2ecc71" if trac_kwh > 0 else "#333")
+            self.regen_energy_indicator.set_value(f"{regen_kwh:.3f}",
+                "#3b82f6" if regen_kwh > 0 else "#333")
+            self.regen_ratio_indicator.set_value(f"{regen_ratio * 100:.1f}",
+                "#22d3ee" if regen_ratio > 0 else "#333")
+        except Exception:
+            self.net_energy_indicator.set_value("--")
+            self.traction_energy_indicator.set_value("--")
+            self.regen_energy_indicator.set_value("--")
+            self.regen_ratio_indicator.set_value("--")
+
+        # ── 运行模式 + 停站状态 + 车辆状态 ───────────────────────
         mode = "自动" if ctrl.running_mode == RunningMode.AUTOMATIC else "手动"
+        # 车辆运行状态
+        state_names = {
+            VehicleState.INIT: "初始化",
+            VehicleState.STOPPED: "停止",
+            VehicleState.STARTING: "启动中",
+            VehicleState.MOVING: "运行中",
+            VehicleState.COASTING: "惰行",
+            VehicleState.BRAKING: "制动中",
+            VehicleState.EMERGENCY: "紧急制动",
+        }
+        state_text = state_names.get(ctrl.vehicle_state, "未知")
+        mode += f" · {state_text}"
+        if self.auto_drive is not None:
+            phase = self.auto_drive.station_phase
+            if phase == StationPhase.DWELL:
+                remaining = self.auto_drive.dwell_remaining
+                mode += f" · 停站中 {remaining:.0f}s"
+            elif phase == StationPhase.APPROACHING:
+                mode += " · 进站中"
+            elif phase == StationPhase.DEPARTING:
+                mode += " · 准备发车"
         self.mode_label.setText(f"模式: {mode}")
 
+        # ── 进路（独立于驾驶模式） ────────────────────────────────
+        route_text = "进路: --"
+        if self.route_manager is not None:
+            active_route = self.route_manager.active_route
+            if active_route is not None:
+                if active_route.is_auto:
+                    route_text = "进路: 自动（系统算路）"
+                else:
+                    route_text = f"进路: {active_route.name}"
+        self.route_label.setText(route_text)
+
         # ── 信号 ───────────────────────────────────────────────
-        next_signal = self.signal_system.get_nearest_signal_ahead(head_abs, self.track.signals)
+        next_signal = self.signal_system.get_nearest_signal_for_direction(
+            head_abs, direction, self.track.signals)
         if next_signal:
             aspect = self.signal_system.get_signal_aspect(next_signal)
-            distance = next_signal.position - head_abs
+            distance = direction * (next_signal.position - head_abs)
             self.signal_label.setText(f"前方信号 {next_signal.signal_id}: {aspect.value} ({distance:.0f} m)")
         else:
             aspect = self.signal_system.get_aspect_at(head_abs, self.track.signals)
@@ -327,9 +418,17 @@ class Dashboard(QWidget):
         station = self.track.get_station_at(head_abs)
         self.station_label.setText(f"当前站: {station.name if station else '区间'}")
 
-        next_station = self.track.get_nearest_station_ahead(head_abs)
+        station_candidates = [
+            station for station in self.track.stations
+            if direction * (station.position - head_abs) > 5.0
+        ]
+        next_station = min(
+            station_candidates,
+            key=lambda station: direction * (station.position - head_abs),
+            default=None,
+        )
         if next_station:
-            dist = next_station.position - head_abs
+            dist = direction * (next_station.position - head_abs)
             self.next_station_label.setText(f"下一站: {next_station.name}")
             self.distance_label.setText(f"下一站距离: {dist:.0f} m")
         else:
@@ -372,10 +471,11 @@ class Dashboard(QWidget):
     # ── 信号序列 ──────────────────────────────────────────────
 
     def _refresh_signal_overview(self, position: float):
-        ahead = [
-            sig for sig in self.track.signals
-            if sig.position >= position
-        ][:5]
+        """刷新前方若干信号机的红黄绿状态摘要"""
+        ahead = sorted(
+            (sig for sig in self.track.signals if sig.position >= position),
+            key=lambda sig: sig.position,
+        )[:5]
         if not ahead:
             self.signal_overview_label.setText("无前方信号")
             return
