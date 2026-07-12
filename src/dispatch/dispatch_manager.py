@@ -318,7 +318,11 @@ class DispatchManager:
             self.occupancy.snapshot, self.interlocking.locks)
 
     def _apply_signal_protection(self, runtime: TrainRuntime) -> bool:
-        """红灯前切除牵引并制动，形成调度—信号—车辆闭环。"""
+        """红灯前切除牵引并制动，形成调度—信号—车辆闭环。
+
+        若列车目标站在红灯信号机之前（无需越过该信号即可到站），
+        则放行列车，避免信号误拦导致无法正常进站。
+        """
         if self.signal_system is None:
             return False
         controller = runtime.controller
@@ -336,6 +340,35 @@ class DispatchManager:
         if self.signal_system.get_signal_aspect(signal) != SignalAspect.RED:
             self._clear_signal_block(runtime)
             return False
+
+        # 若列车目标站在信号机之前，无需越过该信号，放行
+        if runtime.target_station_id is not None:
+            try:
+                target_station = self.trains.get_station(runtime.target_station_id)
+                if controller.direction * (signal.position - target_station.position) > 0:
+                    # 信号机在目标站之后 → 列车到站前不会越过它
+                    self._clear_signal_block(runtime)
+                    return False
+            except ValueError:
+                pass
+
+        # 若红灯防护的区段在全路线内（尚未被 _route_window 锁但即将锁），
+        # 放行通过。否则列车永远无法进入下一区段来触发滚动锁闭 → 死锁。
+        if runtime.reserved_segments:
+            protected_seg = self.signal_system._protected_segment_id(
+                signal, self.track)
+            if protected_seg in runtime.reserved_segments:
+                self._clear_signal_block(runtime)
+                return False
+
+        # 若列车目标在信号所在区段上（而非防护区段），则列车可在
+        # 不进入防护区段的情况下到站。回程（折返后反向运行）时
+        # 信号可能位于列车与目标之间，但目标仍在信号所在区段内。
+        target_pos = runtime.auto_drive.target_position
+        if target_pos is not None and target_pos.segment_id == signal.seg_id:
+            self._clear_signal_block(runtime)
+            return False
+
         distance = controller.direction * (signal.position - runtime.head_abs)
         runtime.blocked_reason = f"前方信号 {signal.signal_id} 红灯（{distance:.0f}m）"
         runtime.status = TrainStatus.BLOCKED

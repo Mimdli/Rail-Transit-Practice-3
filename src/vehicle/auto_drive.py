@@ -127,11 +127,9 @@ class AutoDriveController:
                 self._compute_and_set_route(position)
 
         # 重置停站状态（新目标 = 新一次停车流程）。
-        # 但如果正在停站（DWELL），不中断 —— 新目标将在发车后生效，
-        # 避免进路变更等操作异常终止当前停站流程。
-        if self.station_phase != StationPhase.DWELL:
-            self.station_phase = StationPhase.CRUISING
-            self._dwell_timer = 0.0
+        # 无论当前处于何种阶段（含 DWELL），新目标到达即重新开始进站流程。
+        self.station_phase = StationPhase.CRUISING
+        self._dwell_timer = 0.0
 
     def reset_state(self):
         """重置自动驾驶状态（切手动时调用）。"""
@@ -263,7 +261,9 @@ class AutoDriveController:
         )
 
         # ── 到站判断 ──────────────────────────────────────────
-        if self.controller.is_stopped and distance < 3.0:
+        # 仅在未越过目标时触发（distance >= 0），避免 overshoot
+        # 后误入 DWELL 导致 dispatch 层与 auto_drive 状态机分离。
+        if self.controller.is_stopped and 0.0 <= distance < 3.0:
             self._enter_dwell()
             return
 
@@ -271,7 +271,15 @@ class AutoDriveController:
         a_brake = self._compute_brake_deceleration()
         d_brake = (current_speed ** 2) / (2.0 * a_brake) * self.BRAKE_MARGIN
 
-        if distance <= max(d_brake, 5.0):
+        # 迟滞判断：在 APPROACHING 阶段使用更宽松的退出阈值，
+        # 防止 d_brake 随 v² 收缩快于 distance 随 v·dt 收缩
+        # 导致的 CRUISING ↔ APPROACHING 边界振荡。
+        if self.station_phase == StationPhase.APPROACHING:
+            enter_approach = distance <= max(d_brake * 1.5, 8.0)
+        else:
+            enter_approach = distance <= max(d_brake, 5.0)
+
+        if enter_approach:
             # ══════════════════════════════════════════════════
             # 制动接近段 — 前馈 + 反馈控制器
             # ══════════════════════════════════════════════════
@@ -375,6 +383,9 @@ class AutoDriveController:
 
         正向运行 (direction=1) 时"前方" = 里程递增方向；
         反向运行 (direction=-1) 时"前方" = 里程递减方向。
+
+        若 interlock 为 None（如 web UI 中 dispatch 创建的实例），
+        回退到 CRUISING 让调度层通过 _prepare_next_leg 处理下一站。
         """
         # 保持制动直到找到下一站目标
         self._set_throttle(0.0)
@@ -394,6 +405,10 @@ class AutoDriveController:
         elif self._should_turnaround():
             # 线路端点 → 执行折返
             self._do_turnaround()
+        elif self._interlock is None:
+            # 无联锁信息时无法查找下一站，回退到巡航让调度层接管。
+            # 调度 _finish_dwell → _prepare_next_leg 会设新目标并重置 phase。
+            self.station_phase = StationPhase.CRUISING
         # 无下一站且不满足折返条件：保持停止（已在端点）
 
     # ═══════════════════════════════════════════════════════════════

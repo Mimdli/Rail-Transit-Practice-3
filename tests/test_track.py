@@ -33,20 +33,35 @@ def test_demo_segments_have_coordinates():
 def test_demo_segment_chain_continuous():
     loader = TrackLoader()
     td = loader.load_demo_data()
-    # 单链串联：seg1→seg2→seg3→seg4→seg5→seg6→seg7→seg8（0~2000m）
-    all_segs = sorted(td.segments, key=lambda s: s.abs_start)
-    assert len(all_segs) == 8
-    for i in range(len(all_segs) - 1):
-        expected = all_segs[i].abs_start + all_segs[i].length
-        assert abs(all_segs[i + 1].abs_start - expected) < 1.0, \
-            f"链 seg{all_segs[i].seg_id}→seg{all_segs[i+1].seg_id} 不连续"
+    # 双链并行：UP链(seg1-4) 与 DOWN链(seg5-8) 各有独立坐标 0~1000m
+    assert len(td.segments) == 8
+
+    # 按 seg_id 分组为两条链
+    up_chain = [s for s in td.segments if s.seg_id in (1, 2, 3, 4)]
+    down_chain = [s for s in td.segments if s.seg_id in (5, 6, 7, 8)]
+    assert len(up_chain) == 4
+    assert len(down_chain) == 4
+
+    # 每条链独立连续
+    for chain_name, chain in [("UP", up_chain), ("DOWN", down_chain)]:
+        sorted_chain = sorted(chain, key=lambda s: s.abs_start)
+        for i in range(len(sorted_chain) - 1):
+            expected = sorted_chain[i].abs_start + sorted_chain[i].length
+            assert abs(sorted_chain[i + 1].abs_start - expected) < 1.0, \
+                f"{chain_name}链 seg{sorted_chain[i].seg_id}→seg{sorted_chain[i+1].seg_id} 不连续"
+
+    # 两链起点均为 0（坐标重叠）
+    up_root = next(s for s in up_chain if s.start_neighbor == 0)
+    down_root = next(s for s in down_chain if s.start_neighbor == 0)
+    assert up_root.abs_start == 0.0
+    assert down_root.abs_start == 0.0
 
 
 def test_demo_total_length():
     loader = TrackLoader()
     td = loader.load_demo_data()
-    # 单链 8×250=2000m，无侧线，total_length 应等于 2000
-    assert td.total_length() == 2000.0
+    # 双链各 4×250=1000m，坐标重叠，total_length 为单链最大延伸
+    assert td.total_length() == 1000.0
 
 
 def test_demo_stations_have_positions():

@@ -126,67 +126,74 @@ class TrackLoader:
     def load_demo_data(self) -> TrackData:
         """加载演示用简化数据（不依赖 Excel 文件，用于测试）
 
-        线路拓扑（单链串联，仿数据库主线结构）::
+        线路拓扑（双链并行，与数据库主线结构一致）::
 
-            seg1  → seg2  → seg3  → seg4  → seg5  → seg6  → seg7  → seg8
-             0      250      500     750     1000     1250    1500     1750   (m)
-            A→B    B→C      C→D     D area  D→C      C→B     B→A     A area
-            <──── 上行 (direction=+1) ────> <──── 下行 (direction=-1) ────>
+          UP链（上行，direction=+1）:
+            seg1  → seg2  → seg3  → seg4
+             0      250      500     750   (m, abs)
+            A→B    B→C      C→D     D area
 
-        上行线与下行线在 D 端串接为单一根段链（仅 seg1 为根段），
-        build_coordinates() 自动产出 0~2000m 无重叠的绝对坐标，
-        与数据库线路的设计一致：主线区段按单一连续里程展开。
-        4 个统一车站，每站 2 个站台（分属上下行线）。
+          DOWN链（下行，direction=-1）:
+            seg5  → seg6  → seg7  → seg8
+             0      250      500     750   (m, abs)
+            A→B    B→C      C→D     D area
+
+        两条链各 4 段 × 250m = 1000m，各有独立根段（seg1 和 seg5），
+        build_coordinates() 为每条链独立产出 0~1000m 的绝对坐标，
+        两链坐标完全重叠，与数据库线路的双链并行设计一致。
+        4 个统一车站，每站 2 个站台（分属上下行线），站台方向与所在轨道一致。
         """
         td = self.track_data
 
-        # ── 区段：8 段单链，无侧向连接（仿数据库多根段但无 end_lateral 环） ──
-        # 上行 seg1-4 (0-1000m) 与下行 seg5-8 (1000-2000m) 通过 seg4.end_neighbor=5 串联。
+        # ── 区段：双链各 4 段，独立不串联 ──
+        # UP 链（seg1~seg4）与 DOWN 链（seg5~seg8）各为独立根段链，
+        # 坐标重叠（均从 abs=0 起算），无侧向连接。
         td.segments = [
             # seg_id, length, start_neighbor, end_neighbor
-            # ── 上行主线（abs 0~1000m） ────────────────────
+            # ── UP 链（上行主线，abs 0~1000m） ─────────────────
             Segment(1, 250.0, 0, 2),                          # 站A→站B
             Segment(2, 250.0, 1, 3),                          # 站B→站C
             Segment(3, 250.0, 2, 4),                          # 站C→站D
-            Segment(4, 250.0, 3, 5),                          # 站D 区域，连接下行
-            # ── 下行主线（abs 1000~2000m） ──────────────────
-            Segment(5, 250.0, 4, 6),                          # 站D→站C（下行）
-            Segment(6, 250.0, 5, 7),                          # 站C→站B（下行）
-            Segment(7, 250.0, 6, 8),                          # 站B→站A（下行）
-            Segment(8, 250.0, 7, 0),                          # 站A 区域（下行），线路终点
+            Segment(4, 250.0, 3, 0),                          # 站D 区域，UP 链终点
+            # ── DOWN 链（下行主线，abs 0~1000m） ──────────────
+            Segment(5, 250.0, 0, 6),                          # 站A→站B（下行）
+            Segment(6, 250.0, 5, 7),                          # 站B→站C（下行）
+            Segment(7, 250.0, 6, 8),                          # 站C→站D（下行）
+            Segment(8, 250.0, 7, 0),                          # 站D 区域，DOWN 链终点
         ]
 
         # ── 车站：4 个统一车站（每站跨上下行双线） ──────────
         td.stations = [
-            Station(1, "站A", 0.0, [1, 8]),
-            Station(2, "站B", 250.0, [3, 6]),
-            Station(3, "站C", 500.0, [5, 4]),
-            Station(4, "站D", 750.0, [7, 2]),
+            Station(1, "站A", 0.0, [1, 2]),
+            Station(2, "站B", 250.0, [3, 4]),
+            Station(3, "站C", 500.0, [5, 6]),
+            Station(4, "站D", 750.0, [7, 8]),
         ]
 
-        # ── 站台：每站 2 个（一个在上行线，一个在下行线） ──
+        # ── 站台：每站 2 个（一个在 UP 链，一个在 DOWN 链） ──
+        # 站台方向与所在轨道一致：UP 链站台标 "up"，DOWN 链站台标 "down"
         td.platforms = [
-            # 上行站台（seg1~seg4，列车方向 +1 → 右侧为 down）
-            Platform(1, 0.0, 1, "down", "站A", station_id=1),
-            Platform(3, 250.0, 2, "down", "站B", station_id=2),
-            Platform(5, 500.0, 3, "down", "站C", station_id=3),
-            Platform(7, 750.0, 4, "down", "站D", station_id=4),
-            # 下行站台（seg5~seg8，列车方向 -1 → 左侧为 up）
-            Platform(2, 1000.0, 5, "up", "站D", station_id=4),
-            Platform(4, 1250.0, 6, "up", "站C", station_id=3),
-            Platform(6, 1500.0, 7, "up", "站B", station_id=2),
-            Platform(8, 1750.0, 8, "up", "站A", station_id=1),
+            # UP 链站台（seg1~seg4，方向 "up"）
+            Platform(1, 0.0, 1, "up", "站A", station_id=1),
+            Platform(3, 250.0, 2, "up", "站B", station_id=2),
+            Platform(5, 500.0, 3, "up", "站C", station_id=3),
+            Platform(7, 750.0, 4, "up", "站D", station_id=4),
+            # DOWN 链站台（seg5~seg8，方向 "down"）
+            Platform(2, 0.0, 5, "down", "站A", station_id=1),
+            Platform(4, 250.0, 6, "down", "站B", station_id=2),
+            Platform(6, 500.0, 7, "down", "站C", station_id=3),
+            Platform(8, 750.0, 8, "down", "站D", station_id=4),
         ]
 
-        # ── 限速（上行 + 下行） ─────────────────
+        # ── 限速（UP 链 + DOWN 链） ─────────────────
         td.speed_limits = [
-            # 上行主线（seg1~seg4）
+            # UP 链（seg1~seg4）
             SpeedLimit(1, 0.0, 250.0, 22.0),
             SpeedLimit(2, 0.0, 250.0, 22.0),
             SpeedLimit(3, 0.0, 80.0, 12.0),
             SpeedLimit(3, 80.0, 250.0, 22.0),
             SpeedLimit(4, 0.0, 250.0, 22.0),
-            # 下行主线（seg5~seg8）
+            # DOWN 链（seg5~seg8）
             SpeedLimit(5, 0.0, 250.0, 22.0),
             SpeedLimit(6, 0.0, 250.0, 22.0),
             SpeedLimit(7, 0.0, 80.0, 12.0),
@@ -196,14 +203,14 @@ class TrackLoader:
 
         # ── 坡度 ──────────────────────────────────────────────
         td.gradients = [
-            # 上行主线（seg1~seg4）
+            # UP 链（seg1~seg4）
             Gradient(1, 0.0, 150.0, 0.0),
             Gradient(1, 150.0, 250.0, 5.0),
             Gradient(2, 0.0, 150.0, -3.0),
             Gradient(2, 150.0, 250.0, 0.0),
             Gradient(3, 0.0, 250.0, 8.0),
             Gradient(4, 0.0, 250.0, -5.0),
-            # 下行主线（seg5~seg8）
+            # DOWN 链（seg5~seg8）
             Gradient(5, 0.0, 250.0, 3.0),
             Gradient(6, 0.0, 250.0, -2.0),
             Gradient(7, 0.0, 150.0, 5.0),
@@ -213,14 +220,14 @@ class TrackLoader:
 
         # ── 信号机 ────────────────────────────────────────────
         td.signals = [
-            # 上行信号（seg1~seg4）
+            # UP 链信号（seg1~seg4，防护方向 "up"）
             Signal("S01", direction="up", seg_id=1, offset=100.0),
             Signal("S02", direction="up", seg_id=1, offset=220.0),
             Signal("S03", direction="up", seg_id=2, offset=100.0),
             Signal("S04", direction="up", seg_id=3, offset=100.0),
             Signal("S05", direction="up", seg_id=4, offset=100.0),
             Signal("S06", direction="up", seg_id=4, offset=220.0),
-            # 下行信号（seg5~seg8）
+            # DOWN 链信号（seg5~seg8，防护方向 "down"）
             Signal("S07", direction="down", seg_id=5, offset=100.0),
             Signal("S08", direction="down", seg_id=5, offset=220.0),
             Signal("S09", direction="down", seg_id=6, offset=100.0),
@@ -234,25 +241,18 @@ class TrackLoader:
 
     @staticmethod
     def create_demo_routes():
-        """创建演示用预定义进路（单链串行，仿数据库主线结构）。
+        """创建演示用预定义进路（双链并行，与数据库主线结构一致）。
+
+        演示线路不再硬编码进路，所有进路由系统动态算路
+        （compute_mainline_route / AutoRoute），仅保留"自动"占位。
+        这与数据库线路的设计一致：0 条预存 Route，全走动态算路。
 
         Returns:
-            list[Route]: 6 条进路 ——
-              0: "自动"（空列表，由系统动态算路）
-              1: "上行全程" [1,2,3,4]         A→D
-              2: "下行全程" [5,6,7,8]         D→A（下行方向）
-              3: "上行站A→站C" [1,2,3]
-              4: "上行站B→站D" [2,3,4]
-              5: "下行站D→站B" [5,6,7]
+            list[Route]: 仅含 1 条"自动"占位进路。
         """
         from src.track.route import Route
         return [
             Route(0, "自动", []),
-            Route(1, "上行全程", [1, 2, 3, 4]),
-            Route(2, "下行全程", [5, 6, 7, 8]),
-            Route(3, "上行站A→站C", [1, 2, 3]),
-            Route(4, "上行站B→站D", [2, 3, 4]),
-            Route(5, "下行站D→站B", [5, 6, 7]),
         ]
 
     # ---- 内部加载方法 ----

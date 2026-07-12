@@ -5,6 +5,7 @@ from __future__ import annotations
 import heapq
 from dataclasses import dataclass, field
 
+from src.common.track_position import TrackPosition
 from src.track.data import TrackData
 from src.track.link_mainline import LinkCoordinateMapper, mainline_segment_ids
 
@@ -54,13 +55,17 @@ class SemanticLineModel:
     total_length: float = 0.0
 
 
-def build_semantic_line(track: TrackData) -> SemanticLineModel:
+def build_semantic_line(track: TrackData, link_source: str = "directions") -> SemanticLineModel:
     """构建第一版语义线路模型。
 
     当前口径偏保守：车站按绝对里程排序，相邻车站之间的 Seg 视为运营区间；
     带侧向邻接但不属于主区间的 Seg 聚类为辅助线，用于避免直接暴露全部工程区段。
+
+    Args:
+        track: 线路数据。
+        link_source: Link 公里标数据源，``"directions"`` 或 ``"demo"``。
     """
-    stations = _build_stations(track)
+    stations = _build_stations(track, link_source)
     configured_main_ids = mainline_segment_ids()
     available_main_ids = configured_main_ids.intersection(track._seg_map)
     links, main_seg_ids = _build_links(track, stations, available_main_ids)
@@ -101,8 +106,8 @@ def compute_station_route(track: TrackData, start_seg_id: int,
     return tuple(path)
 
 
-def _build_stations(track: TrackData) -> list[SemanticStation]:
-    mapper = LinkCoordinateMapper(track)
+def _build_stations(track: TrackData, link_source: str = "directions") -> list[SemanticStation]:
+    mapper = LinkCoordinateMapper(track, link_source)
     positions = [station.position for station in track.stations]
     duplicate_positions = {
         pos for pos in positions
@@ -121,10 +126,17 @@ def _build_stations(track: TrackData) -> list[SemanticStation]:
             if (platform.platform_id in platform_ids
                 or platform.station_id == station.station_id)
         }
-        link_positions = [
-            position for segment_id in platform_seg_ids
-            if (position := mapper.midpoint_for_segment(segment_id)) is not None
-        ]
+        link_positions = []
+        for segment_id in platform_seg_ids:
+            segment = track._seg_map.get(segment_id)
+            if segment is None:
+                continue
+            offset = max(0.0, min(segment.length,
+                                  station.position - segment.abs_start))
+            tp = TrackPosition(segment_id=segment_id, offset=offset)
+            lp = mapper.to_link_position(tp)
+            if lp is not None:
+                link_positions.append(lp)
         # 校对后的 Link 公里标优先；演示数据仍使用原车站位置。
         position = (sum(link_positions) / len(link_positions)
                     if link_positions else station.position)

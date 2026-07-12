@@ -26,12 +26,12 @@ def test_demo_semantic_links_follow_current_mainline():
 
     # 4 个统一车站 → 3 个站间区间
     assert len(model.links) == len(model.stations) - 1
-    # 单链串联：每段区间包含上下行方向各自的一个区段
-    #   A-B: 上行 seg1 + 下行 seg8（反向）
-    #   B-C: 上行 seg2 + 下行 seg7
-    #   C-D: 上行 seg3 + 下行 seg6
+    # 双链并行：每段区间包含上下行方向各一个区段
+    #   A-B: DOWN链 seg5 + UP链 seg1
+    #   B-C: DOWN链 seg6 + UP链 seg2
+    #   C-D: DOWN链 seg7 + UP链 seg3
     assert [link.seg_ids for link in model.links] == [
-        (1, 8), (2, 7), (3, 6)
+        (5, 1), (6, 2), (7, 3)
     ]
     assert not model.branches
 
@@ -101,19 +101,28 @@ def test_station_markers_use_platform_link_coordinates():
     mapper = LinkCoordinateMapper(track)
     model = build_semantic_line(track)
 
-    for station in model.stations:
+    for raw_station, model_station in zip(
+        sorted(track.stations, key=lambda s: (s.position, s.station_id)),
+        model.stations,
+    ):
         platform_segments = {
             platform.seg_id for platform in track.platforms
-            if (platform.station_id == station.station_id
-                or platform.platform_id in station.platform_ids)
+            if (platform.station_id == raw_station.station_id
+                or platform.platform_id in raw_station.platform_ids)
         }
-        expected = [
-            mapper.midpoint_for_segment(segment_id)
-            for segment_id in platform_segments
-            if mapper.midpoint_for_segment(segment_id) is not None
-        ]
+        expected = []
+        for segment_id in platform_segments:
+            segment = track._seg_map.get(segment_id)
+            if segment is None:
+                continue
+            offset = max(0.0, min(segment.length,
+                                  raw_station.position - segment.abs_start))
+            tp = TrackPosition(segment_id=segment_id, offset=offset)
+            lp = mapper.to_link_position(tp)
+            if lp is not None:
+                expected.append(lp)
         assert expected
-        assert station.position == sum(expected) / len(expected)
+        assert model_station.position == sum(expected) / len(expected)
 
 
 def test_database_station_placement_and_separation_use_down_platform_topology():
