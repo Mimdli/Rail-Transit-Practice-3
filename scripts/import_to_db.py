@@ -51,12 +51,12 @@ def _get_row(sheet, row_idx):
 
 
 def _parse_direction(hex_val) -> str:
-    """解析方向码: 0x55=down, 0xaa=up"""
+    """解析方向码: 0x55=up(上行), 0xaa=down(下行)  依据接口协议"""
     text = str(hex_val).strip().lower()
     if text in ("0x55", "85"):
-        return "down"
-    if text in ("0xaa", "170"):
         return "up"
+    if text in ("0xaa", "170"):
+        return "down"
     return ""
 
 
@@ -133,7 +133,7 @@ def import_platforms(cur, sheet, station_by_platform=None):
             continue
         pos = _parse_km(row[1])
         seg_id = _to_int(row[2])
-        direction = "down" if str(row[3]).strip().lower() in ("0x55", "85") else "up"
+        direction = "up" if str(row[3]).strip().lower() in ("0x55", "85") else "down"
         station_id = station_by_platform.get(pid, 0)
         cur.execute("""
             INSERT INTO platforms

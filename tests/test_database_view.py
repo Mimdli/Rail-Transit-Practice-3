@@ -122,9 +122,9 @@ def test_database_station_placement_and_separation_use_down_platform_topology():
     follower = dispatch.trains.require("后车")
     leader = dispatch.trains.require("前车")
 
-    assert leader.controller.states[0].position.segment_id == 69
-    segment = track._seg_map[68]
-    follower.controller.reset_states(68, 2300.0 - segment.abs_start)
+    assert leader.controller.states[0].position.segment_id == 55
+    segment = track._seg_map[54]
+    follower.controller.reset_states(54, 2300.0 - segment.abs_start)
     follower.status = TrainStatus.MANUAL
     for state in follower.controller.states:
         state.velocity = 17.0
@@ -148,7 +148,7 @@ def test_database_station_placement_uses_direction_platforms():
     up_seg = dispatch.trains.require(
         "上行车").controller.states[0].position.segment_id
 
-    assert down_seg == 69
+    assert down_seg == 55
     assert up_seg != down_seg
 
 
@@ -162,7 +162,7 @@ def test_database_ggz_to_fsp_uses_one_dispatch_route():
     assert dispatch.depart("D01").ok
     runtime = dispatch.trains.require("D01")
 
-    expected = (13, 14, 17, 44, 43, 45, 46, 48, 49, 50, 51)
+    expected = (13, 14, 15, 16, 19, 20, 22, 23, 235, 24)
     assert runtime.reserved_segments == expected
-    assert runtime.auto_drive.target_position.segment_id == 51
+    assert runtime.auto_drive.target_position.segment_id == 24
     assert tuple(runtime.track_adapter.get_active_route().seg_ids) == expected
