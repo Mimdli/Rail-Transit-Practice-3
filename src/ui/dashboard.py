@@ -275,8 +275,11 @@ class Dashboard(QWidget):
         self.speed_limit_indicator.set_value(f"{limit_kmh:.0f}")
         self.position_indicator.set_value(f"{head_abs:.0f}")
 
-        # ── 坡度 ───────────────────────────────────────────────
-        gradient = self.track.get_gradient_at(head_abs)
+        # ── 坡度（按区段+里程查询，与动力学一致）────────────────
+        if ctrl.states:
+            gradient = self.track_adapter.get_gradient(ctrl.states[0].position)
+        else:
+            gradient = self.track.get_gradient_at(head_abs)
         self.gradient_indicator.set_value(f"{gradient:+.1f}")
 
         # ── 加速度 ─────────────────────────────────────────────

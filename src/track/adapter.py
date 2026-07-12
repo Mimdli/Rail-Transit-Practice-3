@@ -14,13 +14,16 @@ TrackData（基于绝对浮点位置）包装为 ITrackQuery（基于 TrackPosit
 """
 
 from collections import deque
-from typing import Optional, Dict, TYPE_CHECKING
+from typing import Optional, Dict, List, Set, TYPE_CHECKING
 
 from src.common.track_position import TrackPosition, ITrackQuery
 from src.track.data import TrackData
 
 if TYPE_CHECKING:
     from src.track.route import Route
+
+# 共线岔点处区段端点里程允许的最大间隙 (m)
+_OVERLAP_JUNCTION_TOL = 2.0
 
 
 class TrackDataAdapter(ITrackQuery):
@@ -50,9 +53,27 @@ class TrackDataAdapter(ITrackQuery):
 
         # ── 进路状态 ─────────────────────────────────────────
         self._active_route: Optional["Route"] = None
+        self._fork_routes: Dict[int, int] = {}
 
         # ── 主线 segment ID 集合（仅 forward neighbor 链） ──
         self._main_line_seg_ids: set[int] = self._compute_main_line_seg_ids()
+
+    # ── 岔口路由（演示侧线走行）──────────────────────────────
+
+    def set_fork_route(self, at_seg_id: int, next_seg_id: int) -> None:
+        """指定列车离开 at_seg_id 终点时进入的相邻区段。"""
+        self._fork_routes[at_seg_id] = next_seg_id
+
+    def use_lateral_fork(self, at_seg_id: int) -> bool:
+        """在 at_seg_id 终点优先走侧向分支。"""
+        seg = self._td._seg_map.get(at_seg_id)
+        if seg is None or seg.end_lateral <= 0 or seg.end_lateral == 65535:
+            return False
+        self._fork_routes[at_seg_id] = seg.end_lateral
+        return True
+
+    def clear_fork_routes(self) -> None:
+        self._fork_routes.clear()
 
     # ── 线路查询 ───────────────────────────────────────────────
 
@@ -62,7 +83,7 @@ class TrackDataAdapter(ITrackQuery):
 
     def get_gradient(self, pos: TrackPosition) -> float:
         abs_pos = self.to_absolute(pos)
-        return self._td.get_gradient_at(abs_pos)
+        return self._td.get_gradient_at(abs_pos, seg_id=pos.segment_id)
 
     def get_is_tunnel(self, pos: TrackPosition) -> bool:
         return pos.segment_id in self._tunnel_seg_ids
@@ -87,7 +108,9 @@ class TrackDataAdapter(ITrackQuery):
     # ── 位置坐标转换 ───────────────────────────────────────────
 
     def advance_position(self, pos: TrackPosition, distance: float) -> TrackPosition:
-        """沿线路推进指定距离。
+        """沿区段拓扑推进，支持跨段、道岔与线路末端共线接续。"""
+        if distance == 0:
+            return pos
 
         通过绝对坐标转换实现，支持跨区段推进。
         超出线路终点时钳位到终点；允许起点之前的负位置（列车尾部）。

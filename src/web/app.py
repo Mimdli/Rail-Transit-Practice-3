@@ -6,7 +6,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -218,6 +218,17 @@ async def network_start():
 @app.post("/api/network/stop")
 async def network_stop():
     return response(runtime.network_disconnect())
+
+
+@app.get("/api/plc/output")
+async def plc_output_get():
+    return response(runtime.plc_output_state)
+
+
+@app.post("/api/plc/output")
+async def plc_output_post(body: Request):
+    updates = await body.json()
+    return response(runtime.set_plc_output(updates))
 
 
 @app.post("/api/scenarios/{scenario_id}")
