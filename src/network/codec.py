@@ -274,18 +274,18 @@ def unpack_plc_data(data: bytes) -> Optional[dict]:
     result["switch_alert"] = bool(w5 & 0x0400)                 # bit10: 警惕
     result["switch_alert_release"] = bool(w5 & 0x0800)         # bit11: 警惕允许解除
 
-    # WORD6: 方向手柄状态 (枚举)
+    # WORD6: 方向手柄状态 (枚举: 0=零位, 1=向前, 2=向后)
     w6 = words[6]
-    result["dir_zero"] = bool(w6 & 0x0001)                     # bit0: 0位
-    result["dir_forward"] = bool(w6 & 0x0002)                  # bit1: 向前
-    result["dir_backward"] = bool(w6 & 0x0004)                 # bit2: 向后
+    result["dir_zero"] = (w6 == 0)
+    result["dir_forward"] = (w6 == 1)
+    result["dir_backward"] = (w6 == 2)
 
-    # WORD7: 主手柄状态 (枚举)
+    # WORD7: 主手柄状态 (枚举: 0=零位, 1=牵引, 2=制动, 4=快速制动)
     w7 = words[7]
-    result["handle_zero"] = bool(w7 & 0x0001)                  # bit0: 0位
-    result["handle_traction"] = bool(w7 & 0x0002)              # bit1: 牵引
-    result["handle_brake"] = bool(w7 & 0x0004)                 # bit2: 制动
-    result["handle_fast_brake"] = bool(w7 & 0x0008)            # bit3: 快制
+    result["handle_zero"] = (w7 == 0)
+    result["handle_traction"] = (w7 == 1)
+    result["handle_brake"] = (w7 == 2)
+    result["handle_fast_brake"] = (w7 == 4)
 
     # WORD8: 牵引极位 (0~100)
     result["traction_level"] = words[8]
@@ -306,15 +306,63 @@ def unpack_plc_data(data: bytes) -> Optional[dict]:
 
 
 def pack_plc_output(
-    atp_safe_out: int = 0,
-    atp_unsafe_out: int = 0,
-    ato_out: int = 0,
+    indicator_hv_contactor: bool = False,
+    indicator_brake_release: bool = False,
+    indicator_door_closed: bool = True,
+    indicator_network_fault: bool = False,
+    mode_ato_available: bool = False,
+    mode_ato_active: bool = False,
+    mode_ar: bool = False,
+    btn_emergency_brake: bool = False,
+    btn_forced_release: bool = False,
+    btn_forced_pump: bool = False,
+    btn_emergency_command: bool = False,
+    btn_parking_brake: bool = False,
+    btn_open_left: bool = False,
+    btn_open_right: bool = False,
+    btn_close_left: bool = False,
+    btn_close_right: bool = False,
 ) -> bytes:
     """打包上位机→PLC报文 (26 bytes)
 
-    24字节帧头 + 2字节数据区
+    24字节帧头 + 2字节数据区 (WORD11: ATP安全输出)
     帧头字段按协议填充。
     """
+    # WORD11: ATP安全输出 (bitmask)
+    atp_safe_out = 0
+    if indicator_hv_contactor:
+        atp_safe_out |= 1 << 0   # Bit0: 高压接触器指示
+    if indicator_brake_release:
+        atp_safe_out |= 1 << 1   # Bit1: 制动缓解指示
+    if indicator_door_closed:
+        atp_safe_out |= 1 << 2   # Bit2: 门关好指示
+    if indicator_network_fault:
+        atp_safe_out |= 1 << 3   # Bit3: 网络故障指示
+    if mode_ato_available:
+        atp_safe_out |= 1 << 4   # Bit4: ATO可用
+    if mode_ato_active:
+        atp_safe_out |= 1 << 5   # Bit5: ATO激活
+    if mode_ar:
+        atp_safe_out |= 1 << 6   # Bit6: AR模式
+    if btn_emergency_brake:
+        atp_safe_out |= 1 << 7   # Bit7: 紧急制动
+    if btn_forced_release:
+        atp_safe_out |= 1 << 8   # Bit8: 强缓
+    if btn_forced_pump:
+        atp_safe_out |= 1 << 9   # Bit9: 强泵
+    if btn_emergency_command:
+        atp_safe_out |= 1 << 10  # Bit10: 紧急指令
+    if btn_parking_brake:
+        atp_safe_out |= 1 << 11  # Bit11: 停放制动
+    if btn_open_left:
+        atp_safe_out |= 1 << 12  # Bit12: 左门使能
+    if btn_open_right:
+        atp_safe_out |= 1 << 13  # Bit13: 右门使能
+    if btn_close_left:
+        atp_safe_out |= 1 << 14  # Bit14: 左门关闭
+    if btn_close_right:
+        atp_safe_out |= 1 << 15  # Bit15: 右门关闭
+
     t = _time.localtime(_time.time())
     header = struct.pack("<" + "I" + "H" * 10,
         0xAA55AA55,                      # _uIdentify (4B) 现场PLC发送55 AA 55 AA
