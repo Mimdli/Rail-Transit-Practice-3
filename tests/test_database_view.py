@@ -24,9 +24,14 @@ def test_demo_semantic_links_follow_current_mainline():
     track = TrackLoader().load_demo_data()
     model = build_semantic_line(track)
 
+    # 4 个统一车站 → 3 个站间区间
     assert len(model.links) == len(model.stations) - 1
+    # 单链串联：每段区间包含上下行方向各自的一个区段
+    #   A-B: 上行 seg1 + 下行 seg8（反向）
+    #   B-C: 上行 seg2 + 下行 seg7
+    #   C-D: 上行 seg3 + 下行 seg6
     assert [link.seg_ids for link in model.links] == [
-        (segment.seg_id,) for segment in track.segments[:-1]
+        (1, 8), (2, 7), (3, 6)
     ]
     assert not model.branches
 

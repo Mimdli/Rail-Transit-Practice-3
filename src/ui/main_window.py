@@ -299,7 +299,7 @@ class MainWindow(QMainWindow):
         return bar
 
     def _create_dispatch_manager(self):
-        """创建调度域并把现有主控制器注册为1车。"""
+        """创建调度域并把现有主控制器注册为1车，自动分配交路并发车。"""
         self.dispatch = DispatchManager(
             self.track, self.recorder, self.signal_system)
         self.dispatch.trains.register_existing(
@@ -312,10 +312,14 @@ class MainWindow(QMainWindow):
         if len(station_ids) >= 2:
             first = self.dispatch.trains.get_station(station_ids[0]).name
             last = self.dispatch.trains.get_station(station_ids[-1]).name
-            self.dispatch.add_service_plan(ServicePlan(
+            plan = ServicePlan(
                 "mainline_loop", f"{first} ⇆ {last}", station_ids,
                 turnback=True, dwell_time=5.0,
-            ))
+            )
+            self.dispatch.add_service_plan(plan)
+            # 自动为 1 车分配交路并发车
+            self.dispatch.assign_plan("1车", plan.plan_id)
+            self.dispatch.depart("1车")
 
     def _available_routes(self):
         """数据库使用动态算路，演示线路保留预定义侧线进路。"""

@@ -33,35 +33,33 @@ def test_demo_segments_have_coordinates():
 def test_demo_segment_chain_continuous():
     loader = TrackLoader()
     td = loader.load_demo_data()
-    # 仅验证主线区段链连续；侧线从道岔岔出，与主线共享分叉点坐标
-    main_segs = sorted(
-        [s for s in td.segments if s.seg_id in (1, 2, 3, 4)],
-        key=lambda s: s.abs_start,
-    )
-    for i in range(len(main_segs) - 1):
-        expected = main_segs[i].abs_start + main_segs[i].length
-        assert abs(main_segs[i + 1].abs_start - expected) < 1.0
+    # 单链串联：seg1→seg2→seg3→seg4→seg5→seg6→seg7→seg8（0~2000m）
+    all_segs = sorted(td.segments, key=lambda s: s.abs_start)
+    assert len(all_segs) == 8
+    for i in range(len(all_segs) - 1):
+        expected = all_segs[i].abs_start + all_segs[i].length
+        assert abs(all_segs[i + 1].abs_start - expected) < 1.0, \
+            f"链 seg{all_segs[i].seg_id}→seg{all_segs[i+1].seg_id} 不连续"
 
 
 def test_demo_total_length():
     loader = TrackLoader()
     td = loader.load_demo_data()
-    main_segs = [s for s in td.segments if s.seg_id in (1, 2, 3, 4)]
-    main_sum = sum(s.length for s in main_segs)
-    # total_length = 最远 segment 的终点，包含了侧线延伸
-    assert td.total_length() >= main_sum
+    # 单链 8×250=2000m，无侧线，total_length 应等于 2000
+    assert td.total_length() == 2000.0
 
 
 def test_demo_stations_have_positions():
     loader = TrackLoader()
     td = loader.load_demo_data()
-    # 有 8 个车站（4 上行 + 4 下行）
-    assert len(td.stations) == 8
+    # 有 4 个统一车站（每站跨上下行双线）
+    assert len(td.stations) == 4
+    names = {s.name for s in td.stations}
+    assert names == {"站A", "站B", "站C", "站D"}
     for station in td.stations:
-        if "上行" in station.name:
-            assert station.position < 1000
-        else:
-            assert station.position >= 1000
+        assert 0 <= station.position <= 1000
+        # 每站应有 2 个站台（上下行各一）
+        assert len(station.platform_ids) == 2
 
 
 def test_demo_get_speed_limit():
