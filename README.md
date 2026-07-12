@@ -8,7 +8,7 @@
 
 系统模拟列车在线路上的运行过程，涵盖**多体车辆动力学、多列车调度、交路与折返、简化进路联锁、线路条件、信号约束、供电状态、车门联锁、运行日志与评价、线路可视化**等核心功能，支持手动/自动驾驶演示、调度组织、安全逻辑验证及运行评价。
 
-✅ **当前状态：329 个单元测试全部通过，GUI 与调度中心可正常运行。**
+✅ **当前状态：344 个单元测试全部通过，Web ATS 与桌面 GUI 可正常运行。**
 
 ## 技术栈
 
@@ -16,8 +16,9 @@
 |------|------|
 | **Python 3.10+** | 主开发语言 |
 | **PyQt5** | 桌面 GUI 框架，实现可视化界面与交互控制 |
+| **FastAPI + Uvicorn** | Web ATS 后端，提供 REST API 与 WebSocket 实时通道 |
 | **SQLite** | 线路数据库存储（支持 CRUD 编辑） |
-| **openpyxl** | 读取 Excel 格式的线路数据 |
+| **xlrd** | 读取 Excel 格式的线路数据并导入 SQLite |
 | **pytest** | 单元测试框架 |
 
 ## 功能模块
@@ -86,12 +87,12 @@
 
 - **绿灯** — 允许正常运行
 - **黄灯** — 允许运行，需降低速度（限速 10 m/s）
-- **红灯** — 禁止越过，防护状态
+- **红灯** — 防护区段被其他列车占用时显示
 
 信号计算逻辑：
 1. 按运行方向对信号机排序
-2. 调度进路锁闭的防护区段允许开放，未办理或冲突进路保持红灯
-3. 区段被列车占用时，防护信号转红，前一架信号显示黄灯预告
+2. 防护区段被列车占用时显示红灯，前一架信号显示黄灯预告
+3. 空闲区段统一显示绿灯，进路互斥由联锁系统保证
 4. 列车接近红灯时切除牵引并自动制动，黄灯状态执行 10 m/s 限速
 5. 支持上下行方向分别查询前方信号
 6. 支持协议灯色码（0x01~0x30）归约为红/黄/绿三态
@@ -198,6 +199,8 @@
 Rail-Transit-Practice-3/
 ├── resource/                   # 资源文件
 │   ├── 线路数据(1).xls         # 原始线路 Excel 数据
+│   ├── link_mainline.json      # 上下行主线 Link 链（校对后公里标）
+│   ├── ats_layout.json         # ATS 道岔与信号机布局
 │   └── 初步目标需求分析.md      # 需求分析文档
 ├── data/                       # 运行时数据
 │   └── railway.db              # SQLite 线路数据库
@@ -225,7 +228,11 @@ Rail-Transit-Practice-3/
 │   │   ├── loader.py           # Excel 数据加载
 │   │   ├── db_loader.py        # SQLite 数据库加载
 │   │   ├── editor.py           # 线路数据编辑器
-│   │   └── adapter.py          # TrackData → ITrackQuery 适配
+│   │   ├── adapter.py          # TrackData → ITrackQuery 适配
+│   │   ├── link_mainline.py    # 上下行主线 Link 链与坐标映射
+│   │   ├── semantic_line.py    # 线路语义抽象（车站/区间/分支）
+│   │   ├── ats_layout.py       # ATS 道岔与信号布局数据
+│   │   └── route.py            # 进路数据结构
 │   ├── signal/                 # 信号系统模块
 │   │   └── system.py           # 信号状态逻辑
 │   ├── dispatch/               # 多列车行车调度模块
@@ -247,14 +254,21 @@ Rail-Transit-Practice-3/
 │   ├── logger/                 # 日志与评价模块
 │   │   ├── recorder.py         # 事件记录
 │   │   └── evaluator.py        # 运行评价
+│   ├── web/                     # Web ATS 后端
+│   │   ├── app.py               # FastAPI 入口
+│   │   └── simulation.py        # 仿真运行时（状态管理、快照）
 │   └── ui/                     # 可视化界面
 │       ├── main_window.py      # 主窗口
 │       ├── dashboard.py        # 状态仪表盘
 │       ├── controls.py         # 控制面板
 │       ├── dispatch_view.py    # 调度中心界面
 │       ├── track_view.py       # 线路全景图
+│       ├── semantic_track_view.py  # 运营语义线路图
 │       └── charts.py           # 速度曲线与力分量表
-├── tests/                      # 单元测试（329 个，全部通过）
+├── scripts/                     # 数据导入与维护脚本
+│   ├── import_to_db.py          # Excel → SQLite 导入
+│   └── import_ats_layout.py     # ATS 道岔/信号布局导入
+├── tests/                      # 单元测试（344 个，全部通过）
 │   ├── test_vehicle.py
 │   ├── test_controller.py
 │   ├── test_dynamics_pipeline.py
@@ -275,8 +289,10 @@ Rail-Transit-Practice-3/
 │   ├── test_database_view.py
 │   ├── test_vehicle_ui_adapter.py
 │   └── __init__.py
-├── web/                        # Web 原型（线路可视化原型）
-├── output/                     # 运行输出
+├── web-ats/                     # Web ATS 前端
+│   ├── index.html               # 单页应用（含全部页面模板与渲染逻辑）
+│   └── scripts/                 # 前端脚本（按模块拆分）
+├── output/                      # 运行输出
 ├── .gitignore
 ├── README.md
 └── requirements.txt
@@ -356,7 +372,10 @@ Web ATS 当前支持：
 
 - WebSocket 100 ms 实时快照，断线时自动降级为 HTTP 轮询；
 - 多列车调度、命令结果与拒绝原因、紧急停车确认；
-- 可点击 Link 区段详情、列车和信号图层、线路缩放和平移；
+- 运营图与信号图双视图，独立缩放（滚轮）与平移（拖拽）；
+- 主线信号机实时渲染（红/黄/绿），带竖线与轨道连接，悬停显示详情；
+- 可点击 Link 区段详情、列车和信号图层切换；
+- 上下行双线独立显示，占用/锁闭/空闲三色区分；
 - 正常、低电压、断电、占用冲突、低黏着和通信中断六种场景；
 - 500 ms 采样的运行回放、速度曲线、事件统计和基础安全评分；
 - 实际接口连接状态、活动报警统计和 CSV 运行日志导出。
@@ -404,6 +423,24 @@ GET  /api/replay
 ```bash
 pytest tests/ -v
 ```
+
+## 已知问题
+
+### 1. 信号防护制动力偏弱
+
+当前信号/进路阻塞时施加 `brake(0.7)`，从 85 km/h 减速到 0 需要约 1.8 km，可能无法在前方占用段之前停住。需要评估是否提升制动级位或增加更远的前瞻距离。
+
+### 2. 滚动进路窗口较小
+
+调度滚动进路每次仅锁闭当前段 + 前一段（2 段），列车无法提前锁定更远区段。虽不影响运行安全（联锁与间隔防护为保底），但不利于提前预告信号状态。
+
+### 3. 部分站台原始数据方向码不一致
+
+GGZ、LLQ、GTG 三个站的站台方向码在原始 Excel 中与其他 10 站采用不同约定（`0x55`/`0xAA` 的上下行含义相反），已在数据库层面手动修正。如需重新导入原始 Excel，应优先按接口协议（`0x55=上行, 0xAA=下行`）统一解析，并对这三个站做特殊处理。
+
+### 4. Web ATS 信号机仅在主线显示
+
+侧线/分支上的信号机（约 70 架）因不属于 link_mainline 链路，暂未在 Web 线路图上渲染。
 
 ## 需求进度
 
