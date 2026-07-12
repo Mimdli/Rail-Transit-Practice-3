@@ -7,6 +7,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.track.loader import TrackLoader
 from src.track.db_loader import DBLoader
 from src.track.data import TrackData, Station, Segment
+from src.track.adapter import TrackDataAdapter
+from src.common.track_position import TrackPosition
 
 
 # ======== 演示数据测试 ========
@@ -50,6 +52,144 @@ def test_demo_total_length():
     main_sum = sum(s.length for s in main_segs)
     # total_length = 最远 segment 的终点，包含了侧线延伸
     assert td.total_length() >= main_sum
+
+
+def test_advance_past_fork_stays_on_main():
+    """模拟过岔：默认应沿 end_neighbor 走主线，不陷入侧线尽头。"""
+    td = TrackLoader().load_demo_data()
+    adapter = TrackDataAdapter(td)
+    pos = TrackPosition(1, 700.0)
+    for _ in range(30):
+        pos = adapter.advance_position(pos, 5.0)
+    assert pos.segment_id != 6
+    assert pos.segment_id in (2, 3, 4, 5)
+
+
+def test_use_lateral_fork_switches_to_sideline():
+    """设定侧线岔口后，列车应进入侧向分支。"""
+    import os
+    db_path = os.path.join(os.path.dirname(__file__), "..", "data", "railway.db")
+    if os.path.exists(db_path):
+        td = DBLoader().load_from_db(db_path)
+    else:
+        td = TrackLoader().load_demo_data()
+    fork_seg = next(
+        (s for s in td.segments
+         if s.end_lateral > 0 and s.end_lateral != 65535),
+        None,
+    )
+    if fork_seg is None:
+        return
+    adapter = TrackDataAdapter(td)
+    assert adapter.use_lateral_fork(fork_seg.seg_id)
+    pos = TrackPosition(fork_seg.seg_id, max(0.0, fork_seg.length - 1.0))
+    pos = adapter.advance_position(pos, 2.0)
+    assert pos.segment_id == fork_seg.end_lateral
+    adapter.clear_fork_routes()
+
+
+def test_normalize_gradient_value():
+    from src.track.data import normalize_gradient_value
+    assert normalize_gradient_value(300.0) == 30.0
+    assert normalize_gradient_value(20.0) == 20.0
+    assert normalize_gradient_value(350.0) == 35.0
+    assert normalize_gradient_value(500.0) == 40.0
+
+
+def test_db_gradient_at_1404_not_stuck_value():
+    """数据库线路 1404m 处坡度不应为不可爬行的 300‰。"""
+    import os
+    db_path = os.path.join(os.path.dirname(__file__), "..", "data", "railway.db")
+    if not os.path.exists(db_path):
+        return
+    td = DBLoader().load_from_db(db_path)
+    adapter = TrackDataAdapter(td)
+    pos = adapter.from_absolute(1404.0, hint_seg_id=2)
+    grad = adapter.get_gradient(pos)
+    assert abs(grad) <= 40.0
+    assert abs(grad) < 100.0  # 不应再出现未归一化的 300‰ 量级
+
+
+def test_db_train_passes_1400m_with_traction():
+    """数据库线路：全牵引下列车应能越过 1400m 坡段，不再速度归零卡死。"""
+    import os
+    from src.common.consist import CONSIST_4M2T
+    from src.vehicle.vehicle_controller import VehicleController
+    from src.vehicle.environment import MockEnvironment, WeatherType
+
+    db_path = os.path.join(os.path.dirname(__file__), "..", "data", "railway.db")
+    if not os.path.exists(db_path):
+        return
+    td = DBLoader().load_from_db(db_path)
+    adapter = TrackDataAdapter(td)
+    env = MockEnvironment(WeatherType.DRY, adapter)
+    ctrl = VehicleController(CONSIST_4M2T, adapter, env)
+    ctrl.set_throttle(1.0)
+    for _ in range(8000):
+        ctrl.step(0.033)
+        abs_h = adapter.to_absolute(ctrl.states[0].position)
+        if abs_h > 1550:
+            assert ctrl.states[0].velocity > 1.0
+            return
+    raise AssertionError("列车未能在合理步数内越过 1400m 坡段")
+
+
+def test_train_holds_at_rest_without_traction():
+    """无牵引无制动时列车应保持静止，不因坡道或车钩力溜车。"""
+    import os
+    from src.common.consist import CONSIST_4M2T
+    from src.vehicle.vehicle_controller import VehicleController
+    from src.vehicle.environment import MockEnvironment, WeatherType
+
+    db_path = os.path.join(os.path.dirname(__file__), "..", "data", "railway.db")
+    if not os.path.exists(db_path):
+        td = TrackLoader().load_demo_data()
+    else:
+        td = DBLoader().load_from_db(db_path)
+    adapter = TrackDataAdapter(td)
+    env = MockEnvironment(WeatherType.DRY, adapter)
+    ctrl = VehicleController(CONSIST_4M2T, adapter, env)
+    start_abs = adapter.to_absolute(ctrl.states[0].position)
+    for _ in range(200):
+        ctrl.step(0.1)
+    end_abs = adapter.to_absolute(ctrl.states[0].position)
+    assert ctrl.states[0].velocity < 0.01
+    assert abs(end_abs - start_abs) < 0.5
+
+
+def test_db_train_reaches_line_end():
+    """数据库线路：全牵引下应能走完全程末端（含 18103m 岔点死胡同）。"""
+    import os
+    from src.common.consist import CONSIST_4M2T
+    from src.vehicle.vehicle_controller import VehicleController
+    from src.vehicle.environment import MockEnvironment, WeatherType
+
+    db_path = os.path.join(os.path.dirname(__file__), "..", "data", "railway.db")
+    if not os.path.exists(db_path):
+        return
+    td = DBLoader().load_from_db(db_path)
+    adapter = TrackDataAdapter(td)
+    total = td.total_length()
+    env = MockEnvironment(WeatherType.DRY, adapter)
+    ctrl = VehicleController(CONSIST_4M2T, adapter, env)
+    # 从末端岔区前启动，验证 18103m 附近不再卡死
+    start = adapter.from_absolute(17900.0, hint_seg_id=213)
+    ctrl.states[0].position = start
+    ctrl.states[0].velocity = 10.0
+    for i in range(1, len(ctrl.states)):
+        ctrl.states[i].position = adapter.advance_position(
+            ctrl.states[i - 1].position, -CONSIST_4M2T[i - 1].length
+        )
+        ctrl.states[i].velocity = 10.0
+    ctrl.set_throttle(1.0)
+    for _ in range(3000):
+        ctrl.step(0.033)
+        abs_h = adapter.to_absolute(ctrl.states[0].position)
+        if abs_h >= total - 1.0:
+            return
+    raise AssertionError(
+        f"列车未到达线路终点: 停在 {abs_h:.1f}m / {total:.1f}m"
+    )
 
 
 def test_demo_stations_have_positions():

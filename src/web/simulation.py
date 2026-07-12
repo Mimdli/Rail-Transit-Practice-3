@@ -46,6 +46,25 @@ class SimulationRuntime:
         self._last_replay_sample = -1.0
         self._task: Optional[asyncio.Task] = None
         self.network_started = False
+        self._plc_output_counter = 0
+        self.plc_output_state = {
+            "indicator_hv_contactor": False,
+            "indicator_brake_release": False,
+            "indicator_door_closed": True,
+            "indicator_network_fault": False,
+            "mode_ato_available": False,
+            "mode_ato_active": False,
+            "mode_ar": False,
+            "btn_emergency_brake": False,
+            "btn_forced_release": False,
+            "btn_forced_pump": False,
+            "btn_emergency_command": False,
+            "btn_parking_brake": False,
+            "btn_open_left": False,
+            "btn_open_right": False,
+            "btn_close_left": False,
+            "btn_close_right": False,
+        }
         self._initialize_dispatch()
 
     def _initialize_dispatch(self):
@@ -154,6 +173,19 @@ class SimulationRuntime:
         self.recorder.record("网络", "Web ATS 断开联调网络连接", severity="INFO")
         return {"ok": True, "message": "网络连接已断开"}
 
+    def set_plc_output(self, updates: dict) -> dict:
+        """更新 PLC 输出状态并立即发送一帧"""
+        for key in updates:
+            if key in self.plc_output_state:
+                self.plc_output_state[key] = bool(updates[key])
+        # 如果网络已连接，立即发送
+        if self.network_started:
+            try:
+                self.network.plc.send_output(**self.plc_output_state)
+            except Exception as e:
+                return {"ok": False, "message": f"发送失败: {e}"}
+        return {"ok": True, "message": "PLC输出已更新", "state": dict(self.plc_output_state)}
+
     async def _run(self):
         while True:
             if not self.paused:
@@ -165,6 +197,12 @@ class SimulationRuntime:
                 self.power_supply.step(dt)
                 self.recorder.step(dt)
                 self._record_replay_frame()
+                # 周期发送PLC输出（每步100ms，每步都发）
+                if self.network_started:
+                    self._plc_output_counter += 1
+                    if self._plc_output_counter >= 1:
+                        self._plc_output_counter = 0
+                        self.network.plc.send_output(**self.plc_output_state)
             await asyncio.sleep(self.STEP_SECONDS)
 
     def command(self, action: Callable[[], DispatchResult]) -> dict:
@@ -338,6 +376,14 @@ class SimulationRuntime:
             "network": network_status,
             "network_stats": self.network.network_stats,
             "network_started": self.network_started,
+            "plc_output_state": dict(self.plc_output_state),
+            "networkInterfaces": [
+                {"id": "vehicle_udp",     "label": "车辆UDP",     "protocol": "UDP", "cycleMs": 20,  "bidirectional": True},
+                {"id": "signal_gateway",  "label": "信号网关",    "protocol": "UDP", "cycleMs": 250, "bidirectional": True},
+                {"id": "plc",             "label": "司机台PLC",   "protocol": "TCP", "cycleMs": 100, "bidirectional": True},
+                {"id": "vision",          "label": "视景系统",    "protocol": "UDP", "cycleMs": 100, "bidirectional": False},
+                {"id": "cab_display",     "label": "司机台显示",  "protocol": "TCP", "cycleMs": 100, "bidirectional": False},
+            ],
             "networkFaultInjected": self.network_fault_injected,
             "environment": {
                 "weather": weather.value,

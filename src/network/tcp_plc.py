@@ -75,9 +75,9 @@ class PLCClient:
                 self._sockets[i] = None
         self.connected = False
 
-    def send_output(self, atp_safe_out: int = 0):
-        """发送上位机输出到PLC"""
-        data = pack_plc_output(atp_safe_out)
+    def send_output(self, **kwargs):
+        """发送上位机输出到PLC，kwargs 透传至 pack_plc_output"""
+        data = pack_plc_output(**kwargs)
         for s in self._sockets:
             if s:
                 try:

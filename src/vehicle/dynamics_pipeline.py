@@ -169,6 +169,13 @@ class PerCarDynamicsPipeline:
             # Step 5 — 积分更新状态（使用微步长 dt_phy）
             for i in range(n_cars):
                 car = states[i]
+                # 无牵引无制动时静止驻车，避免坡道溜车
+                if (eff_throttle <= 1e-9 and eff_brake <= 1e-9
+                        and car.velocity <= 1e-6):
+                    car.velocity = 0.0
+                    car.acceleration = 0.0
+                    abs_positions[i] = track.to_absolute(car.position)
+                    continue
                 # 回转质量系数：等效质量 = 静质量 × rotary_mass_factor
                 effective_mass = consist[i].mass * consist[i].rotary_mass_factor
                 a = net_forces[i] / effective_mass
@@ -176,10 +183,11 @@ class PerCarDynamicsPipeline:
                 # 速度不能为负（列车不倒行，除非特殊情况）
                 if car.velocity < 0.0:
                     car.velocity = 0.0
-                # velocity 始终表示沿运行方向的非负速度，direction 决定里程增减。
-                old_seg_id = car.position.segment_id
-                abs_positions[i] += direction * car.velocity * dt_phy
-                car.position = track.from_absolute(abs_positions[i], hint_seg_id=old_seg_id)
+                # 沿区段拓扑推进（岔口处不能用绝对里程线性累加）；direction 支持换端
+                delta = direction * car.velocity * dt_phy
+                if abs(delta) > 1e-12:
+                    car.position = track.advance_position(car.position, delta)
+                abs_positions[i] = track.to_absolute(car.position)
                 car.acceleration = a
 
         # ── Step 7 — 生成摘要 ──────────────────────────────────
