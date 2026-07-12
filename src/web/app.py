@@ -137,6 +137,17 @@ async def plc_output_post(body: Request):
     return response(runtime.set_plc_output(updates))
 
 
+@app.get("/api/cab_display")
+async def cab_display_get():
+    return JSONResponse(runtime.cab_display_state)
+
+
+@app.post("/api/cab_display")
+async def cab_display_post(body: Request):
+    updates = await body.json()
+    return response(runtime.set_cab_display(updates))
+
+
 @app.post("/api/scenarios/{scenario_id}")
 async def apply_scenario(scenario_id: str):
     return response(runtime.apply_scenario(scenario_id))

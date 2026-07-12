@@ -65,6 +65,31 @@ class SimulationRuntime:
             "btn_close_left": False,
             "btn_close_right": False,
         }
+        self.cab_display_state = {
+            "speed": 0.0,
+            "acceleration": 0.0,
+            "speed_limit": 80.0,
+            "run_mode": 0,
+            "run_dir": 0,
+            "power_pull": 0,
+            "net_pressure": 750.0,
+            "curr_station": 1,
+            "next_station": 2,
+            "end_station": 1,
+            "power_state": 1,
+            "door_states": [0, 0, 0, 0],
+            "has_power": True,
+            # 信号屏专有字段
+            "mode": 5,
+            "pull_switch": 0,
+            "pull_state": 0,
+            "brake_state": 0,
+            "urgency_stop": 0,
+            "event_id": 0,
+            "sig_state": 0,
+            "train_no": 1,
+            "next_station_dist": 0.0,
+        }
         self._initialize_dispatch()
 
     def _initialize_dispatch(self):
@@ -161,8 +186,11 @@ class SimulationRuntime:
         # 5. 视景系统数据源：使用默认内部数据生成
         #    VisionUDPClient 内部已有 TCMS2VIEW 数据生成逻辑，无需手动设置
 
-        # 6. 司机台显示屏数据源：使用默认内部数据生成
-        #    CabDisplayClient 内部已有网络屏/信号屏数据生成逻辑，无需手动设置
+        # 6. 司机台显示屏数据源
+        def _cab_display_source():
+            return dict(self.cab_display_state)
+        self.network.set_cab_network_source(_cab_display_source)
+        self.network.set_cab_signal_source(_cab_display_source)
 
     def network_disconnect(self) -> dict:
         """断开所有网络通信模块"""
@@ -185,6 +213,16 @@ class SimulationRuntime:
             except Exception as e:
                 return {"ok": False, "message": f"发送失败: {e}"}
         return {"ok": True, "message": "PLC输出已更新", "state": dict(self.plc_output_state)}
+
+    def set_cab_display(self, updates: dict) -> dict:
+        """更新司机台显示数据并立即发送一帧"""
+        for key in updates:
+            if key in self.cab_display_state:
+                self.cab_display_state[key] = updates[key]
+        if self.network_started:
+            # 强制发送会被 CabDisplayClient 的下个周期自然覆盖
+            pass
+        return {"ok": True, "message": "司机台显示数据已更新", "state": dict(self.cab_display_state)}
 
     async def _run(self):
         while True:
@@ -377,6 +415,7 @@ class SimulationRuntime:
             "network_stats": self.network.network_stats,
             "network_started": self.network_started,
             "plc_output_state": dict(self.plc_output_state),
+            "cab_display_state": dict(self.cab_display_state),
             "networkInterfaces": [
                 {"id": "vehicle_udp",     "label": "车辆UDP",     "protocol": "UDP", "cycleMs": 20,  "bidirectional": True},
                 {"id": "signal_gateway",  "label": "信号网关",    "protocol": "UDP", "cycleMs": 250, "bidirectional": True},

@@ -647,8 +647,8 @@ def pack_network_screen(
     struct.pack_into("<B", buf, 39, power_state & 0xFF)
     struct.pack_into("<f", buf, 40, speed)
     struct.pack_into("<f", buf, 44, acceleration)
-    struct.pack_into("<H", buf, 48, power_pull & 0xFFFF)
-    struct.pack_into("<H", buf, 50, net_pressure & 0xFFFF)
+    struct.pack_into("<H", buf, 48, int(power_pull) & 0xFFFF)
+    struct.pack_into("<H", buf, 50, int(net_pressure) & 0xFFFF)
     # 限速 / 级位 / 模式 (52-55)
     struct.pack_into("<H", buf, 52, int(speed_limit))
     struct.pack_into("<B", buf, 54, 0)                 # _nLevelPos
