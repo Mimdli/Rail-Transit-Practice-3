@@ -345,8 +345,27 @@ class DispatchManager:
         if runtime.target_station_id is not None:
             try:
                 target_station = self.trains.get_station(runtime.target_station_id)
-                if controller.direction * (signal.position - target_station.position) > 0:
+                # 优先使用实际目标 TrackPosition（链感知），
+                # 避免 station.position 在并行链拓扑中指错站台
+                target_tp = runtime.auto_drive.target_position
+                tgt_pos = (self._track_position_abs(target_tp)
+                           if target_tp is not None
+                           else target_station.position)
+                sig_pos = signal.position
+                train_pos = runtime.head_abs
+
+                # 目标在行驶方向上是否位于信号机之前（即列车→目标→信号）？
+                # 条件：目标在前方，且信号在目标之后（同向比较）
+                tgt_ahead = controller.direction * (tgt_pos - train_pos)
+                sig_beyond_tgt = controller.direction * (sig_pos - tgt_pos)
+
+                if tgt_ahead > 0 and sig_beyond_tgt > 0:
                     # 信号机在目标站之后 → 列车到站前不会越过它
+                    self._clear_signal_block(runtime)
+                    return False
+
+                # 兜底：用绝对距离比较（处理方向判断的边界情况）
+                if tgt_ahead > 0 and abs(sig_pos - train_pos) > abs(tgt_pos - train_pos):
                     self._clear_signal_block(runtime)
                     return False
             except ValueError:
@@ -675,6 +694,10 @@ class DispatchManager:
         先按运行方向选择站台方向计算进路；若算出的目标在列车后方
         （distance_to_target ≤ 0），说明折返后 direction→platform 映射
         选错了站台（演示线路单链拓扑折返时会发生），则改用另一侧站台重算。
+
+        若 compute_station_route 返回空（起终点在不同链），说明折返后
+        列车需要换链运行。此时找到当前站另一链的站台作为新起点重算进路，
+        避免回退到 route_between（会导致并行链段混入进路，造成跨链死锁）。
         """
         direction = runtime.controller.direction
         head_abs = runtime.head_abs
@@ -688,6 +711,25 @@ class DispatchManager:
             if direction * (target_abs - head_abs) > 0:
                 return segments, target
 
+        # 若 compute_station_route 未找到路径（起终点在不同链），
+        # 尝试找到当前站另一侧站台作为新起点，实现折返换链。
+        if not segments:
+            alt_start = self._resolve_alt_chain_start(
+                start_segment, target_station, direction, runtime)
+            if alt_start is not None:
+                # 重定位头车到新链站台，后续车厢由 reset_to 自动排列
+                runtime.controller.reset_to(alt_start)
+                runtime.track_adapter.set_active_route(None)
+                new_start = alt_start.segment_id
+                # 更新 head_abs（换链后绝对坐标可能变化）
+                new_head_abs = runtime.head_abs
+                segments, target = self._try_compute_route(
+                    new_start, target_station, direction, new_head_abs)
+                if segments and target is not None:
+                    target_abs = self._track_position_abs(target)
+                    if direction * (target_abs - new_head_abs) > 0:
+                        return segments, target
+
         # 目标在后方或计算失败 → 尝试另一侧站台
         fallback_segments, fallback_target = self._try_compute_route(
             start_segment, target_station, -direction, head_abs)
@@ -699,14 +741,52 @@ class DispatchManager:
             return segments, target
         return (), None
 
+    def _resolve_alt_chain_start(self, start_segment: int, target_station,
+                                  direction: int,
+                                  runtime: TrainRuntime) -> Optional[TrackPosition]:
+        """折返换链：找到当前站（按 plan_index 确定）另一侧链的站台。
+
+        当 compute_station_route 无法找到从 start_segment 到目标站
+        的路径时（说明两段在不同物理链上），此方法定位列车当前所在
+        车站的另一侧站台，作为换链后的新起点。
+
+        使用 plan_index 而非物理段号来确定当前车站，避免因列车
+        停在站前容差范围内（ARRIVAL_TOLERANCE=3m）而误判车站。
+
+        Returns:
+            另一侧站台的 TrackPosition，或 None（无可用的替代站台）。
+        """
+        plan = runtime.service_plan
+        if plan is None or runtime.plan_index < 0:
+            return None
+        if runtime.plan_index >= len(plan.station_ids):
+            return None
+        current_station_id = plan.station_ids[runtime.plan_index]
+        current_station = self.trains.get_station(current_station_id)
+
+        # 找另一侧站台：同车站、不同 seg_id、方向匹配新运行方向
+        expected_dir = "down" if direction >= 0 else "up"
+        for platform in self.track.platforms:
+            if (platform.station_id == current_station.station_id
+                    and platform.seg_id != start_segment
+                    and platform.direction.lower() == expected_dir
+                    and platform.seg_id in self.track._seg_map):
+                seg = self.track._seg_map[platform.seg_id]
+                offset = max(0.0, min(seg.length,
+                                      platform.position - seg.abs_start))
+                return TrackPosition(platform.seg_id, offset)
+        return None
+
     def _try_compute_route(self, start_segment: int, target_station,
                             direction: int, head_abs: float):
-        """尝试用指定方向计算进路，返回 (segments, target_position)。"""
+        """尝试用指定方向计算进路，返回 (segments, target_position)。
+
+        仅使用 compute_station_route（基于拓扑邻接关系的寻路），
+        不再回退到 route_between（基于绝对坐标，会在并行链拓扑中混入
+        另一链的区段，导致折返后两车互相阻塞）。
+        """
         segments = compute_station_route(
             self.track, start_segment, target_station.station_id, direction)
-        if not segments:
-            segments = self.interlocking.route_between(
-                head_abs, target_station.position, direction)
         if not segments:
             return (), None
 

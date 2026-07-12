@@ -207,6 +207,7 @@
         <div class="toolbar">
           <div class="view-tabs"><button class="tool active" data-view="overview" aria-pressed="true">运营图</button><button class="tool" data-view="signal" aria-pressed="false">信号图</button></div>
           <div class="layer-tools"><button class="tool active" data-layer="trains" aria-pressed="true">列车</button><button class="tool" data-layer="links" aria-pressed="false">Link 编号</button><button class="tool" disabled title="后端尚未提供线路限速曲线">限速</button><button class="tool" disabled title="后端尚未提供坡度曲线">坡度</button></div>
+          <div class="zoom-group"><button class="zoom-btn" id="zoomOutBtn" title="缩小">−</button><input class="zoom-slider" id="zoomSlider" type="range" min="50" max="300" value="100" aria-label="轨道图缩放"><button class="zoom-btn" id="zoomInBtn" title="放大">+</button><button class="zoom-btn" id="zoomResetBtn" title="重置">↺</button><span class="zoom-label" id="zoomLabel">100%</span></div>
         </div>
         <div class="map">
           <div class="map-title"><h1>全线运行态势</h1><p id="mapSummary">等待实时数据</p></div><div class="map-badge data-health" id="dataHealth"><i class="dot off"></i>正在连接</div>
@@ -410,7 +411,7 @@
         pushChartPoint(t.id, 'speed', t.speedKmh);
       });
       renderLiveSubpage();renderLogs();
-      const ev=state.evaluation;if(ev){$('alarmScore').textContent=ev['综合得分'].toFixed(0);$('alarmGrade').textContent=ev['评价等级'];}
+      const ev=state.evaluation;if(ev){const scoreEl=$('alarmScore'),gradeEl=$('alarmGrade');if(scoreEl)scoreEl.textContent=ev['综合得分'].toFixed(0);if(gradeEl)gradeEl.textContent=ev['评价等级'];}
     }
     function setSystemStatus(id,online,label){$(id).innerHTML=`<i class="dot ${online?'':'off'}"></i>${label}${online?'已连接':'未连接'}`}
     function renderLiveSubpage(){

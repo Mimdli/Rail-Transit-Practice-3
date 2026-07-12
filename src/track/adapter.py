@@ -97,7 +97,7 @@ class TrackDataAdapter(ITrackQuery):
         new_abs = abs_pos + distance
         if new_abs > total:
             new_abs = total
-        return self.from_absolute(new_abs)
+        return self.from_absolute(new_abs, hint_seg_id=pos.segment_id)
 
     def to_absolute(self, pos: TrackPosition) -> float:
         """TrackPosition → 线路绝对里程 (m)。"""
@@ -146,6 +146,16 @@ class TrackDataAdapter(ITrackQuery):
 
         # Step 3: 兜底 — abs_pos < 0 或落在段间隙中
         if self._td.segments:
+            if hint_seg_id is not None and hint_seg_id in self._td._seg_map:
+                # 有 hint：在同链上找 abs_start≈0 的根段，避免并行链歧义
+                chain_ids = self._build_chain_ids(hint_seg_id)
+                for seg in self._td.segments:
+                    if seg.seg_id in chain_ids and abs(seg.abs_start) < 0.01:
+                        return TrackPosition(segment_id=seg.seg_id, offset=abs_pos)
+                # 同链未找到根段，回退到 hint 段本身
+                return TrackPosition(segment_id=hint_seg_id, offset=abs_pos)
+
+            # 无 hint：原有逻辑，找第一个 abs_start≈0 的段作为根段
             root_seg = self._td.segments[0]
             for seg in self._td.segments:
                 if abs(seg.abs_start) < 0.01:
@@ -234,6 +244,29 @@ class TrackDataAdapter(ITrackQuery):
 
         return visited
 
+    def _build_chain_ids(self, seed_seg_id: int) -> set[int]:
+        """构建与 seed_seg_id 同链的段 ID 集合（双向遍历邻居）。
+
+        从种子段出发，沿 start_neighbor（上行方向）和 end_neighbor（下行方向）
+        双向遍历，收集所有属于同一物理链的 segment ID。
+        """
+        seg_map = self._td._seg_map
+        seed = seg_map.get(seed_seg_id)
+        if seed is None:
+            return set()
+        chain = {seed_seg_id}
+        # 沿 end_neighbor 方向遍历（下行）
+        sid = seed.end_neighbor
+        while sid > 0 and sid != 65535 and sid in seg_map:
+            chain.add(sid)
+            sid = seg_map[sid].end_neighbor
+        # 沿 start_neighbor 方向遍历（上行）
+        sid = seed.start_neighbor
+        while sid > 0 and sid != 65535 and sid in seg_map:
+            chain.add(sid)
+            sid = seg_map[sid].start_neighbor
+        return chain
+
     def _disambiguate_candidates(self, candidates, abs_pos, hint_seg_id: Optional[int] = None):
         """从多个候选 segment 中选择正确的 segment。
 
@@ -260,17 +293,7 @@ class TrackDataAdapter(ITrackQuery):
         # 构建 hint_seg_id 所在链的 ID 集合
         chain_ids: set[int] = set()
         if hint_seg_id is not None:
-            last = self._td._seg_map.get(hint_seg_id)
-            if last is not None:
-                chain_ids = {last.seg_id}
-                sid = last.end_neighbor
-                while sid > 0 and sid != 65535 and sid in self._td._seg_map:
-                    chain_ids.add(sid)
-                    sid = self._td._seg_map[sid].end_neighbor
-                sid = last.start_neighbor
-                while sid > 0 and sid != 65535 and sid in self._td._seg_map:
-                    chain_ids.add(sid)
-                    sid = self._td._seg_map[sid].start_neighbor
+            chain_ids = self._build_chain_ids(hint_seg_id)
 
         # 优先级 2: 同链匹配 — 主线候选在同链上
         for seg in main_candidates:

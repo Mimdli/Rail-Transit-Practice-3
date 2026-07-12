@@ -339,11 +339,13 @@ class VehicleController:
         abs_pos = station.position if hasattr(station, 'position') else station.abs_pos
         return self.reset_to_absolute(abs_pos)
 
-    def reset_to_absolute(self, abs_position: float) -> bool:
+    def reset_to_absolute(self, abs_position: float,
+                          hint_seg_id: Optional[int] = None) -> bool:
         """重置到线路绝对位置 (m)。
 
         Args:
             abs_position: 线路上从头算起的绝对距离 (m)。
+            hint_seg_id: 可选的消歧段号，用于并行线选择正确链。
 
         Returns:
             True 如果成功。
@@ -351,8 +353,12 @@ class VehicleController:
         if self.track is None:
             return False
 
+        # 如果有 direction 但没有显式 hint，用方向推导链提示
+        if hint_seg_id is None and self.states:
+            hint_seg_id = self.states[0].position.segment_id
+
         try:
-            pos = self.track.from_absolute(abs_position)
+            pos = self.track.from_absolute(abs_position, hint_seg_id=hint_seg_id)
         except Exception:
             return False
 

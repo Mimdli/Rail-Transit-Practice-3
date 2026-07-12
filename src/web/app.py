@@ -135,26 +135,6 @@ async def assign_plan(train_id: str, body: PlanRequest):
         lambda: runtime.dispatch.assign_plan(train_id, body.plan_id)))
 
 
-@app.post("/api/trains/{train_id}/{command}")
-async def train_command(train_id: str, command: str):
-    commands = {
-        "depart": runtime.dispatch.depart,
-        "hold": runtime.dispatch.hold,
-        "release": runtime.dispatch.release,
-        "emergency-stop": runtime.dispatch.emergency_stop,
-        "restore": runtime.dispatch.restore,
-    }
-    action = commands.get(command)
-    if action is None:
-        return JSONResponse(
-            {"ok": False, "message": f"未知列车命令: {command}"},
-            status_code=404,
-        )
-    result = runtime.command(lambda: action(train_id))
-    runtime.record_web_command(train_id, command, result)
-    return response(result)
-
-
 @app.post("/api/power")
 async def set_power(body: PowerRequest):
     return response(runtime.set_power(body.status))
@@ -315,6 +295,26 @@ async def set_route(train_id: str, body: RouteRequest):
 async def jump_station(train_id: str, body: StationJumpRequest):
     result = runtime.jump_to_station(train_id, body.station_id)
     runtime.record_web_command(train_id, f"jump-{body.station_id}", result)
+    return response(result)
+
+
+@app.post("/api/trains/{train_id}/{command}")
+async def train_command(train_id: str, command: str):
+    commands = {
+        "depart": runtime.dispatch.depart,
+        "hold": runtime.dispatch.hold,
+        "release": runtime.dispatch.release,
+        "emergency-stop": runtime.dispatch.emergency_stop,
+        "restore": runtime.dispatch.restore,
+    }
+    action = commands.get(command)
+    if action is None:
+        return JSONResponse(
+            {"ok": False, "message": f"未知列车命令: {command}"},
+            status_code=404,
+        )
+    result = runtime.command(lambda: action(train_id))
+    runtime.record_web_command(train_id, command, result)
     return response(result)
 
 

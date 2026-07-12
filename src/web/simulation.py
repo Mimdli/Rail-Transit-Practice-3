@@ -105,8 +105,13 @@ class SimulationRuntime:
             turnback=True,
             dwell_time=5.0,
         ))
+        # 下行列车：从首站出发，沿递增里程运行 (A→B→C→D)
         self.dispatch.add_train("1车", station_ids[0], direction=1)
         self.dispatch.assign_plan("1车", "mainline_loop")
+        # 上行列车：从末站出发，沿递减里程运行 (D→C→B→A)
+        if len(station_ids) >= 2:
+            self.dispatch.add_train("2车", station_ids[-1], direction=-1)
+            self.dispatch.assign_plan("2车", "mainline_loop")
 
     def _record_signal_changes(self):
         """记录信号显示变化，避免日志中重复写入相同状态。"""
@@ -442,12 +447,20 @@ class SimulationRuntime:
                 return {"ok": True, "message": "已在自动模式"}
             controller.close_door()
             head_abs = runtime.head_abs
-            next_station = runtime.auto_drive.find_next_station(head_abs)
+            # 根据运行方向选择查站策略：上行查后方（递减里程），下行查前方（递增里程）
+            if controller.direction == 1:
+                next_station = runtime.auto_drive.find_next_station(head_abs)
+            else:
+                next_station = runtime.auto_drive._find_station_reverse(head_abs)
             if next_station is None:
                 return {"ok": False, "message": "切换自动失败: 无前方车站"}
-            target = runtime.track_adapter.from_absolute(next_station.position)
+            hint_seg = controller.states[0].position.segment_id if controller.states else None
+            target = runtime.track_adapter.from_absolute(next_station.position,
+                                                         hint_seg_id=hint_seg)
             runtime.auto_drive.set_target(target)
             controller.set_running_mode(RunningMode.AUTOMATIC)
+            from src.dispatch.models import TrainStatus
+            runtime.status = TrainStatus.MANUAL
             self.recorder.record(
                 "操作", f"Web 切换自动模式 → {next_station.name}",
                 head_abs, controller.head_speed,
@@ -558,7 +571,9 @@ class SimulationRuntime:
         if next_station is None:
             return {"ok": False, "message": "无前方车站可跳转"}
         controller = runtime.controller
-        target = runtime.track_adapter.from_absolute(next_station.position)
+        hint_seg = controller.states[0].position.segment_id if controller.states else None
+        target = runtime.track_adapter.from_absolute(next_station.position,
+                                                     hint_seg_id=hint_seg)
         runtime.auto_drive.set_target(target)
         if controller.running_mode != RunningMode.AUTOMATIC:
             controller.close_door()
@@ -758,9 +773,11 @@ class SimulationRuntime:
         )
         if station is None:
             return {"ok": False, "message": f"车站 {station_id} 不存在"}
-        # 解析位置
-        target = runtime.track_adapter.from_absolute(station.position - 50.0)
         ctrl = runtime.controller
+        # 解析位置：用当前列车所在段的链方向作为消歧提示
+        hint_seg = ctrl.states[0].position.segment_id if ctrl.states else None
+        target = runtime.track_adapter.from_absolute(station.position - 50.0,
+                                                     hint_seg_id=hint_seg)
         ctrl.reset_states(
             start_segment_id=target.segment_id,
             start_offset=target.offset,
@@ -771,7 +788,8 @@ class SimulationRuntime:
         next_station = self.track.get_nearest_station_ahead(station.position)
         if next_station:
             runtime.auto_drive.set_target(
-                runtime.track_adapter.from_absolute(next_station.position)
+                runtime.track_adapter.from_absolute(next_station.position,
+                                                    hint_seg_id=target.segment_id)
             )
             runtime.target_station_id = next_station.station_id
         self.recorder.record(

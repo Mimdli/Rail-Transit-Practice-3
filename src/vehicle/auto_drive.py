@@ -261,9 +261,9 @@ class AutoDriveController:
         )
 
         # ── 到站判断 ──────────────────────────────────────────
-        # 仅在未越过目标时触发（distance >= 0），避免 overshoot
-        # 后误入 DWELL 导致 dispatch 层与 auto_drive 状态机分离。
-        if self.controller.is_stopped and 0.0 <= distance < 3.0:
+        # 容忍小幅 overshoot（abs 而非 >=0），与 dispatch._check_arrival 对齐。
+        # 避免因制动距离不足略过目标点后永久卡死在 APPROACHING。
+        if self.controller.is_stopped and abs(distance) < 3.0:
             self._enter_dwell()
             return
 
@@ -285,21 +285,50 @@ class AutoDriveController:
             # ══════════════════════════════════════════════════
             self.station_phase = StationPhase.APPROACHING
 
-            # 最终 0.5m：紧急制动确保精确停车
-            if distance <= 0.5:
-                self._set_throttle(0.0)
-                self._set_brake(1.0)
+            # ── 制动曲线目标速度（蠕行和正常进近共用） ──
+            v_target = math.sqrt(2.0 * a_brake * max(0.0, distance))
+            v_target = min(v_target, self.approach_speed)
+
+            # ══════════════════════════════════════════════════
+            # 最终蠕行阶段（最后 3m）：渐进制动平稳对标
+            #
+            # 现实地铁 ATO 全程使用常用制动（≤0.7），不在
+            # 正常运营中触发紧急制动。最后几米以 0.5 m/s
+            # 以下蠕行速度缓慢贴近停车点，制动地板随距离
+            # 递减而单调递增，模拟真实司机对标操作。
+            # ══════════════════════════════════════════════════
+            if distance <= 3.0:
+                # 蠕行目标速度随距离线性递减
+                #   3m → 0.5 m/s,  1m → 0.17 m/s,  0.1m → 0.02 m/s
+                v_creep = 0.5 * (distance / 3.0)
+                v_target_creep = min(v_target, v_creep)
+                speed_error_creep = current_speed - v_target_creep
+
+                # 制动地板：从 0.1 (3m) 平滑升到 0.6 (0m)
+                brake_floor = 0.1 + 0.5 * max(0.0, 1.0 - distance / 3.0)
+
+                if speed_error_creep > 0.05:
+                    # 超速 → 比例制动，不低于地板，上限 0.7（全制动）
+                    feedback = self.KP_BRAKE * speed_error_creep
+                    brake_cmd = max(brake_floor, min(0.7, feedback + brake_floor))
+                    self._set_throttle(0.0)
+                    self._set_brake(brake_cmd)
+                elif current_speed < 0.05:
+                    # 几乎停止 → 施加保持制动防止溜车
+                    self._set_throttle(0.0)
+                    self._set_brake(max(brake_floor, 0.4))
+                else:
+                    # 速度接近目标 → 地板制动继续减速
+                    self._set_throttle(0.0)
+                    self._set_brake(brake_floor)
                 return
 
-            # ── 前馈：运动学公式 v² = 2ad ──────────────────
-            # a_required = v² / (2d)：要想在距离 d 内停稳所需的减速度
-            # 前馈制动级位 = a_required / a_available
+            # ── 正常制动接近段：前馈 + 反馈 P 控制器 ──────
+            # 前馈：a_required = v² / (2d)
             required_decel = current_speed ** 2 / (2.0 * max(distance, 0.01))
             feed_forward = min(1.0, required_decel / a_brake)
 
-            # ── 反馈：P 控制器修正速度跟踪误差 ─────────────
-            v_target = math.sqrt(2.0 * a_brake * max(0.0, distance))
-            v_target = min(v_target, self.approach_speed)
+            # 反馈：P 控制器修正速度跟踪误差
             speed_error = current_speed - v_target
             feedback = self.KP_BRAKE * max(0.0, speed_error)
 
@@ -360,9 +389,9 @@ class AutoDriveController:
         Args:
             dt: 仿真步长 (s)。
         """
-        # 保持紧急制动防止溜车
+        # 保持制动防止溜车（常用制动 0.4，无需紧急制动）
         self._set_throttle(0.0)
-        self._set_brake(1.0)
+        self._set_brake(0.4)
 
         self._dwell_timer += dt
 
@@ -389,7 +418,7 @@ class AutoDriveController:
         """
         # 保持制动直到找到下一站目标
         self._set_throttle(0.0)
-        self._set_brake(1.0)
+        self._set_brake(0.4)
 
         # 根据运行方向选择查找策略
         if self.controller.direction == 1:
@@ -399,7 +428,9 @@ class AutoDriveController:
 
         if next_station is not None:
             # 使用 from_absolute 正确构造 TrackPosition（处理多区段线路）
-            target = self._track.from_absolute(next_station.position)
+            hint_seg = self.controller.states[0].position.segment_id
+            target = self._track.from_absolute(next_station.position,
+                                               hint_seg_id=hint_seg)
             self.set_target(target)
             # set_target 已将 phase 重置为 CRUISING
         elif self._should_turnaround():
@@ -454,7 +485,13 @@ class AutoDriveController:
         """
         # 1. 反转方向
         self.controller.direction *= -1
-        track_data = getattr(self._interlock, 'track', None)
+        track_data = None
+        if self._interlock is not None:
+            track_data = getattr(self._interlock, 'track', None)
+        if track_data is None and self.controller is not None:
+            adapter = getattr(self.controller, 'track', None)
+            if adapter is not None and hasattr(adapter, '_td'):
+                track_data = adapter._td
         if track_data is None:
             return
 
@@ -482,7 +519,9 @@ class AutoDriveController:
                     )
 
         if station is not None:
-            target = self._track.from_absolute(station.position)
+            hint_seg = self.controller.states[0].position.segment_id
+            target = self._track.from_absolute(station.position,
+                                               hint_seg_id=hint_seg)
             self.set_target(target)
             # set_target 已将 phase 重置为 CRUISING
 
@@ -498,10 +537,14 @@ class AutoDriveController:
         Returns:
             Station 或 None（无符合条件车站）。
         """
-        if self._interlock is None:
-            return None
-
-        track_data = getattr(self._interlock, 'track', None)
+        # 优先使用 interlock.track，未设置时回退到 controller.track adapter。
+        track_data = None
+        if self._interlock is not None:
+            track_data = getattr(self._interlock, 'track', None)
+        if track_data is None and self.controller is not None:
+            adapter = getattr(self.controller, 'track', None)
+            if adapter is not None and hasattr(adapter, '_td'):
+                track_data = adapter._td
         if track_data is None:
             return None
 
@@ -511,6 +554,12 @@ class AutoDriveController:
                 head_abs = self._track.to_absolute(
                     self.controller.states[0].position
                 )
+            elif self.controller.states:
+                adapter = getattr(self.controller, 'track', None)
+                if adapter is not None:
+                    head_abs = adapter.to_absolute(
+                        self.controller.states[0].position
+                    )
 
         station = track_data.get_nearest_station_behind(head_abs)
         if station is not None:
@@ -534,10 +583,15 @@ class AutoDriveController:
         Returns:
             Station 或 None（无前方车站）。
         """
-        if self._interlock is None:
-            return None
-
-        track_data = getattr(self._interlock, 'track', None)
+        # 优先通过 DoorInterlock.track 获取线路数据（桌面 UI 路径），
+        # 若未设置 interlock（Web ATS 路径），回退到 controller 自带的 track adapter。
+        track_data = None
+        if self._interlock is not None:
+            track_data = getattr(self._interlock, 'track', None)
+        if track_data is None and self.controller is not None:
+            adapter = getattr(self.controller, 'track', None)
+            if adapter is not None and hasattr(adapter, '_td'):
+                track_data = adapter._td
         if track_data is None:
             return None
 
@@ -547,6 +601,12 @@ class AutoDriveController:
                 head_abs = self._track.to_absolute(
                     self.controller.states[0].position
                 )
+            elif self.controller.states:
+                adapter = getattr(self.controller, 'track', None)
+                if adapter is not None:
+                    head_abs = adapter.to_absolute(
+                        self.controller.states[0].position
+                    )
 
         # 跳过当前站（很近的车站），找下一站
         station = track_data.get_nearest_station_ahead(head_abs)

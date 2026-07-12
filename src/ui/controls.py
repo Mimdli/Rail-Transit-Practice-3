@@ -890,8 +890,11 @@ class ControlPanel(QWidget):
         if self.controller.states:
             head_abs = self.track_adapter.to_absolute(self.controller.states[0].position)
 
-        # 查找下一站（通过 AutoDriveController 统一入口）
-        next_station = self.auto_drive.find_next_station(head_abs)
+        # 查找下一站（根据运行方向选择查站策略）
+        if self.controller.direction == 1:
+            next_station = self.auto_drive.find_next_station(head_abs)
+        else:
+            next_station = self.auto_drive._find_station_reverse(head_abs)
 
         if next_station is None:
             self._show_mode_transition(False, "✗ 切换失败: 无前方车站")
