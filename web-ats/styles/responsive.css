@@ -12,6 +12,17 @@
   .inspector { display: none; }
   .subpage { left: 132px; }
   .split { grid-template-columns: 1fr; }
+  .dispatch-layout { grid-template-columns: 1fr; }
+  .dispatch-form { grid-template-columns:repeat(2,minmax(140px,1fr)); }
+  .analysis-layout { grid-template-columns: 1fr; }
+  .signal-workspace { grid-template-columns:1fr; }
+  .message-layout, .config-layout { grid-template-columns:1fr; }
+  .replay-workspace { grid-template-columns:1fr; }
+  .power-workspace { grid-template-columns:1fr; }
+  .data-metrics { grid-template-columns:repeat(2,1fr); }
+  .interface-tabs { overflow-x:auto; padding-inline:16px; }
+  .train-tabs { overflow-x: auto; padding-inline: 16px; }
+  .train-tabs button { white-space: nowrap; }
   .page-body { overflow: auto; }
 }
 

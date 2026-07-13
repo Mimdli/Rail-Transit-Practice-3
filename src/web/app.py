@@ -99,6 +99,15 @@ class TrackSourceRequest(BaseModel):
     source: str  # "database" | "demo"
 
 
+class PlcOutputRequest(BaseModel):
+    atp_safe_out: int = Field(default=0, ge=0, le=65535)
+
+
+class TrainControlRequest(BaseModel):
+    action: str
+    value: str | None = None
+
+
 def response(result: dict):
     return JSONResponse(result, status_code=200 if result["ok"] else 409)
 
@@ -205,8 +214,9 @@ async def apply_scene(scene_id: str):
     return response(runtime.apply_scene(scene_id))
 
 
-@app.get("/api/replay")
-async def replay():
+@app.get("/api/evaluation")
+async def evaluation():
+    """返回远程 main 新增的完整事件与评价数据，避免覆盖实时回放接口。"""
     return runtime.replay_data()
 
 
@@ -357,6 +367,16 @@ async def network_toggle(body: NetworkToggleRequest):
     return response(runtime.toggle_network(body.enabled))
 
 
+@app.post("/api/trains/{train_id}/control/action")
+async def train_control(train_id: str, body: TrainControlRequest):
+    return response(runtime.control_train(train_id, body.action, body.value))
+
+
+@app.post("/api/power")
+async def set_power(body: PowerRequest):
+    return response(runtime.set_power(body.status))
+
+
 # ── 数据源切换 ──────────────────────────────────────
 
 @app.get("/api/track/source")
@@ -367,6 +387,70 @@ async def get_track_source():
 @app.post("/api/track/source")
 async def switch_track_source(body: TrackSourceRequest):
     return response(runtime.switch_track_source(body.source))
+
+
+@app.post("/api/network/stop")
+async def network_stop():
+    return response(runtime.network_disconnect())
+
+
+@app.get("/api/plc/output")
+async def plc_output_get():
+    return {"ok": True, "state": dict(runtime.plc_output_state)}
+
+
+@app.post("/api/plc/output")
+async def plc_output_post(body: Request):
+    """兼容指示灯状态更新和 ATP 数值输出两种司机台报文。"""
+    updates = await body.json()
+    if "atp_safe_out" in updates:
+        value = PlcOutputRequest(**updates).atp_safe_out
+        if not runtime.network_started:
+            return JSONResponse(
+                {"ok": False, "message": "网络未启动，请先点击联调连接"},
+                status_code=409,
+            )
+        try:
+            runtime.network.send_plc_output(value)
+            runtime.recorder.record(
+                "PLC输出",
+                f"ATP安全输出: 0x{value:04X}",
+                source="web-ats",
+                severity="INFO",
+            )
+            return {"ok": True, "message": f"PLC输出已发送: 0x{value:04X}"}
+        except Exception as exc:
+            return JSONResponse(
+                {"ok": False, "message": f"PLC输出发送失败: {exc}"},
+                status_code=500,
+            )
+    return response(runtime.set_plc_output(updates))
+
+
+@app.post("/api/scenarios/{scenario_id}")
+async def apply_scenario(scenario_id: str):
+    return response(runtime.apply_scenario(scenario_id))
+
+
+@app.get("/api/replay")
+async def replay():
+    return runtime.replay_snapshot()
+
+
+@app.post("/api/simulation/{command}")
+async def simulation_command(command: str):
+    if command == "pause":
+        runtime.paused = True
+    elif command == "resume":
+        runtime.paused = False
+    elif command in {"1", "2", "5", "10"}:
+        runtime.speed_multiplier = int(command)
+    else:
+        return JSONResponse(
+            {"ok": False, "message": f"未知仿真命令: {command}"},
+            status_code=404,
+        )
+    return {"ok": True, "message": "仿真状态已更新"}
 
 
 @app.websocket("/ws/realtime")
