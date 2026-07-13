@@ -91,6 +91,7 @@ class SimulationRuntime:
         }
         self.current_scene: str = "normal_peak"
         self.network_started = False
+        self.cab_started = False
         self._plc_output_counter = 0
         self.plc_output_state = {
             "indicator_hv_contactor": False,
@@ -357,10 +358,7 @@ class SimulationRuntime:
         #    VisionUDPClient 内部已有 TCMS2VIEW 数据生成逻辑，无需手动设置
 
         # 6. 司机台显示屏数据源
-        def _cab_display_source():
-            return dict(self.cab_display_state)
-        self.network.set_cab_network_source(_cab_display_source)
-        self.network.set_cab_signal_source(_cab_display_source)
+        self._setup_cab_display_source()
 
     def network_disconnect(self) -> dict:
         """断开所有网络通信模块"""
@@ -370,6 +368,32 @@ class SimulationRuntime:
         self.network_started = False
         self.recorder.record("网络", "Web ATS 断开联调网络连接", severity="INFO")
         return {"ok": True, "message": "网络连接已断开"}
+
+    def cab_connect(self) -> dict:
+        """启动司机台显示屏（网络屏+信号屏）"""
+        if self.cab_started:
+            return {"ok": True, "message": "司机台显示已连接"}
+        self._setup_cab_display_source()
+        self.network.cab_display.start()
+        self.cab_started = True
+        self.recorder.record("司机台显示", "启动网络屏+信号屏发送", severity="INFO")
+        return {"ok": True, "message": "司机台显示已启动"}
+
+    def cab_disconnect(self) -> dict:
+        """停止司机台显示屏"""
+        if not self.cab_started:
+            return {"ok": True, "message": "司机台显示已断开"}
+        self.network.cab_display.stop()
+        self.cab_started = False
+        self.recorder.record("司机台显示", "停止网络屏+信号屏发送", severity="INFO")
+        return {"ok": True, "message": "司机台显示已断开"}
+
+    def _setup_cab_display_source(self):
+        """设置司机台显示屏数据源"""
+        def _cab_display_source():
+            return dict(self.cab_display_state)
+        self.network.set_cab_network_source(_cab_display_source)
+        self.network.set_cab_signal_source(_cab_display_source)
 
     def set_plc_output(self, updates: dict) -> dict:
         """更新 PLC 输出状态并立即发送一帧"""
@@ -1105,6 +1129,7 @@ class SimulationRuntime:
             "network": network_status,
             "network_stats": self.network.network_stats,
             "network_started": self.network_started,
+            "cab_started": self.cab_started,
             "plc_output_state": dict(self.plc_output_state),
             "cab_display_state": dict(self.cab_display_state),
             "networkInterfaces": [
