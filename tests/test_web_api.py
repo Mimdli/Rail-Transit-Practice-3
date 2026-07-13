@@ -71,6 +71,12 @@ def test_snapshot_and_dispatch_command():
         assert data["trains"][0]["linkPosition"] is not None
         assert any(signal["linkPosition"] is not None
                    for signal in data["signals"])
+        assert len(data["signals"]) == 157
+        assert data["trackSummary"]["switchCount"] == 60
+        assert any(component["role"] == "crossover"
+                   for component in data["line"]["switchComponents"])
+        assert any(component["role"] == "single-crossover"
+                   for component in data["line"]["switchComponents"])
         assert "acceleration" in data["trains"][0]
         assert "tractiveForceKn" in data["trains"][0]
         assert "brakeForceKn" in data["trains"][0]
