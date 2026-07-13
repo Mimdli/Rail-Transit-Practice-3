@@ -413,8 +413,10 @@ def pack_atp_to_dmi(
     app_data.extend(struct.pack(">H", permit_speed_cms)) # 允许速度
     app_data.extend(struct.pack(">H", ebrake_speed_cms)) # 紧急制动触发速度
     app_data.extend(struct.pack(">H", target_speed_cms)) # 目标速度
-    app_data.extend(b"\x00" * 3)                       # 限速变化点距离 24bit
-    app_data.extend(b"\x00" * 3)                       # 目标距离 24bit
+    app_data.extend(b"\x00" * 3)                       # 限速变化点距离 24bit（暂无独立参数）
+    # 目标距离：24bit 大端
+    d = max(0, int(target_dist_cm)) & 0xFFFFFF
+    app_data.extend(bytes([(d >> 16) & 0xFF, (d >> 8) & 0xFF, d & 0xFF]))
     app_data.append(mode_max & 0x0F)                   # 最大可用驾驶模式 4bit
     app_data.append(mode_current & 0x0F)               # 当前驾驶模式 4bit
     # 填充至129字节

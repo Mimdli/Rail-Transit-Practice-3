@@ -39,6 +39,9 @@ class PLCClient:
         self._last_plc_data: Optional[dict] = None
         self.connected = False
 
+        # 每端口接收缓冲：TCP 流式拆帧（46 字节一帧）
+        self._recv_buffers: list[bytearray] = [bytearray(), bytearray(), bytearray()]
+
         # 统计信息
         self.packets_sent = 0
         self.packets_received = 0
@@ -112,16 +115,21 @@ class PLCClient:
 
             self.connected = any(s is not None for s in self._sockets)
 
-            for s in self._sockets:
+            for idx, s in enumerate(self._sockets):
                 if s is None:
                     continue
                 try:
-                    data = s.recv(PLC_RECV_SIZE)
-                    if len(data) >= PLC_RECV_SIZE:
-                        parsed = unpack_plc_data(data)
+                    chunk = s.recv(PLC_RECV_SIZE * 4)
+                    if not chunk:
+                        continue
+                    self._recv_buffers[idx].extend(chunk)
+                    while len(self._recv_buffers[idx]) >= PLC_RECV_SIZE:
+                        frame = bytes(self._recv_buffers[idx][:PLC_RECV_SIZE])
+                        del self._recv_buffers[idx][:PLC_RECV_SIZE]
+                        parsed = unpack_plc_data(frame)
                         if parsed:
                             self._last_plc_data = parsed
-                            self.last_recv_packet = data
+                            self.last_recv_packet = frame
                             self.packets_received += 1
                             self.last_recv_time = time.time()
                             if self._recv_callback:
@@ -130,6 +138,7 @@ class PLCClient:
                     pass
                 except Exception as e:
                     logger.debug("PLC接收异常: %s", e)
+                    self._recv_buffers[idx].clear()
 
             elapsed = (time.perf_counter() - cycle_start) * 1000
             sleep_ms = max(0, PLC_CYCLE_MS - elapsed)

@@ -1096,7 +1096,7 @@ class MainWindow(QMainWindow):
         if checked:
             logger.info("切换为联调模式：启动网络通信")
             self._setup_network_callbacks()
-            self.network.start()
+            self.network.start(force_enable=True)
         else:
             logger.info("切换为本地模式：停止网络通信")
             self.network.stop()

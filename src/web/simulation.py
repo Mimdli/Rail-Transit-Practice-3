@@ -296,7 +296,7 @@ class SimulationRuntime:
         if self.network_started:
             return {"ok": True, "message": "网络已连接"}
         self._setup_network_sources()
-        self.network.start()
+        self.network.start(force_enable=True)
         self.network_started = True
         self.recorder.record("网络", "Web ATS 启动联调网络连接", severity="INFO")
         return {"ok": True, "message": "网络连接已启动"}
@@ -904,7 +904,7 @@ class SimulationRuntime:
 
     def toggle_network(self, enabled: bool) -> dict:
         if enabled:
-            self.network.start()
+            self.network.start(force_enable=True)
             return {"ok": True, "message": "网络通信已开启"}
         else:
             self.network.stop()

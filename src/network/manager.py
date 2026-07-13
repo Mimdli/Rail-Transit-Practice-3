@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class NetworkManager:
     """多系统通信管理器"""
 
-    def __init__(self):
+    def __init__(self, force_enable: Optional[bool] = None):
         # 子系统
         self.vehicle_udp = VehicleUDPClient()
         self.signal_gateway = SignalGateway()
@@ -35,6 +35,8 @@ class NetworkManager:
 
         # 总开关
         self._running = False
+        # force_enable=True 强制连网；None 时跟随 config.network_config.MODE
+        self._force_enable = force_enable
 
         # 连接状态摘要
         self._connection_status: dict[str, bool] = {
@@ -44,6 +46,18 @@ class NetworkManager:
             "vision": False,
             "cab_display": False,
         }
+
+    def _should_connect_external(self) -> bool:
+        """local 模式默认不连外部设备；lab_704 或显式 force_enable 才连接。"""
+        if self._force_enable is True:
+            return True
+        if self._force_enable is False:
+            return False
+        try:
+            from config.network_config import MODE
+            return str(MODE).lower() == "lab_704"
+        except Exception:
+            return False
 
     @property
     def connection_status(self) -> dict[str, bool]:
@@ -168,12 +182,26 @@ class NetworkManager:
 
     # ---- 生命周期 ----
 
-    def start(self):
-        """启动所有通信模块"""
+    def start(self, force_enable: Optional[bool] = None):
+        """启动所有通信模块。
+
+        Args:
+            force_enable: True 强制连接外部设备（桌面「联调模式」勾选时传入）；
+                None 则按构造参数 / MODE 决定。
+        """
         if self._running:
             return
-        self._running = True
+        enable = self._force_enable if force_enable is None else force_enable
+        if enable is None:
+            enable = self._should_connect_external()
+        if not enable:
+            logger.info(
+                "NetworkManager: MODE=local，跳过外部连接"
+                "（桌面联调请勾选联调模式，或设 MODE=lab_704）"
+            )
+            return
 
+        self._running = True
         self.vehicle_udp.start()
         self.signal_gateway.start()
         self.plc.start()

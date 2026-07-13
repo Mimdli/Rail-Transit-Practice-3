@@ -106,8 +106,6 @@ class PerCarDynamicsPipeline:
         if len(states) != n_cars:
             raise ValueError(f"states 数量 ({len(states)}) 与编组 ({n_cars}) 不匹配")
 
-        adhesion = env.get_adhesion_coefficient(states[0].position)
-
         # ── PT1 一阶低通滤波（作动迟滞） ─────────────────────
         # 模拟真实制动气缸充气和电机建磁的时间延迟。
         # 滤波器在外步层面更新一次，微步循环内使用滤波后的常值。
@@ -139,11 +137,15 @@ class PerCarDynamicsPipeline:
             speed_limits = [
                 track.get_speed_limit(s.position) for s in states
             ]
+            # 逐车查询黏着：编组跨湿滑区时不能只用头车系数
+            adhesions = [
+                env.get_adhesion_coefficient(s.position) for s in states
+            ]
 
             # Step 2 — 计算外部力（每微步重新计算，因速度/位置已变化）
             external_forces, t_limited, b_limited, electric_brakes, friction_brakes = \
                 self._precompute_external_forces(
-                    consist, states, track, eff_throttle, eff_brake, adhesion,
+                    consist, states, track, eff_throttle, eff_brake, adhesions,
                     direction,
                 )
 
@@ -217,11 +219,12 @@ class PerCarDynamicsPipeline:
     # ── 内部方法 ───────────────────────────────────────────────
 
     def _precompute_external_forces(self, consist, states, track,
-                                     throttle, brake, adhesion, direction=1):
+                                     throttle, brake, adhesions, direction=1):
         """预计算外部力（阻力+牵引力+电空制动）。
 
         黏着限制对总制动力统一施加（通过 calc_brake_force）。
         电空拆分仅用于报告（通过 magnitude 函数）。
+        adhesions: 每节车当前位置的黏着系数列表。
 
         Returns:
             (forces, traction_limited, brake_limited,
@@ -234,6 +237,7 @@ class PerCarDynamicsPipeline:
         friction_mag_list = []
         for i, car_config in enumerate(consist):
             s = states[i]
+            adhesion = adhesions[i] if i < len(adhesions) else adhesions[0]
             # 反向运行时同一物理坡度对列车运行方向的符号相反。
             gradient = track.get_gradient(s.position) * direction
             is_tunnel = track.get_is_tunnel(s.position)
