@@ -322,52 +322,56 @@ def pack_plc_output(
     btn_open_right: bool = False,
     btn_close_left: bool = False,
     btn_close_right: bool = False,
+    tag17: int = 0,
 ) -> bytes:
-    """打包上位机→PLC报文 (26 bytes)
+    """打包上位机→PLC报文 (28 bytes)
 
-    24字节帧头 + 2字节数据区 (WORD11: ATP安全输出)
+    24字节帧头 + 4字节数据区 (tag1~8 byte + tag9~16 byte + tag17 short)
     帧头字段按协议填充。
     """
-    # WORD11: ATP安全输出 (bitmask)
-    atp_safe_out = 0
+    # Byte 0: tag1~8 bitmask (低8位)
+    byte0 = 0
     if indicator_hv_contactor:
-        atp_safe_out |= 1 << 0   # Bit0: 高压接触器指示
+        byte0 |= 1 << 0   # Bit0: 高压接触器指示
     if indicator_brake_release:
-        atp_safe_out |= 1 << 1   # Bit1: 制动缓解指示
+        byte0 |= 1 << 1   # Bit1: 制动缓解指示
     if indicator_door_closed:
-        atp_safe_out |= 1 << 2   # Bit2: 门关好指示
+        byte0 |= 1 << 2   # Bit2: 门关好指示
     if indicator_network_fault:
-        atp_safe_out |= 1 << 3   # Bit3: 网络故障指示
+        byte0 |= 1 << 3   # Bit3: 网络故障指示
     if mode_ato_available:
-        atp_safe_out |= 1 << 4   # Bit4: ATO可用
+        byte0 |= 1 << 4   # Bit4: ATO可用
     if mode_ato_active:
-        atp_safe_out |= 1 << 5   # Bit5: ATO激活
+        byte0 |= 1 << 5   # Bit5: ATO激活
     if mode_ar:
-        atp_safe_out |= 1 << 6   # Bit6: AR模式
+        byte0 |= 1 << 6   # Bit6: AR模式
     if btn_emergency_brake:
-        atp_safe_out |= 1 << 7   # Bit7: 紧急制动
+        byte0 |= 1 << 7   # Bit7: 紧急制动
+
+    # Byte 1: tag9~16 bitmask
+    byte1 = 0
     if btn_forced_release:
-        atp_safe_out |= 1 << 8   # Bit8: 强缓
+        byte1 |= 1 << 0   # Bit0: 强缓
     if btn_forced_pump:
-        atp_safe_out |= 1 << 9   # Bit9: 强泵
+        byte1 |= 1 << 1   # Bit1: 强泵
     if btn_emergency_command:
-        atp_safe_out |= 1 << 10  # Bit10: 紧急指令
+        byte1 |= 1 << 2   # Bit2: 紧急指令
     if btn_parking_brake:
-        atp_safe_out |= 1 << 11  # Bit11: 停放制动
+        byte1 |= 1 << 3   # Bit3: 停放制动
     if btn_open_left:
-        atp_safe_out |= 1 << 12  # Bit12: 左门使能
+        byte1 |= 1 << 4   # Bit4: 左门使能
     if btn_open_right:
-        atp_safe_out |= 1 << 13  # Bit13: 右门使能
+        byte1 |= 1 << 5   # Bit5: 右门使能
     if btn_close_left:
-        atp_safe_out |= 1 << 14  # Bit14: 左门关闭
+        byte1 |= 1 << 6   # Bit6: 左门关闭
     if btn_close_right:
-        atp_safe_out |= 1 << 15  # Bit15: 右门关闭
+        byte1 |= 1 << 7   # Bit7: 右门关闭
 
     t = _time.localtime(_time.time())
     header = struct.pack("<" + "I" + "H" * 10,
         0xAA55AA55,                      # _uIdentify (4B) 现场PLC发送55 AA 55 AA
-        26,                               # _uTotalLen (2B) = 26
-        26 - 8,                           # _uDataLen (2B) = 18
+        28,                               # _uTotalLen (2B) = 28
+        28 - 8,                           # _uDataLen (2B) = 20
         t.tm_year,                        # _uYear
         t.tm_mon,                         # _uMonth
         t.tm_mday,                        # _uDay
@@ -377,8 +381,8 @@ def pack_plc_output(
         0,                                # _uVerifyType
         0,                                # _uVerifyCode
     )
-    # 2字节数据区 (ATP安全输出)
-    data = struct.pack("<H", atp_safe_out & 0xFFFF)
+    # 4字节数据区: 1B tag1~8 + 1B tag9~16 + 2B tag17
+    data = struct.pack("<BBh", byte0 & 0xFF, byte1 & 0xFF, tag17 & 0xFFFF)
     return header + data
 
 
@@ -647,8 +651,8 @@ def pack_network_screen(
     struct.pack_into("<B", buf, 39, power_state & 0xFF)
     struct.pack_into("<f", buf, 40, speed)
     struct.pack_into("<f", buf, 44, acceleration)
-    struct.pack_into("<H", buf, 48, power_pull & 0xFFFF)
-    struct.pack_into("<H", buf, 50, net_pressure & 0xFFFF)
+    struct.pack_into("<H", buf, 48, int(power_pull) & 0xFFFF)
+    struct.pack_into("<H", buf, 50, int(net_pressure) & 0xFFFF)
     # 限速 / 级位 / 模式 (52-55)
     struct.pack_into("<H", buf, 52, int(speed_limit))
     struct.pack_into("<B", buf, 54, 0)                 # _nLevelPos

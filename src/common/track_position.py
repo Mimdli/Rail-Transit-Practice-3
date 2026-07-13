@@ -166,7 +166,7 @@ class MockTrackQuery(ITrackQuery):
         if new_abs > total_length:
             new_abs = total_length
 
-        return self.from_absolute(new_abs)
+        return self.from_absolute(new_abs, hint_seg_id=pos.segment_id)
 
     def to_absolute(self, pos: TrackPosition) -> float:
         """将 TrackPosition 转换为线路绝对里程（从 Seg 1 起点起算）。"""
