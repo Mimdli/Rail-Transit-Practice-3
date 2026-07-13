@@ -86,25 +86,6 @@ class InterlockingService:
             if self._locks.get(segment_id) == train_id:
                 self._locks.pop(segment_id, None)
 
-    def route_between(self, start_abs: float, target_abs: float,
-                      direction: int) -> tuple[int, ...]:
-        """按绝对里程生成区段级进路，优先使用主线段。"""
-        low, high = sorted((start_abs, target_abs))
-        candidates = []
-        for segment in self.track.segments:
-            seg_start = segment.abs_start
-            seg_end = segment.abs_start + segment.length
-            if seg_end < low or seg_start > high:
-                continue
-            # 有正向邻接的区段视为主线；孤立线路则回退到全部候选。
-            is_main = bool(segment.start_neighbor or segment.end_neighbor)
-            candidates.append((segment, is_main))
-        main = [segment for segment, is_main in candidates if is_main]
-        selected = main or [segment for segment, _ in candidates]
-        selected.sort(key=lambda segment: segment.abs_start,
-                      reverse=direction < 0)
-        return tuple(segment.seg_id for segment in selected)
-
     def locked_by(self, segment_id: int) -> Optional[str]:
         return self._locks.get(segment_id)
 

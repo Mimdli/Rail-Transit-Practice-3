@@ -159,13 +159,25 @@ def compute_mainline_route_to_station(
     Returns:
         计算出的 Route，或 None。
     """
-    # 找到目标车站所在的 segment（取其第一个站台所在 segment）
+    # 找到目标车站所在的 segment（通过站台关联的 seg_id，避免绝对坐标歧义）
     target_station = track_data._station_map.get(target_station_name)
     if target_station is None:
         return None
 
-    # 用站台位置反查 segment
-    target_seg_id = track_data.get_seg_id_at(target_station.position)
+    # 优先使用站台的显式 seg_id（database schema 中 platform.seg_id 直接关联段），
+    # 避免 track_data.get_seg_id_at(station.position) 在并行链坐标重叠时选错段。
+    target_seg_id = 0
+    for pid in target_station.platform_ids:
+        for p in track_data.platforms:
+            if p.platform_id == pid and p.seg_id in track_data._seg_map:
+                target_seg_id = p.seg_id
+                break
+        if target_seg_id:
+            break
+
+    # 兜底：无站台关联时用绝对位置查询
+    if target_seg_id == 0:
+        target_seg_id = track_data.get_seg_id_at(target_station.position)
     if target_seg_id == 0:
         return None
 

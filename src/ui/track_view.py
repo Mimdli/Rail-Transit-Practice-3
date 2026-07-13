@@ -154,6 +154,7 @@ class TrackView(QGraphicsView):
         self._train_items = []
         self._target_items = []  # 目标标记（独立管理，不随列车刷新清除）
         self._last_train_pos_key = None
+        self._last_head_seg_id = 0  # 缓存上次头车所在段，作为渲染消歧 hint
         self.follow_train = True  # 视角是否跟随列车
 
         # 主线轨道 Y 基准坐标（分支线在此基础上叠加 BRANCH_OFFSET）
@@ -219,15 +220,16 @@ class TrackView(QGraphicsView):
 
     # ── 列车位置叠加 ──────────────────────────────────────────
 
-    def _car_y(self, car_abs: float) -> float:
-        """返回指定绝对位置处车厢应绘制的 Y 坐标。
+    def _car_y(self, car_abs: float, hint_seg_id: int = 0):
+        """返回 (y坐标, seg_id) 元组。
 
         根据车厢所在的轨道区段，确定其分支层级（主线=0，道岔分支>=1），
-        使列车绘制在正确的轨道线上。
+        使列车绘制在正确的轨道线上。hint_seg_id 非 0 时传入 get_seg_id_at
+        辅助并行链坐标消歧。
         """
-        seg_id = self.td.get_seg_id_at(car_abs)
+        seg_id = self.td.get_seg_id_at(car_abs, hint_seg_id=hint_seg_id)
         trunk, depth = self._seg_layout.get(seg_id, (0, 0))
-        return self._base_y + TRAIN_Y_OFFSET + (trunk + depth) * BRANCH_OFFSET
+        return self._base_y + TRAIN_Y_OFFSET + (trunk + depth) * BRANCH_OFFSET, seg_id
 
     def set_train_position(self, car_abs_positions: list, controller: VehicleController = None):
         """更新列车在线路图上的显示位置，并确保列车在视野内。
@@ -260,10 +262,12 @@ class TrackView(QGraphicsView):
             return
 
         # 以头车所在区段的分支层级确定整列车 Y 坐标
-        head_y = self._car_y(car_abs_positions[0])
+        # 传入上次缓存的 seg_id 作为 hint，避免并行链坐标重叠时选错段
+        head_y, head_seg_id = self._car_y(
+            car_abs_positions[0], hint_seg_id=self._last_head_seg_id)
+        self._last_head_seg_id = head_seg_id
 
         # 头车在分支上时，列车整体需要 DIAG_X 偏移以对齐分支轨道线
-        head_seg_id = self.td.get_seg_id_at(car_abs_positions[0])
         _, head_depth = self._seg_layout.get(head_seg_id, (0, 0))
         x_offset = DIAG_X if head_depth > 0 else 0
 
@@ -333,7 +337,8 @@ class TrackView(QGraphicsView):
         self._clear_target_marker()
         x = self._x(abs_pos)
         # 用 seg_id 确定 y（目标可能在主线或侧线上）
-        seg_id = self.td.get_seg_id_at(abs_pos)
+        # 传入列车当前 head seg_id 作为 hint，辅助并行链消歧
+        seg_id = self.td.get_seg_id_at(abs_pos, hint_seg_id=self._last_head_seg_id)
         trunk, depth = self._seg_layout.get(seg_id, (0, 0))
         # 侧线目标需要加 DIAG_X 偏移
         if depth > 0:

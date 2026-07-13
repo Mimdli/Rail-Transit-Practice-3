@@ -6,19 +6,12 @@
   <component name="ChangeListManager">
     <list default="true" id="653bfbe5-b692-49f4-9a78-6528f7118584" name="更改" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/common/track_position.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/common/track_position.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dispatch/dispatch_manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dispatch/dispatch_manager.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/dispatch/train_manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dispatch/train_manager.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/dispatch/interlocking.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/dispatch/interlocking.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/track/adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/track/adapter.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/ui/controls.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/controls.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/ui/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/main_window.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/vehicle/auto_drive.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/vehicle/auto_drive.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/track/data.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/track/data.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/track/route.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/track/route.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/ui/track_view.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ui/track_view.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/vehicle/ui_adapter.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/vehicle/ui_adapter.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/vehicle/vehicle_controller.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/vehicle/vehicle_controller.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/web/app.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/web/app.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/web/simulation.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/web/simulation.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_auto_drive.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_auto_drive.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/web-ats/index.html" beforeDir="false" afterPath="$PROJECT_DIR$/web-ats/index.html" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -83,6 +76,7 @@
       <workItem from="1783666423543" duration="9351000" />
       <workItem from="1783691737119" duration="1239000" />
       <workItem from="1783818778590" duration="11569000" />
+      <workItem from="1783909441927" duration="1241000" />
     </task>
     <servers />
   </component>

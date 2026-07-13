@@ -248,6 +248,12 @@ class TrackData:
                 if seg_id == 0 or g.seg_id == seg_id:
                     matched.append(g)
         if not matched and seg_id:
+            # 同 seg_id 但范围不精确匹配（处理 position 落在段间隙的情况）
+            for g in self.gradients:
+                if g.seg_id == seg_id:
+                    matched.append(g)
+        if not matched:
+            # 最终兜底：放松 seg_id 约束，全量位置匹配
             for g in self.gradients:
                 if g.abs_start <= position <= g.abs_end:
                     matched.append(g)
@@ -292,8 +298,44 @@ class TrackData:
         last = max(self.segments, key=lambda s: s.abs_start + s.length)
         return last.abs_start + last.length
 
-    def get_seg_id_at(self, position: float) -> int:
-        """获取指定位置所在的 Seg ID"""
+    def get_chain_ids(self, seed_seg_id: int) -> set:
+        """构建与 seed_seg_id 同链的段 ID 集合（双向遍历正向邻居）。
+
+        从种子段出发，沿 start_neighbor（上行方向）和 end_neighbor（下行方向）
+        双向遍历，收集所有属于同一物理链的 segment ID。
+        不追踪 lateral 连接（它们属于支线/渡线，不应混入主链消歧）。
+        """
+        seg_map = self._seg_map
+        seed = seg_map.get(seed_seg_id)
+        if seed is None:
+            return set()
+        chain = {seed_seg_id}
+        # 沿 end_neighbor 方向遍历（下行）
+        sid = seed.end_neighbor
+        while sid > 0 and sid != 65535 and sid in seg_map:
+            chain.add(sid)
+            sid = seg_map[sid].end_neighbor
+        # 沿 start_neighbor 方向遍历（上行）
+        sid = seed.start_neighbor
+        while sid > 0 and sid != 65535 and sid in seg_map:
+            chain.add(sid)
+            sid = seg_map[sid].start_neighbor
+        return chain
+
+    def get_seg_id_at(self, position: float, hint_seg_id: int = 0) -> int:
+        """获取指定位置所在的 Seg ID。
+
+        hint_seg_id 非 0 时优先在同链段中匹配，避免并行链坐标重叠时
+        返回错误链的段（常见于双链并行或数据库多链拓扑）。
+        """
+        if hint_seg_id and hint_seg_id in self._seg_map:
+            chain_ids = self.get_chain_ids(hint_seg_id)
+            for s in self.segments:
+                if s.seg_id not in chain_ids:
+                    continue
+                if s.abs_start <= position < s.abs_start + s.length:
+                    return s.seg_id
+        # 无 hint 或同链无匹配：回退到全量扫描
         for s in self.segments:
             if s.abs_start <= position < s.abs_start + s.length:
                 return s.seg_id
