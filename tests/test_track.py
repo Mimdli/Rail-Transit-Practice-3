@@ -4,11 +4,24 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import pytest
+
 from src.track.loader import TrackLoader
 from src.track.db_loader import DBLoader
 from src.track.data import TrackData, Station, Segment
 from src.track.adapter import TrackDataAdapter
 from src.common.track_position import TrackPosition
+
+
+def _db_path():
+    return os.path.join(os.path.dirname(__file__), "..", "data", "railway.db")
+
+
+def _require_db():
+    path = _db_path()
+    if not os.path.exists(path):
+        pytest.skip("缺少 data/railway.db")
+    return path
 
 
 # ======== 演示数据测试 ========
@@ -79,8 +92,7 @@ def test_advance_past_fork_stays_on_main():
 
 def test_use_lateral_fork_switches_to_sideline():
     """设定侧线岔口后，列车应进入侧向分支。"""
-    import os
-    db_path = os.path.join(os.path.dirname(__file__), "..", "data", "railway.db")
+    db_path = _db_path()
     if os.path.exists(db_path):
         td = DBLoader().load_from_db(db_path)
     else:
@@ -91,12 +103,29 @@ def test_use_lateral_fork_switches_to_sideline():
         None,
     )
     if fork_seg is None:
-        return
+        pytest.skip("当前线路无侧向岔口")
     adapter = TrackDataAdapter(td)
     assert adapter.use_lateral_fork(fork_seg.seg_id)
     pos = TrackPosition(fork_seg.seg_id, max(0.0, fork_seg.length - 1.0))
     pos = adapter.advance_position(pos, 2.0)
     assert pos.segment_id == fork_seg.end_lateral
+    adapter.clear_fork_routes()
+
+
+def test_find_nearest_lateral_fork_ahead():
+    """find_nearest_lateral_fork 应返回运行方向上可达的侧向岔口。"""
+    db_path = _require_db()
+    td = DBLoader().load_from_db(db_path)
+    adapter = TrackDataAdapter(td)
+    found = adapter.find_nearest_lateral_fork(1, direction=1)
+    assert found is not None
+    seg = td._seg_map[found]
+    assert seg.end_lateral > 0 and seg.end_lateral != 65535
+    # 从该岔口走侧线后应进入 end_lateral
+    assert adapter.use_lateral_fork(found)
+    pos = TrackPosition(found, max(0.0, seg.length - 0.5))
+    pos = adapter.advance_position(pos, 1.0)
+    assert pos.segment_id == seg.end_lateral
     adapter.clear_fork_routes()
 
 
@@ -110,11 +139,8 @@ def test_normalize_gradient_value():
 
 def test_db_gradient_at_1404_not_stuck_value():
     """数据库线路 1404m 处坡度不应为不可爬行的 300‰。"""
-    import os
-    db_path = os.path.join(os.path.dirname(__file__), "..", "data", "railway.db")
-    if not os.path.exists(db_path):
-        return
-    td = DBLoader().load_from_db(db_path)
+    _require_db()
+    td = DBLoader().load_from_db(_db_path())
     adapter = TrackDataAdapter(td)
     pos = adapter.from_absolute(1404.0, hint_seg_id=2)
     grad = adapter.get_gradient(pos)
@@ -124,15 +150,12 @@ def test_db_gradient_at_1404_not_stuck_value():
 
 def test_db_train_passes_1400m_with_traction():
     """数据库线路：全牵引下列车应能越过 1400m 坡段，不再速度归零卡死。"""
-    import os
     from src.common.consist import CONSIST_4M2T
     from src.vehicle.vehicle_controller import VehicleController
     from src.vehicle.environment import MockEnvironment, WeatherType
 
-    db_path = os.path.join(os.path.dirname(__file__), "..", "data", "railway.db")
-    if not os.path.exists(db_path):
-        return
-    td = DBLoader().load_from_db(db_path)
+    _require_db()
+    td = DBLoader().load_from_db(_db_path())
     adapter = TrackDataAdapter(td)
     env = MockEnvironment(WeatherType.DRY, adapter)
     ctrl = VehicleController(CONSIST_4M2T, adapter, env)
@@ -148,16 +171,14 @@ def test_db_train_passes_1400m_with_traction():
 
 def test_train_holds_at_rest_without_traction():
     """无牵引无制动时列车应保持静止，不因坡道或车钩力溜车。"""
-    import os
     from src.common.consist import CONSIST_4M2T
     from src.vehicle.vehicle_controller import VehicleController
     from src.vehicle.environment import MockEnvironment, WeatherType
 
-    db_path = os.path.join(os.path.dirname(__file__), "..", "data", "railway.db")
-    if not os.path.exists(db_path):
-        td = TrackLoader().load_demo_data()
+    if os.path.exists(_db_path()):
+        td = DBLoader().load_from_db(_db_path())
     else:
-        td = DBLoader().load_from_db(db_path)
+        td = TrackLoader().load_demo_data()
     adapter = TrackDataAdapter(td)
     env = MockEnvironment(WeatherType.DRY, adapter)
     ctrl = VehicleController(CONSIST_4M2T, adapter, env)
@@ -171,15 +192,12 @@ def test_train_holds_at_rest_without_traction():
 
 def test_db_train_reaches_line_end():
     """数据库线路：全牵引下应能走完全程末端（含 18103m 岔点死胡同）。"""
-    import os
     from src.common.consist import CONSIST_4M2T
     from src.vehicle.vehicle_controller import VehicleController
     from src.vehicle.environment import MockEnvironment, WeatherType
 
-    db_path = os.path.join(os.path.dirname(__file__), "..", "data", "railway.db")
-    if not os.path.exists(db_path):
-        return
-    td = DBLoader().load_from_db(db_path)
+    _require_db()
+    td = DBLoader().load_from_db(_db_path())
     adapter = TrackDataAdapter(td)
     total = td.total_length()
     env = MockEnvironment(WeatherType.DRY, adapter)

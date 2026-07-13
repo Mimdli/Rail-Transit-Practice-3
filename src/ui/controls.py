@@ -771,23 +771,44 @@ class ControlPanel(QWidget):
         self._sync_handle_button(ControlLevel.SERVICE_BRAKE)
 
     def _on_use_lateral_fork(self):
-        """在首个可用侧向岔口设定走侧线。"""
+        """沿当前列车前方寻找最近侧向岔口并设定走侧线。"""
         ta = self.track_adapter
         use_lateral = getattr(ta, "use_lateral_fork", None)
+        find_fork = getattr(ta, "find_nearest_lateral_fork", None)
         if use_lateral is None:
             self._show_mode_transition(False, "✗ 当前线路适配器不支持岔口路由")
             return
-        td = getattr(ta, "track_data", None)
-        segments = getattr(td, "segments", []) if td is not None else []
-        for seg in segments:
-            if seg.end_lateral > 0 and seg.end_lateral != 65535:
-                if use_lateral(seg.seg_id):
-                    self._record_operation(f"岔口进路：区段 {seg.seg_id} → 侧线 {seg.end_lateral}")
-                    self._reset_status_style()
-                    self.status_label.setText(
-                        f"已设定区段 {seg.seg_id} 走侧线 → {seg.end_lateral}")
-                    return
-        self._show_mode_transition(False, "✗ 当前线路无可用侧线岔口")
+
+        fork_seg_id = None
+        if self.controller.states and find_fork is not None:
+            head = self.controller.states[0].position
+            fork_seg_id = find_fork(
+                head.segment_id, direction=getattr(self.controller, "direction", 1)
+            )
+
+        if fork_seg_id is None:
+            # 回退：扫描全线第一个侧向岔口
+            td = getattr(ta, "track_data", None)
+            segments = getattr(td, "segments", []) if td is not None else []
+            for seg in segments:
+                if seg.end_lateral > 0 and seg.end_lateral != 65535:
+                    fork_seg_id = seg.seg_id
+                    break
+
+        if fork_seg_id is None:
+            self._show_mode_transition(False, "✗ 前方无可选侧线岔口")
+            return
+
+        if use_lateral(fork_seg_id):
+            td = getattr(ta, "track_data", None)
+            seg = td._seg_map.get(fork_seg_id) if td is not None else None
+            lateral = seg.end_lateral if seg is not None else "?"
+            self._record_operation(f"岔口进路：区段 {fork_seg_id} → 侧线 {lateral}")
+            self._reset_status_style()
+            self.status_label.setText(
+                f"已设定前方区段 {fork_seg_id} 走侧线 → {lateral}")
+            return
+        self._show_mode_transition(False, "✗ 无法设定该岔口走侧线")
 
     def _on_clear_fork_routes(self):
         """清除手动岔口设定，恢复默认主线。"""
