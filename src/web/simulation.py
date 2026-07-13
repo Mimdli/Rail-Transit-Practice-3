@@ -23,10 +23,13 @@ from src.track.db_loader import DBLoader
 from src.track.link_mainline import LinkCoordinateMapper, load_mainline_links
 from src.track.loader import TrackLoader
 from src.common.track_position import TrackPosition
+from src.common.consist import CONSIST_1M4T, CONSIST_4M2T, CONSIST_6M0T
 from src.track.semantic_line import build_semantic_line
 from src.vehicle.enums import DoorSide, RunningMode
 from src.vehicle.environment import MockEnvironment, WeatherType
 from src.vehicle.environment import WeatherType
+from src.vehicle.enums import ControlLevel, DoorSide, LoadLevel, RunningMode
+from src.dispatch.models import TrainStatus
 
 
 class SimulationRuntime:
@@ -92,6 +95,7 @@ class SimulationRuntime:
         self.current_scene: str = "normal_peak"
         self.network_started = False
         self.cab_started = False
+        self._fast_forward: Optional[dict] = None
         self._plc_output_counter = 0
         self.plc_output_state = {
             "indicator_hv_contactor": False,
@@ -348,9 +352,66 @@ class SimulationRuntime:
 
         self.network.set_signal_recv_callback(_on_signal_recv)
 
-        # 4. PLC 接收回调
+        # 4. PLC 接收回调：将司机台物理操作映射到列车控制
         def _on_plc_recv(data: dict):
-            self.recorder.record("PLC", str(data), severity="INFO")
+            # 控制首列可用列车（模拟单一司机台控制一辆车）
+            runtimes = list(self.dispatch.trains.values())
+            if not runtimes:
+                self.recorder.record("PLC", f"无可用列车: {str(data)}",
+                                     severity="WARNING")
+                return
+            runtime = runtimes[0]
+            ctrl = runtime.controller
+
+            # 牵引极位 0-100 → throttle 0.0-1.0
+            traction = data.get("traction_level", 0)
+            ctrl.traction.set_throttle(traction / 100.0, bypass_mode_check=True)
+
+            # 制动极位 0-100 → brake 0.0-1.0
+            brake = data.get("brake_level", 0)
+            ctrl.traction.set_brake(brake / 100.0, bypass_mode_check=True)
+
+            # 方向手柄
+            if data.get("dir_forward"):
+                ctrl.direction = 1
+            elif data.get("dir_backward"):
+                ctrl.direction = -1
+
+            # 紧急制动按钮
+            if data.get("btn_emergency_brake"):
+                ctrl.emergency_brake()
+                runtime.emergency = True
+                runtime.status = TrainStatus.EMERGENCY_STOP
+
+            # 车门控制
+            if data.get("btn_open_left"):
+                ctrl.open_door(DoorSide.LEFT)
+            elif data.get("btn_close_left"):
+                ctrl.close_door()
+            if data.get("btn_open_right"):
+                ctrl.open_door(DoorSide.RIGHT)
+            elif data.get("btn_close_right"):
+                ctrl.close_door()
+
+            # ATO 启动按钮
+            if data.get("btn_ato_start"):
+                ctrl.set_running_mode(RunningMode.AUTOMATIC)
+
+            # 记录关键操作
+            parts = [f"牵引{traction}", f"制动{brake}"]
+            if data.get("dir_forward"):
+                parts.append("方向前")
+            elif data.get("dir_backward"):
+                parts.append("方向后")
+            if data.get("btn_emergency_brake"):
+                parts.append("紧急制动")
+            self.recorder.record(
+                "PLC",
+                f"{runtime.train_id} {' '.join(parts)}",
+                runtime.head_abs, ctrl.head_speed,
+                train_id=runtime.train_id, source="plc",
+                severity="INFO",
+            )
 
         self.network.set_plc_recv_callback(_on_plc_recv)
 
@@ -359,6 +420,100 @@ class SimulationRuntime:
 
         # 6. 司机台显示屏数据源
         self._setup_cab_display_source()
+        # 6. 司机台显示屏数据源：接入仿真列车状态
+        self._feed_cab_display()
+
+    def _feed_cab_display(self):
+        """为司机台显示屏准备网络屏和信号屏数据。
+
+        参照桌面版 _feed_cab_display()，从首列车的控制器状态构造
+        网络屏 (572B → 总控:8888) 和信号屏 (68B → 总控:9999) 的数据字典。
+        """
+        runtimes = list(self.dispatch.trains.values())
+        if not runtimes:
+            return
+        runtime = runtimes[0]
+        ctrl = runtime.controller
+        head_abs = runtime.head_abs
+        head_speed = ctrl.head_speed
+        head_accel = ctrl.states[0].acceleration if ctrl.states else 0.0
+
+        # 限速
+        track_limit = (runtime.track_adapter.get_speed_limit(
+            ctrl.states[0].position) * 3.6 if ctrl.states else 0.0)
+
+        # 当前/下一站
+        stations = sorted(self.track.stations, key=lambda s: s.position)
+        curr_station_id = 0
+        next_station_id = 0
+        next_station_dist = 0.0
+        for i, st in enumerate(stations):
+            if st.position <= head_abs:
+                curr_station_id = st.station_id
+                if i + 1 < len(stations):
+                    next_st = stations[i + 1]
+                    next_station_id = next_st.station_id
+                    next_station_dist = max(0.0, next_st.position - head_abs)
+
+        # 车门状态 (6 节车厢，每位表示一扇门)
+        door_states = self._build_door_states(ctrl)
+
+        # 网络屏数据源
+        def _net_source():
+            return {
+                "speed": head_speed,
+                "acceleration": head_accel,
+                "speed_limit": track_limit,
+                "run_mode": ctrl.running_mode.value if ctrl.running_mode else 0,
+                "run_dir": 0 if ctrl.direction > 0 else 1,
+                "power_pull": int(ctrl.throttle * 100),
+                "net_pressure": 750 if self.power_supply.can_traction() else 0,
+                "curr_station": curr_station_id,
+                "next_station": next_station_id,
+                "end_station": curr_station_id,
+                "power_state": (0 if self.power_supply.can_traction() else 1),
+                "door_states": door_states,
+                "has_power": self.power_supply.can_traction(),
+            }
+
+        # 信号屏数据源
+        def _sig_source():
+            return {
+                "speed": head_speed,
+                "acceleration": head_accel,
+                "speed_limit": track_limit,
+                "mode": 5,
+                "run_dir": 0 if ctrl.direction > 0 else 1,
+                "curr_station": curr_station_id,
+                "next_station": next_station_id,
+                "end_station": curr_station_id,
+                "pull_switch": 1 if ctrl.throttle > 0 else 0,
+                "pull_state": int(ctrl.throttle * 100),
+                "brake_state": int(ctrl.brake_level * 100),
+                "urgency_stop": 1 if runtime.emergency else 0,
+                "event_id": 0,
+                "sig_state": 0,
+                "train_no": 1,
+                "next_station_dist": next_station_dist,
+            }
+
+        self.network.set_cab_network_source(_net_source)
+        self.network.set_cab_signal_source(_sig_source)
+
+    @staticmethod
+    def _build_door_states(ctrl) -> list:
+        """构造 6 节车厢的门状态列表。
+
+        简化实现：左门/右门统一状态。
+        bit0=左1, bit1=右1, bit8=左2, bit9=右2, ...
+        """
+        left_open = 1 if ctrl.left_door_open else 0
+        right_open = 1 if ctrl.right_door_open else 0
+        states = []
+        for i in range(6):
+            ds = (left_open << (i * 2)) | (right_open << (i * 2 + 1))
+            states.append(ds)
+        return states
 
     def network_disconnect(self) -> dict:
         """断开所有网络通信模块"""
@@ -418,6 +573,90 @@ class SimulationRuntime:
             pass
         return {"ok": True, "message": "司机台显示数据已更新", "state": dict(self.cab_display_state)}
 
+    def _update_cab_display_from_simulation(self):
+        """从仿真列车自动更新司机台显示屏数据"""
+        if not self.dispatch or not self.dispatch.trains:
+            return
+        # 取第一列运行的列车
+        runtime = None
+        for r in self.dispatch.trains.values():
+            if r.status.name in ("RUNNING", "DWELLING", "WAITING", "HELD"):
+                runtime = r
+                break
+        if runtime is None:
+            runtime = next(iter(self.dispatch.trains.values()), None)
+        if runtime is None:
+            return
+
+        ctrl = runtime.controller
+        speed_ms = ctrl.head_speed
+        self.cab_display_state["speed"] = round(speed_ms, 2)
+        if ctrl.states:
+            self.cab_display_state["acceleration"] = round(ctrl.states[0].acceleration, 3)
+
+        # 限速
+        try:
+            limit = self.signal.get_effective_speed_limit_for_direction(
+                runtime.head_abs, ctrl.direction, runtime.track_adapter
+            )
+            self.cab_display_state["speed_limit"] = round(limit, 1)
+        except Exception:
+            pass
+
+        # 运行方向: 1=正向, -1=反向
+        self.cab_display_state["run_dir"] = 1 if ctrl.direction == 1 else -1
+
+        # 运行模式: 0=惰行, 1=牵引, 2=制动, 4=快速制动
+        throttle = ctrl.throttle
+        brake = ctrl.brake_level
+        if brake >= 0.9:
+            self.cab_display_state["run_mode"] = 4  # 快速制动
+        elif brake > 0.05:
+            self.cab_display_state["run_mode"] = 2  # 制动
+        elif throttle > 0.05:
+            self.cab_display_state["run_mode"] = 1  # 牵引
+        else:
+            self.cab_display_state["run_mode"] = 0  # 惰行
+
+        # 驾驶模式
+        if ctrl.running_mode.name == "AUTOMATIC":
+            self.cab_display_state["mode"] = 5  # ATO模式
+        else:
+            self.cab_display_state["mode"] = 0  # 人工模式
+
+        # 牵引/制动级位百分比
+        self.cab_display_state["power_pull"] = int(max(throttle, brake) * 100)
+
+        # 车站信息
+        if runtime.service_plan and runtime.plan_index < len(runtime.service_plan.station_ids):
+            self.cab_display_state["curr_station"] = runtime.service_plan.station_ids[runtime.plan_index]
+        self.cab_display_state["next_station"] = runtime.target_station_id or 0
+        if runtime.service_plan:
+            self.cab_display_state["end_station"] = runtime.service_plan.station_ids[-1]
+
+        # 门状态 (0=关, 1=开)
+        door_state = 1 if ctrl.any_door_open else 0
+        self.cab_display_state["door_states"] = [door_state] * 4
+
+        # 制动状态
+        self.cab_display_state["brake_state"] = 1 if brake > 0.05 else 0
+        self.cab_display_state["urgency_stop"] = 1 if ctrl.interlock.emergency_brake_required else 0
+
+        # 供电状态
+        self.cab_display_state["has_power"] = self.power_supply.can_traction()
+        self.cab_display_state["power_state"] = 1 if self.cab_display_state["has_power"] else 0
+
+        # 记录到运行日志
+        self.recorder.record(
+            "司机台",
+            f"cab_display speed={self.cab_display_state['speed']*3.6:.1f}km/h "
+            f"mode={self.cab_display_state['run_mode']} dir={self.cab_display_state['run_dir']} "
+            f"station={self.cab_display_state['curr_station']}→{self.cab_display_state['next_station']} "
+            f"power={self.cab_display_state['power_state']} brake={self.cab_display_state['brake_state']} "
+            f"urg={self.cab_display_state['urgency_stop']}",
+            severity="DEBUG",
+        )
+
     async def _run(self):
         while True:
             if not self.paused:
@@ -436,7 +675,23 @@ class SimulationRuntime:
                     self._feed_chart_buffers()
                 self.power_supply.step(dt)
                 self.recorder.step(dt)
+                if self.network_started:
+                    self._feed_cab_display()
                 self._record_replay_frame()
+                # 从仿真列车自动更新司机台显示屏数据
+                if self.cab_started:
+                    self._update_cab_display_from_simulation()
+                if self._fast_forward:
+                    fast_train = self.dispatch.trains.get(
+                        self._fast_forward["train_id"])
+                    reached = (fast_train is None
+                               or fast_train.emergency
+                               or fast_train.status == TrainStatus.DWELLING
+                               or fast_train.target_station_id
+                               != self._fast_forward["target_station_id"])
+                    if reached:
+                        self.speed_multiplier = self._fast_forward["previous_rate"]
+                        self._fast_forward = None
                 # 周期发送PLC输出（每步100ms，每步都发）
                 if self.network_started:
                     self._plc_output_counter += 1
@@ -472,6 +727,110 @@ class SimulationRuntime:
         """把领域命令的统一结果转换成稳定 JSON 结构。"""
         result = action()
         return {"ok": result.ok, "message": result.message}
+
+    def control_train(self, train_id: str, action: str,
+                      value: Optional[str] = None) -> dict:
+        """执行 Web 端单车驾驶、模式和车门控制。"""
+        runtime = self.dispatch.trains.get(train_id)
+        if runtime is None:
+            return {"ok": False, "message": f"列车不存在: {train_id}"}
+        controller = runtime.controller
+
+        if action == "mode":
+            modes = {"manual": RunningMode.MANUAL,
+                     "automatic": RunningMode.AUTOMATIC}
+            mode = modes.get(str(value).lower())
+            if mode is None:
+                return {"ok": False, "message": f"未知驾驶模式: {value}"}
+            controller.set_running_mode(mode)
+            runtime.status = (TrainStatus.MANUAL if mode == RunningMode.MANUAL
+                              else TrainStatus.RUNNING)
+            return {"ok": True, "message": f"{train_id} 已切换为{('手动' if mode == RunningMode.MANUAL else '自动')}驾驶"}
+
+        if action == "level":
+            levels = {
+                "P1": ControlLevel.LOW_TRACTION,
+                "P2": ControlLevel.MEDIUM_TRACTION,
+                "P3": ControlLevel.FULL_TRACTION,
+                "COAST": ControlLevel.COAST,
+                "B1": ControlLevel.SERVICE_BRAKE,
+                "B2": ControlLevel.FULL_BRAKE,
+                "EB": ControlLevel.EMERGENCY_BRAKE,
+            }
+            level = levels.get(str(value).upper())
+            if level is None:
+                return {"ok": False, "message": f"未知司控器级位: {value}"}
+            if controller.running_mode != RunningMode.MANUAL:
+                return {"ok": False, "message": "请先切换为手动驾驶模式"}
+            controller.apply_control_level(level)
+            if level == ControlLevel.EMERGENCY_BRAKE:
+                runtime.emergency = True
+                runtime.status = TrainStatus.EMERGENCY_STOP
+            return {"ok": True, "message": f"{train_id} 司控器已切换至 {str(value).upper()}"}
+
+        if action == "door":
+            side = str(value).lower()
+            if side == "close":
+                controller.close_door()
+                return {"ok": True, "message": f"{train_id} 车门已关闭"}
+            door = {"left": DoorSide.LEFT, "right": DoorSide.RIGHT}.get(side)
+            if door is None:
+                return {"ok": False, "message": f"未知车门命令: {value}"}
+            if not controller.open_door(door):
+                return {"ok": False, "message": "列车未完全停车，禁止开门"}
+            return {"ok": True, "message": f"{train_id} {('左' if side == 'left' else '右')}侧车门已打开"}
+
+        if action == "load":
+            level = LoadLevel.__members__.get(str(value).upper())
+            if level is None:
+                return {"ok": False, "message": f"未知载荷等级: {value}"}
+            controller.set_load_level(level)
+            return {"ok": True, "message": f"{train_id} 载荷已设置为 {level.name}"}
+
+        if action == "dwell":
+            try:
+                seconds = max(5.0, min(120.0, float(value)))
+            except (TypeError, ValueError):
+                return {"ok": False, "message": "停站时间必须为 5–120 秒"}
+            runtime.auto_drive.dwell_time = seconds
+            return {"ok": True, "message": f"{train_id} 停站时间已设置为 {seconds:g} 秒"}
+
+        if action == "consist":
+            consists = {"4M2T": CONSIST_4M2T, "6M0T": CONSIST_6M0T,
+                        "1M4T": CONSIST_1M4T}
+            consist = consists.get(str(value).upper())
+            if consist is None:
+                return {"ok": False, "message": f"未知编组预设: {value}"}
+            if not controller.is_stopped:
+                return {"ok": False, "message": "列车运行中，禁止更换编组"}
+            controller.replace_consist(consist, runtime.track_adapter)
+            return {"ok": True, "message": f"{train_id} 编组已切换为 {str(value).upper()}"}
+
+        if action == "jump":
+            try:
+                station_id = int(value)
+                position = self.dispatch.trains.get_station_track_position(
+                    station_id, controller.direction)
+            except (TypeError, ValueError, KeyError) as exc:
+                return {"ok": False, "message": f"无法跳转至车站: {exc}"}
+            controller.reset_states(position.segment_id, position.offset)
+            runtime.status = TrainStatus.WAITING
+            runtime.emergency = False
+            runtime.blocked_reason = ""
+            return {"ok": True, "message": f"{train_id} 已跳转至车站 {station_id}"}
+
+        if action == "fast-forward":
+            if runtime.target_station_id is None:
+                return {"ok": False, "message": "当前列车尚未设置下一站"}
+            self._fast_forward = {
+                "train_id": train_id,
+                "target_station_id": runtime.target_station_id,
+                "previous_rate": self.speed_multiplier,
+            }
+            self.speed_multiplier = 10
+            return {"ok": True, "message": f"{train_id} 已按 10× 快进，到站后自动恢复"}
+
+        return {"ok": False, "message": f"未知驾驶操作: {action}"}
 
     def record_web_command(self, train_id: str, command: str,
                            result: dict):
@@ -978,7 +1337,7 @@ class SimulationRuntime:
         return {
             "events": [{"id": i, **asdict(e)}
                        for i, e in enumerate(self.recorder.events)],
-            "evaluation": self.evaluator.evaluate(self.recorder),
+            "evaluation": self._evaluate_run(),
             "simTime": round(self.dispatch.sim_time, 2),
         }
 
@@ -1048,18 +1407,32 @@ class SimulationRuntime:
 
     def replay_snapshot(self) -> dict:
         frames = list(self.replay_frames)
-        emergency_count = sum(
-            1 for event in self.recorder.events
-            if event.severity == "CRITICAL"
-        )
+        evaluation = self._evaluate_run()
         return {
             "ok": True,
             "scenario": self.active_scenario,
             "sampleIntervalMs": 500,
             "frames": frames,
             "eventCount": len(self.recorder.events),
-            "score": max(0, 100 - emergency_count * 10),
+            "score": evaluation["score"],
+            "grade": evaluation["grade"],
+            "dimensions": evaluation["dimensions"],
+            "evaluationBasis": evaluation["evaluationBasis"],
+            "weights": evaluation["weights"],
         }
+
+    def _evaluate_run(self) -> dict:
+        """向统一评价器提供 Web 可采集的回放与能耗数据。"""
+        regen_ratios = [
+            runtime.controller.energy_regen_ratio
+            for runtime in self.dispatch.trains.values()
+            if runtime.controller.energy_traction_kwh > 0.0
+        ]
+        return self.evaluator.evaluate(
+            self.recorder,
+            frames=list(self.replay_frames),
+            regen_ratios=regen_ratios,
+        )
 
     def snapshot(self) -> dict:
         self._snapshot_sequence += 1
@@ -1137,8 +1510,9 @@ class SimulationRuntime:
                 {"id": "signal_gateway",  "label": "信号网关",    "protocol": "UDP", "cycleMs": 250, "bidirectional": True},
                 {"id": "plc",             "label": "司机台PLC",   "protocol": "TCP", "cycleMs": 100, "bidirectional": True},
                 {"id": "vision",          "label": "视景系统",    "protocol": "UDP", "cycleMs": 100, "bidirectional": False},
-                {"id": "cab_display",     "label": "司机台显示",  "protocol": "TCP", "cycleMs": 100, "bidirectional": False},
+                {"id": "cab_display",     "label": "司机台显示",  "protocol": "TCP", "cycleMs": 100, "bidirectional": True},
             ],
+            "plc_data": self.network.plc_data,
             "networkFaultInjected": self.network_fault_injected,
             "environment": {
                 "weather": weather.value,
@@ -1147,15 +1521,15 @@ class SimulationRuntime:
             },
             "networkInterfaces": [
                 {"id": "signal_gateway", "label": "信号系统网关",
-                 "protocol": "UDP", "cycleMs": 250},
+                 "protocol": "UDP", "cycleMs": 250, "bidirectional": True},
                 {"id": "vehicle_udp", "label": "车辆状态接口",
-                 "protocol": "UDP", "cycleMs": 20},
+                 "protocol": "UDP", "cycleMs": 20, "bidirectional": True},
                 {"id": "plc", "label": "实体司机台 PLC",
-                 "protocol": "TCP", "cycleMs": 100},
+                 "protocol": "TCP", "cycleMs": 100, "bidirectional": True},
                 {"id": "vision", "label": "视景系统",
-                 "protocol": "UDP", "cycleMs": 100},
+                 "protocol": "UDP", "cycleMs": 100, "bidirectional": False},
                 {"id": "cab_display", "label": "司机台显示屏",
-                 "protocol": "TCP", "cycleMs": 100},
+                 "protocol": "TCP", "cycleMs": 100, "bidirectional": False},
             ],
             "alarms": {
                 "active": len(active_alarms),
@@ -1180,7 +1554,7 @@ class SimulationRuntime:
                 "totalLength": round(self.track.total_length(), 0),
             },
             "events": events,
-            "evaluation": self.evaluator.evaluate(self.recorder),
+            "evaluation": self._evaluate_run(),
         }
 
     def _serialize_line(self) -> dict:
@@ -1251,6 +1625,28 @@ class SimulationRuntime:
                 "position": round(sig.position, 1),
             })
 
+        gradient = (runtime.track_adapter.get_gradient(head)
+                    if head is not None else 0.0)
+        car_forces = []
+        if report:
+            car_forces = [
+                {
+                    "carIndex": car.car_index + 1,
+                    "speedKmh": round(car.velocity * 3.6, 2),
+                    "tractiveForceKn": round(car.tractive_force / 1000, 2),
+                    "brakeForceKn": round(abs(car.brake_force) / 1000, 2),
+                    "electricBrakeKn": round(abs(car.electric_brake_force) / 1000, 2),
+                    "frictionBrakeKn": round(abs(car.friction_brake_force) / 1000, 2),
+                    "davisResistanceKn": round(abs(car.davis_resistance) / 1000, 2),
+                    "gradeResistanceKn": round(car.grade_resistance / 1000, 2),
+                    "frontCouplerKn": round(car.coupler_force_front / 1000, 2),
+                    "rearCouplerKn": round(car.coupler_force_rear / 1000, 2),
+                    "netForceKn": round(car.net_force / 1000, 2),
+                    "adhesion": ("traction-limited" if car.traction_limited else
+                                 "brake-limited" if car.brake_limited else "ok"),
+                }
+                for car in report.cars
+            ]
         return {
             "id": runtime.train_id,
             "status": runtime.status.value,
@@ -1263,6 +1659,7 @@ class SimulationRuntime:
             "segmentId": head.segment_id if head else None,
             "offset": round(head.offset, 3) if head else None,
             "speedLimitKmh": round(limit, 1),
+            "gradientPermille": round(gradient, 3),
             "targetStationId": runtime.target_station_id,
             "targetStation": target.name if target else None,
             "targetDistance": (round(abs(target.position - head_abs), 1)
@@ -1271,6 +1668,19 @@ class SimulationRuntime:
             "emergency": runtime.emergency,
             "blockedReason": runtime.blocked_reason,
             "servicePlan": plan.name if plan else None,
+            "runningMode": controller.running_mode.name,
+            "loadLevel": controller.energy_calc.load_level.name,
+            "dwellTime": round(runtime.auto_drive.dwell_time, 1),
+            "consist": {
+                "carCount": len(controller.consist),
+                "motorCount": controller.consist.motor_count,
+                "cars": [
+                    {"name": config.name, "isMotor": config.is_motor,
+                     "mass": config.mass, "length": config.length}
+                    for config in (controller.consist[index]
+                                   for index in range(len(controller.consist)))
+                ],
+            },
             "throttle": round(controller.throttle, 3),
             "brakeLevel": round(controller.brake_level, 3),
             "throttlePct": round(controller.throttle * 100),
@@ -1304,6 +1714,20 @@ class SimulationRuntime:
             "gradientPerMille": round(self.track.get_gradient_at(head_abs), 2),
             "signalSequence": signal_sequence,
             "stationPhase": station_phase,
+            "maxCouplerForceKn": (round(report.max_coupler_force / 1000, 2)
+                                   if report else 0.0),
+            "energy": {
+                "tractionKwh": round(controller.energy_traction_kwh, 4),
+                "regenKwh": round(controller.energy_regen_kwh, 4),
+                "frictionLossKwh": round(controller.energy_friction_loss_kwh, 4),
+                "auxKwh": round(controller.energy_aux_kwh, 4),
+                "netKwh": round(controller.energy_net_kwh, 4),
+                "regenRatio": round(controller.energy_regen_ratio, 4),
+                "tractionPowerKw": round(controller.energy_last_step.traction_power_kw, 2) if controller.energy_last_step else 0.0,
+                "regenPowerKw": round(controller.energy_last_step.regen_power_kw, 2) if controller.energy_last_step else 0.0,
+                "auxPowerKw": round(controller.energy_last_step.aux_energy_j / controller.energy_last_step.dt / 1000, 2) if controller.energy_last_step and controller.energy_last_step.dt > 0 else 0.0,
+            },
+            "carForces": car_forces,
             "doors": {
                 "left": controller.left_door_open,
                 "right": controller.right_door_open,

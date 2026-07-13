@@ -52,7 +52,7 @@ PLC_PORT_3: Final[int] = PLC["ports"][2]
 PLC_CYCLE_MS: Final[int] = PLC["cycle_ms"]
 
 PLC_RECV_SIZE: Final[int] = PLC["recv_size"]   # 46 bytes
-PLC_SEND_SIZE: Final[int] = PLC["send_size"]   # 28 bytes
+PLC_SEND_SIZE: Final[int] = PLC["send_size"]   # 26 bytes
 
 # ============================================================
 # ATP DMI 通信（协议 ATP通信协议规范）
@@ -68,6 +68,7 @@ API_CYCLE_MS: Final[int] = 500
 # 视景系统 UDP（协议 §3.2）
 # ============================================================
 VISION_LOCAL_ADDR: Final[str] = VISION["local_addr"]
+VISION_LOCAL_PORT: Final[int] = VISION["local_port"]
 VISION_REMOTE_ADDR: Final[str] = VISION["remote_addr"]
 VISION_REMOTE_PORT: Final[int] = VISION["remote_port"]
 VISION_CYCLE_MS: Final[int] = VISION["cycle_ms"]
@@ -75,7 +76,8 @@ VISION_CYCLE_MS: Final[int] = VISION["cycle_ms"]
 # ============================================================
 # 司机台显示 TCP（协议 § 网络屏 / 信号屏）
 # ============================================================
-CAB_DISPLAY_ADDR: Final[str] = CAB_DISPLAY["remote_addr"]
+CAB_NETWORK_SCREEN_ADDR: Final[str] = CAB_DISPLAY["network_screen_addr"]
 CAB_NETWORK_SCREEN_PORT: Final[int] = CAB_DISPLAY["network_screen_port"]
+CAB_SIGNAL_SCREEN_ADDR: Final[str] = CAB_DISPLAY["signal_screen_addr"]
 CAB_SIGNAL_SCREEN_PORT: Final[int] = CAB_DISPLAY["signal_screen_port"]
 CAB_DISPLAY_CYCLE_MS: Final[int] = CAB_DISPLAY["cycle_ms"]

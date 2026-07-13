@@ -55,18 +55,44 @@ class TestCodec:
         assert abs(out[0][0] - 1.5) < 0.001
 
     def test_signal_switch_signal(self):
-        data = codec.pack_signal_switch_signal([(1, 0x01)], [(101, 0x04)])
-        assert len(data) > 12
+        data = codec.pack_signal_switch_signal(
+            [(1, 0x01)], [(101, 0x04)], [(2, 0x55, 80)]
+        )
+        assert data[-3:] == bytes((2, 0x55, 80))
+        parsed = codec.unpack_signal_packet(data)
+        assert parsed is not None
+        assert parsed["switches"] == [(1, 0x01)]
+        assert parsed["signals"] == [(101, 0x04)]
+        assert parsed["train_commands"] == [(2, 0x55, 80)]
+
+    def test_signal_train_info_roundtrip(self):
+        data = codec.pack_signal_train_info([{
+            "id": 2, "speed_cms": 1234, "dist_cm": 5678,
+            "direction": 0x55, "load_kg": 1000, "fault_speed": 80,
+            "emergency_brake": False, "traction_count": 4, "brake_count": 6,
+        }])
+        parsed = codec.unpack_signal_packet(data)
+        assert parsed is not None
+        assert len(data) == 30
+        assert parsed["trains"][0]["speed_cms"] == 1234
+        assert parsed["trains"][0]["brake_count"] == 6
 
     def test_atp_output(self):
         data = codec.pack_signal_atp_output(1, 0xFF, 0x00, 0x01)
-        assert len(data) > 16
+        assert len(data) == 29
+        assert codec.unpack_signal_packet(data)["vehicle_output"] == 0
+
+    def test_atp_dmi_crc48(self):
+        data = codec.pack_atp_to_dmi(100, 200, 250, 180, 0, 1, 2)
+        assert len(data) == 145
+        assert data[-6:] != b"\x00" * 6
 
     def test_plc_unpack(self):
         buf = bytearray(46)
         # 兼容字段 handle_position 对应牵引级位 WORD8，即整包偏移 40。
         struct.pack_into("<H", buf, 40, 0x0045)
-        struct.pack_into("<H", buf, 36, 0x0002)  # WORD6 bit1：方向向前
+        # 协议定义 WORD6 为枚举：0=零位、1=向前、2=向后。
+        struct.pack_into("<H", buf, 36, 0x0001)
         result = codec.unpack_plc_data(bytes(buf))
         assert result is not None
         assert result["handle_position"] == 0x45
@@ -75,13 +101,21 @@ class TestCodec:
     def test_plc_unpack_short(self):
         assert codec.unpack_plc_data(b"\x00" * 30) is None
 
+    def test_plc_pack_latest_length(self):
+        data = codec.pack_plc_output(output_bits=0x1234)
+        assert len(data) == 26
+        assert data[:4] == b"\x55\xAA\x55\xAA"
+        assert struct.unpack_from("<H", data, 4)[0] == 26
+        assert struct.unpack_from("<H", data, 6)[0] == 2
+        assert data[24:] == b"\x34\x12"
+
     def test_vision_minimal(self):
         data = codec.pack_vision_tcms2view(
             live_counter=1, signal_states=[0x01], switch_states=[0x01],
             speed_mms=15000, accel_pct=50, run_state=0x13,
             position_mm=100000, edge_id=5, direction=1,
         )
-        assert len(data) == 1280
+        assert len(data) == 24
 
     def test_vision_with_others(self):
         data = codec.pack_vision_tcms2view(
@@ -90,7 +124,7 @@ class TestCodec:
             position_mm=0, edge_id=0, direction=1,
             other_trains=[{"dist": 1000, "edge": 3, "dir": 1, "speed_cms": 2000}],
         )
-        assert len(data) == 1280
+        assert len(data) == 31
 
     def test_signal_screen(self):
         data = codec.pack_signal_screen(
@@ -233,6 +267,7 @@ def test_vision_udp_loopback():
 
     patchers = [
         patch("src.network.vision_udp.VISION_LOCAL_ADDR", "127.0.0.1"),
+        patch("src.network.vision_udp.VISION_LOCAL_PORT", 0),
         patch("src.network.vision_udp.VISION_REMOTE_ADDR", "127.0.0.1"),
         patch("src.network.vision_udp.VISION_REMOTE_PORT", remote_port),
         patch("src.network.vision_udp.VISION_CYCLE_MS", 100),
@@ -258,7 +293,7 @@ def test_vision_udp_loopback():
         except socket.timeout:
             pass
         assert len(received) == 1, "未收到视景 UDP 数据"
-        assert len(received[0]) == 1280
+        assert len(received[0]) == 24
     finally:
         client.stop()
         for p in patchers:
@@ -283,7 +318,8 @@ def test_cab_display_tcp_loopback():
     from src.network.cab_display import CabDisplayClient
 
     patchers = [
-        patch("src.network.cab_display.CAB_DISPLAY_ADDR", "127.0.0.1"),
+        patch("src.network.cab_display.CAB_NETWORK_SCREEN_ADDR", "127.0.0.1"),
+        patch("src.network.cab_display.CAB_SIGNAL_SCREEN_ADDR", "127.0.0.1"),
         patch("src.network.cab_display.CAB_NETWORK_SCREEN_PORT", net_port),
         patch("src.network.cab_display.CAB_SIGNAL_SCREEN_PORT", sig_port),
         patch("src.network.cab_display.CAB_DISPLAY_CYCLE_MS", 100),
@@ -361,7 +397,8 @@ def test_plc_receive():
         buf = bytearray(46)
         # 兼容字段 handle_position 对应牵引级位 WORD8，即整包偏移 40。
         struct.pack_into("<H", buf, 40, 0x0045)
-        struct.pack_into("<H", buf, 36, 0x0002)  # WORD6 bit1：方向向前
+        # 协议定义 WORD6 为枚举：0=零位、1=向前、2=向后。
+        struct.pack_into("<H", buf, 36, 0x0001)
         conn.sendall(bytes(buf))
         time.sleep(0.4)
 

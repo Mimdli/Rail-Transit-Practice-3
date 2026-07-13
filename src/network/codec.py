@@ -41,7 +41,7 @@ def pack_vehicle_udp(
     return bytes(buf)
 
 
-def unpack_vehicle_udp(data: bytes) -> list[tuple[float, float, float]]:
+def unpack_vehicle_udp(data: bytes) -> list[tuple[float, float]]:
     """解包平台→模型UDP报文
 
     Returns:
@@ -123,7 +123,7 @@ def pack_signal_train_info(
     content = bytearray()
     for t in trains:
         content.extend(struct.pack(
-            "<BIIBIBBB",
+            "<BIIBIBBBB",
             t["id"],                # 1B
             int(t["speed_cms"]),    # 4B  cm/s
             int(t["dist_cm"]),      # 4B  cm
@@ -141,6 +141,7 @@ def pack_signal_train_info(
 def pack_signal_switch_signal(
     switches: list[tuple[int, int]],
     signals: list[tuple[int, int]],
+    train_commands: list[tuple[int, int, int]] | None = None,
 ) -> bytes:
     """打包信号系统→总控的道岔/信号机状态报文 (§3.3.2)
 
@@ -149,6 +150,7 @@ def pack_signal_switch_signal(
             状态: 0x00=默认, 0x01=定位, 0x02=反位, 0x04=四开
         signals: [(编号, 灯色), ...]
             灯色: 0x01=红, 0x02=黄, 0x03=红黄, 0x04=绿, ...
+        train_commands: [(列车ID, 牵引制动命令, 百分比), ...]
 
     Returns:
         完整UDP报文
@@ -164,22 +166,97 @@ def pack_signal_switch_signal(
     content.extend(struct.pack("<H", sig_len))
     for sid, aspect in signals:
         content.extend(struct.pack("<HB", sid, aspect))
+    # 协议在信号机数据后连续追加每列车3字节控制信息。
+    for train_id, command, percent in train_commands or []:
+        content.extend(struct.pack("<BBB", train_id, command, percent))
     header = _make_signal_switch_signal_header(len(content))
     return header + bytes(content)
 
 
 def pack_signal_atp_output(train_id: int, atp_safe: int,
-                           atp_unsafe: int, ato_out: int) -> bytes:
+                           atp_unsafe: int, ato_out: int,
+                           vehicle_out: int = 0) -> bytes:
     """打包ATP安全输出报文 (§3.3.2.1 CONTENT 仅1车)"""
     content = struct.pack(
-        "<BIII",
+        "<BIIII",
         train_id & 0xff,
         atp_safe & 0xffffffff,
         atp_unsafe & 0xffffffff,
         ato_out & 0xffffffff,
+        vehicle_out & 0xffffffff,
     )
     header = _make_signal_ctrl_from_signal_header(len(content))
     return header + bytes(content)
+
+
+def unpack_signal_packet(data: bytes) -> Optional[dict]:
+    """解析信号系统F0/F1报文，校验标识与协议长度。"""
+    if len(data) < 12 or data[0] != 0xFF or data[1] not in (0xF0, 0xF1):
+        return None
+    data_len = struct.unpack_from("<H", data, 10)[0]
+    if data_len < 2 or len(data) < 10 + data_len:
+        return None
+
+    src_id, dst_id = data[2:6], data[6:10]
+    content = data[12:10 + data_len]
+    result = {
+        "message_type": data[1],
+        "src_id": src_id,
+        "dst_id": dst_id,
+        "raw_content": content,
+    }
+
+    if data[1] == 0xF1:
+        fmt = "<BIII" if src_id == SIG_SRC_TO_SIGNAL else "<BIIII"
+        if len(content) < struct.calcsize(fmt):
+            return None
+        values = struct.unpack_from(fmt, content)
+        names = ["train_id", "atp_safe", "atp_unsafe", "ato_output", "vehicle_output"]
+        result.update(zip(names, values))
+        return result
+
+    if src_id == SIG_SRC_TO_SIGNAL:
+        trains = []
+        record_fmt = "<BIIBIBBBB"
+        record_size = struct.calcsize(record_fmt)
+        for offset in range(0, len(content) - record_size + 1, record_size):
+            values = struct.unpack_from(record_fmt, content, offset)
+            trains.append(dict(zip(
+                ("id", "speed_cms", "dist_cm", "direction", "load_kg",
+                 "fault_speed", "emergency_brake", "traction_count", "brake_count"),
+                values,
+            )))
+        result["trains"] = trains
+        return result
+
+    if len(content) < 4:
+        return None
+    offset = 0
+    switch_len = struct.unpack_from("<H", content, offset)[0]
+    offset += 2
+    if switch_len % 3 or offset + switch_len + 2 > len(content):
+        return None
+    result["switches"] = [
+        struct.unpack_from("<HB", content, pos)
+        for pos in range(offset, offset + switch_len, 3)
+    ]
+    offset += switch_len
+    signal_len = struct.unpack_from("<H", content, offset)[0]
+    offset += 2
+    if signal_len % 3 or offset + signal_len > len(content):
+        return None
+    result["signals"] = [
+        struct.unpack_from("<HB", content, pos)
+        for pos in range(offset, offset + signal_len, 3)
+    ]
+    offset += signal_len
+    if (len(content) - offset) % 3:
+        return None
+    result["train_commands"] = [
+        struct.unpack_from("<BBB", content, pos)
+        for pos in range(offset, len(content), 3)
+    ]
+    return result
 
 
 # ============================================================
@@ -306,6 +383,7 @@ def unpack_plc_data(data: bytes) -> Optional[dict]:
 
 
 def pack_plc_output(
+    output_bits: int | None = None,
     indicator_hv_contactor: bool = False,
     indicator_brake_release: bool = False,
     indicator_door_closed: bool = True,
@@ -322,12 +400,11 @@ def pack_plc_output(
     btn_open_right: bool = False,
     btn_close_left: bool = False,
     btn_close_right: bool = False,
-    tag17: int = 0,
 ) -> bytes:
-    """打包上位机→PLC报文 (28 bytes)
+    """打包上位机→PLC报文 (26 bytes)
 
-    24字节帧头 + 4字节数据区 (tag1~8 byte + tag9~16 byte + tag17 short)
-    帧头字段按协议填充。
+    最新协议规定为24字节帧头加2字节开关量数据区。
+    output_bits 可直接提供完整16位输出；未提供时由布尔参数组装。
     """
     # Byte 0: tag1~8 bitmask (低8位)
     byte0 = 0
@@ -367,11 +444,15 @@ def pack_plc_output(
     if btn_close_right:
         byte1 |= 1 << 7   # Bit7: 右门关闭
 
+    if output_bits is not None:
+        byte0 = output_bits & 0xFF
+        byte1 = (output_bits >> 8) & 0xFF
+
     t = _time.localtime(_time.time())
     header = struct.pack("<" + "I" + "H" * 10,
         0xAA55AA55,                      # _uIdentify (4B) 现场PLC发送55 AA 55 AA
-        28,                               # _uTotalLen (2B) = 28
-        28 - 8,                           # _uDataLen (2B) = 20
+        26,                               # _uTotalLen (2B)
+        2,                                # _uDataLen (2B)
         t.tm_year,                        # _uYear
         t.tm_mon,                         # _uMonth
         t.tm_mday,                        # _uDay
@@ -381,14 +462,30 @@ def pack_plc_output(
         0,                                # _uVerifyType
         0,                                # _uVerifyCode
     )
-    # 4字节数据区: 1B tag1~8 + 1B tag9~16 + 2B tag17
-    data = struct.pack("<BBh", byte0 & 0xFF, byte1 & 0xFF, tag17 & 0xFFFF)
+    data = struct.pack("<BB", byte0 & 0xFF, byte1 & 0xFF)
     return header + data
 
 
 # ============================================================
 # 4. ATP DMI 报文编解码（协议 ATP通信协议规范）
 # ============================================================
+
+def _crc48(data: bytes) -> bytes:
+    """按协议给出的多项式对报文主体执行48位、非反射CRC计算。"""
+    polynomial = (
+        (1 << 42) | (1 << 39) | (1 << 35) | (1 << 34) | (1 << 32)
+        | (1 << 29) | (1 << 27) | (1 << 26) | (1 << 21) | (1 << 17)
+        | (1 << 16) | (1 << 13) | (1 << 7) | (1 << 5) | (1 << 3)
+        | (1 << 1) | 1
+    )
+    crc = 0
+    mask = (1 << 48) - 1
+    for value in data:
+        crc ^= value << 40
+        for _ in range(8):
+            crc = ((crc << 1) ^ polynomial) & mask if crc & (1 << 47) else (crc << 1) & mask
+    return crc.to_bytes(6, "big")
+
 
 def pack_atp_to_dmi(
     speed_cms: int,
@@ -424,16 +521,13 @@ def pack_atp_to_dmi(
         app_data.append(0x00)
 
     body = struct.pack(">II", 0, 0) + struct.pack(">H", len(app_data)) + bytes(app_data)
-    crc48 = b"\x00" * 6  # CRC48 占位
-    return body + crc48
+    return body + _crc48(body)
 
 
 # ============================================================
 # 5. 视景系统 TCMS2VIEW 编解码（协议 §3.2）
 # ============================================================
 
-FX_SIGNAL_MAX = 77    # 北京地铁9号线正线信号机数
-FX_SWITCH_MAX = 29    # 北京地铁9号线正线道岔数
 FX_TRAIN_MAX = 128    # 他车最大数
 
 
@@ -468,23 +562,15 @@ def pack_vision_tcms2view(
     # LiveCounter (int, 4B)
     buf.extend(struct.pack("<i", live_counter))
 
-    # Signal_num + SignalStates
-    sig_count = min(len(signal_states), FX_SIGNAL_MAX)
+    # 最新协议表按实际N/M/L发送变长数组，不再补齐结构体最大容量。
+    sig_count = min(len(signal_states), 255)
     buf.append(sig_count & 0xFF)
-    for i in range(FX_SIGNAL_MAX):
-        if i < sig_count:
-            buf.append(signal_states[i] & 0xFF)
-        else:
-            buf.append(0x00)
+    buf.extend(state & 0xFF for state in signal_states[:sig_count])
 
     # Switch_num + SwitchStates
-    sw_count = min(len(switch_states), FX_SWITCH_MAX)
+    sw_count = min(len(switch_states), 127)
     buf.append(sw_count & 0xFF)
-    for i in range(FX_SWITCH_MAX):
-        if i < sw_count:
-            buf.append(switch_states[i] & 0xFF)
-        else:
-            buf.append(0x00)
+    buf.extend(state & 0xFF for state in switch_states[:sw_count])
 
     # 本车信息
     buf.extend(struct.pack("<i", speed_mms))         # Speed, mm/s
@@ -500,33 +586,17 @@ def pack_vision_tcms2view(
     other_count = min(len(others), FX_TRAIN_MAX)
     buf.append(other_count & 0xFF)
 
-    for i in range(FX_TRAIN_MAX):
-        if i < other_count:
-            t = others[i]
-            buf.extend(struct.pack("<i", t.get("dist", 0)))
-        else:
-            buf.extend(struct.pack("<i", 0))
+    for t in others[:other_count]:
+        buf.extend(struct.pack("<i", t.get("dist", 0)))
 
-    for i in range(FX_TRAIN_MAX):
-        if i < other_count:
-            t = others[i]
-            buf.extend(struct.pack("<h", t.get("edge", 0)))
-        else:
-            buf.extend(struct.pack("<h", 0))
+    for t in others[:other_count]:
+        buf.extend(struct.pack("<h", t.get("edge", 0)))
 
-    for i in range(FX_TRAIN_MAX):
-        if i < other_count:
-            t = others[i]
-            buf.append(t.get("dir", 0) & 0xFF)
-        else:
-            buf.append(0x00)
+    for t in others[:other_count]:
+        buf.append(t.get("dir", 0) & 0xFF)
 
-    for i in range(FX_TRAIN_MAX):
-        if i < other_count:
-            t = others[i]
-            buf.extend(struct.pack("<h", t.get("speed_cms", 0)))
-        else:
-            buf.extend(struct.pack("<h", 0))
+    for t in others[:other_count]:
+        buf.extend(struct.pack("<h", t.get("speed_cms", 0)))
 
     return bytes(buf)
 
