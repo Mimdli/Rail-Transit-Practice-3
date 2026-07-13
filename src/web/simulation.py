@@ -646,6 +646,17 @@ class SimulationRuntime:
         self.cab_display_state["has_power"] = self.power_supply.can_traction()
         self.cab_display_state["power_state"] = 1 if self.cab_display_state["has_power"] else 0
 
+        # 记录到运行日志
+        self.recorder.record(
+            "司机台",
+            f"cab_display speed={self.cab_display_state['speed']*3.6:.1f}km/h "
+            f"mode={self.cab_display_state['run_mode']} dir={self.cab_display_state['run_dir']} "
+            f"station={self.cab_display_state['curr_station']}→{self.cab_display_state['next_station']} "
+            f"power={self.cab_display_state['power_state']} brake={self.cab_display_state['brake_state']} "
+            f"urg={self.cab_display_state['urgency_stop']}",
+            severity="DEBUG",
+        )
+
     async def _run(self):
         while True:
             if not self.paused:
@@ -1528,7 +1539,7 @@ class SimulationRuntime:
                 {"id": "signal_gateway",  "label": "信号网关",    "protocol": "UDP", "cycleMs": 250, "bidirectional": True},
                 {"id": "plc",             "label": "司机台PLC",   "protocol": "TCP", "cycleMs": 100, "bidirectional": True},
                 {"id": "vision",          "label": "视景系统",    "protocol": "UDP", "cycleMs": 100, "bidirectional": False},
-                {"id": "cab_display",     "label": "司机台显示",  "protocol": "TCP", "cycleMs": 100, "bidirectional": False},
+                {"id": "cab_display",     "label": "司机台显示",  "protocol": "TCP", "cycleMs": 100, "bidirectional": True},
             ],
             "plc_data": self.network.plc_data,
             "networkFaultInjected": self.network_fault_injected,

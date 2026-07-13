@@ -64,7 +64,7 @@ class NetworkManager:
             "signal_gateway": self._module_stats(self.signal_gateway, "信号网关", "UDP", 250, True, now),
             "plc": self._module_stats(self.plc, "司机台PLC", "TCP", 100, True, now),
             "vision": self._module_stats(self.vision, "视景系统", "UDP", 100, False, now),
-            "cab_display": self._module_stats(self.cab_display, "司机台显示", "TCP", 100, False, now),
+            "cab_display": self._module_stats(self.cab_display, "司机台显示", "TCP", 100, True, now),
         }
         # cab_display 额外携带两个屏各自的报文
         cab = result["cab_display"]

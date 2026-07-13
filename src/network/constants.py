@@ -75,7 +75,8 @@ VISION_CYCLE_MS: Final[int] = VISION["cycle_ms"]
 # ============================================================
 # 司机台显示 TCP（协议 § 网络屏 / 信号屏）
 # ============================================================
-CAB_DISPLAY_ADDR: Final[str] = CAB_DISPLAY["remote_addr"]
+CAB_NETWORK_SCREEN_ADDR: Final[str] = CAB_DISPLAY["network_screen_addr"]
 CAB_NETWORK_SCREEN_PORT: Final[int] = CAB_DISPLAY["network_screen_port"]
+CAB_SIGNAL_SCREEN_ADDR: Final[str] = CAB_DISPLAY["signal_screen_addr"]
 CAB_SIGNAL_SCREEN_PORT: Final[int] = CAB_DISPLAY["signal_screen_port"]
 CAB_DISPLAY_CYCLE_MS: Final[int] = CAB_DISPLAY["cycle_ms"]

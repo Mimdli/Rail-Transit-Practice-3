@@ -1,7 +1,7 @@
 """司机台显示屏 TCP 通信模块
 
 通过 TCP 向总控发送司机台显示数据，由总控转发给硬件司机台。
-- 网络屏: 572 bytes, 端口 8888
+- 网络屏: 572 bytes, 端口 8888 (双向通信)
 - 信号屏: 66 bytes, 端口 9999
 - 周期: 100ms
 
@@ -12,20 +12,25 @@ import socket
 import threading
 import logging
 import time
+import struct
 from typing import Optional, Callable
 from .constants import (
-    CAB_DISPLAY_ADDR, CAB_NETWORK_SCREEN_PORT,
-    CAB_SIGNAL_SCREEN_PORT, CAB_DISPLAY_CYCLE_MS,
+    CAB_NETWORK_SCREEN_ADDR, CAB_NETWORK_SCREEN_PORT,
+    CAB_SIGNAL_SCREEN_ADDR, CAB_SIGNAL_SCREEN_PORT, CAB_DISPLAY_CYCLE_MS,
 )
 from .codec import pack_network_screen, pack_signal_screen
 
 logger = logging.getLogger(__name__)
+
+# 网络屏接收帧同步头
+SYNC_HEADER = b'\x55\xAA\x55\xAA'
 
 
 class CabDisplayClient:
     """司机台显示屏客户端
 
     在独立线程中以 100ms 周期发送网络屏和信号屏数据。
+    网络屏支持接收返回数据（TCP 持久连接）。
     外部系统不可用时静默降级。
     """
 
@@ -39,14 +44,27 @@ class CabDisplayClient:
 
         self.connected = False
 
-        # 统计信息 (纯发送，无接收)
+        # 统计信息
         self.packets_sent = 0
+        self.packets_received = 0
         self.last_send_time = 0.0
+        self.last_recv_time = 0.0
 
-        # 最近发送的原始报文（hex dump用）
-        self.last_sent_packet: bytes = b''
+        # 最近报文
         self.last_network_packet: bytes = b''
         self.last_signal_packet: bytes = b''
+        self.last_sent_packet: bytes = b''
+        self.last_recv_packet: bytes = b''
+
+        # TCP 持久连接（网络屏支持双向）
+        self._net_sock: Optional[socket.socket] = None
+        self._sig_sock: Optional[socket.socket] = None
+
+        # 接收缓冲区
+        self._recv_buf = bytearray()
+
+        # 接收数据（解析后的值）
+        self.received_data: dict = {}
 
     def set_network_data_source(self, source: Callable[[], dict]):
         """设置网络屏数据源"""
@@ -67,23 +85,153 @@ class CabDisplayClient:
     def stop(self):
         self._running = False
         self.connected = False
+        self._close_sockets()
 
-    def _send_tcp(self, addr: str, port: int, data: bytes) -> bool:
-        """发送 TCP 数据到指定地址和端口
+    def _close_sockets(self):
+        """关闭所有持久连接"""
+        for s in [self._net_sock, self._sig_sock]:
+            if s:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+        self._net_sock = None
+        self._sig_sock = None
+
+    def _ensure_socket(self, addr: str, port: int, sock_ref: list) -> Optional[socket.socket]:
+        """确保持久 TCP 连接存在，断开时自动重连
+
+        Args:
+            addr: 目标地址
+            port: 目标端口
+            sock_ref: [sock] 列表引用，用于更新外部变量
 
         Returns:
-            True 发送成功, False 发送失败
+            socket 对象，或 None 连接失败
         """
+        s = sock_ref[0] if len(sock_ref) > 0 else None
+        if s is not None:
+            try:
+                # 快速检查连接是否存活
+                s.settimeout(0.001)
+                s.send(b'', socket.MSG_OOB)
+            except (OSError, AttributeError):
+                pass
+            try:
+                s.settimeout(2.0)
+                return s
+            except Exception:
+                pass
+            try:
+                s.close()
+            except Exception:
+                pass
+        # 重建连接
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(2.0)
+            s.settimeout(3.0)
             s.connect((addr, port))
-            s.sendall(data)
-            s.close()
-            return True
+            sock_ref.clear()
+            sock_ref.append(s)
+            logger.info("TCP 连接已建立 %s:%d", addr, port)
+            return s
         except Exception as e:
-            logger.debug("TCP发送失败 %s:%d - %s", addr, port, e)
-            return False
+            logger.debug("TCP 连接失败 %s:%d - %s", addr, port, e)
+            return None
+
+    def _send_and_recv(self, s: socket.socket, data: bytes, recv: bool = False) -> bytes:
+        """通过持久连接发送数据，可选接收响应
+
+        Args:
+            s: socket 对象
+            data: 待发送数据
+            recv: 是否尝试接收响应
+
+        Returns:
+            接收到的数据（空 bytes 表示无响应）
+        """
+        try:
+            s.sendall(data)
+            if not recv:
+                return b''
+            # 尝试接收响应
+            s.settimeout(0.5)
+            resp = b''
+            while True:
+                try:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    resp += chunk
+                except socket.timeout:
+                    break
+            return resp
+        except Exception as e:
+            logger.debug("TCP 通信异常: %s", e)
+            # 标记连接已断开
+            raise
+
+    def _find_frame(self, buf: bytearray) -> Optional[bytes]:
+        """从缓冲区中查找并提取一个完整帧
+
+        帧格式: 55 AA 55 AA + total_len(2B) + data_len(2B) + payload
+
+        Args:
+            buf: 接收缓冲区
+
+        Returns:
+            完整的数据帧，或 None 数据不足
+        """
+        # 查找同步头
+        idx = buf.find(SYNC_HEADER)
+        if idx < 0:
+            # 丢弃无用的前缀数据（最多保留4字节用于部分匹配）
+            if len(buf) > 4:
+                buf.clear()
+            return None
+
+        if idx > 0:
+            # 丢弃同步头前的无用数据
+            del buf[:idx]
+
+        # 需要至少 8 字节才能读取长度
+        if len(buf) < 8:
+            return None
+
+        total_len = struct.unpack_from("<H", buf, 4)[0]
+        if total_len < 8 or total_len > 4096:
+            # 非法长度，丢弃
+            del buf[:2]
+            return None
+
+        if len(buf) < total_len:
+            return None
+
+        frame = bytes(buf[:total_len])
+        del buf[:total_len]
+        return frame
+
+    def _parse_network_screen_response(self, frame: bytes) -> dict:
+        """解析网络屏返回数据帧
+
+        目前仅提取帧头信息，具体数据字段按需扩展。
+        """
+        result = {}
+        if len(frame) < 8:
+            return result
+        try:
+            total_len = struct.unpack_from("<H", frame, 4)[0]
+            data_len = struct.unpack_from("<H", frame, 6)[0]
+            result["frame_total_len"] = total_len
+            result["frame_data_len"] = data_len
+            result["frame_raw_hex"] = frame.hex()[:128]  # 前128字符
+
+            # 如果有数据载荷，尝试提取
+            if len(frame) >= 24:
+                result["timestamp"] = struct.unpack_from("<Q", frame, 8)[0]
+        except Exception:
+            pass
+        return result
 
     def _run(self):
         import time as _time_mod
@@ -96,7 +244,7 @@ class CabDisplayClient:
                 has_network = False
                 has_signal = False
 
-                # --- 网络屏 (572 bytes → 总控:8888) ---
+                # --- 网络屏 (572 bytes → 192.168.100.121:8888) ---
                 if self._network_data_source:
                     data = self._network_data_source()
                     if data:
@@ -116,14 +264,37 @@ class CabDisplayClient:
                             has_power=data.get("has_power", True),
                             timestamp_ms=timestamp_ms,
                         )
-                        if self._send_tcp(CAB_DISPLAY_ADDR, CAB_NETWORK_SCREEN_PORT, packet):
-                            has_network = True
-                            self.last_network_packet = packet
-                            self.last_sent_packet = packet
-                            self.packets_sent += 1
-                            self.last_send_time = time.time()
+                        sock_ref = []
+                        s = self._ensure_socket(CAB_NETWORK_SCREEN_ADDR, CAB_NETWORK_SCREEN_PORT, sock_ref)
+                        if s:
+                            try:
+                                resp = self._send_and_recv(s, packet, recv=True)
+                                if resp:
+                                    self._recv_buf.extend(resp)
+                                    # 解析缓冲区中的帧
+                                    while True:
+                                        frame = self._find_frame(self._recv_buf)
+                                        if frame is None:
+                                            break
+                                        self.received_data = self._parse_network_screen_response(frame)
+                                        self.packets_received += 1
+                                        self.last_recv_time = time.time()
+                                        self.last_recv_packet = frame
+                                has_network = True
+                                self.last_network_packet = packet
+                                self.packets_sent += 1
+                                self.last_send_time = time.time()
+                                if sock_ref:
+                                    self._net_sock = sock_ref[0]
+                            except Exception:
+                                if sock_ref:
+                                    try:
+                                        sock_ref[0].close()
+                                    except Exception:
+                                        pass
+                                self._net_sock = None
 
-                # --- 信号屏 (66 bytes → 总控:9999) ---
+                # --- 信号屏 (66 bytes → 192.168.100.122:9999) ---
                 if self._signal_data_source:
                     data = self._signal_data_source()
                     if data:
@@ -146,12 +317,24 @@ class CabDisplayClient:
                             next_station_dist=data.get("next_station_dist", 0.0),
                             timestamp_ms=timestamp_ms,
                         )
-                        if self._send_tcp(CAB_DISPLAY_ADDR, CAB_SIGNAL_SCREEN_PORT, packet):
-                            has_signal = True
-                            self.last_signal_packet = packet
-                            self.last_sent_packet = packet
-                            self.packets_sent += 1
-                            self.last_send_time = time.time()
+                        sock_ref2 = []
+                        s2 = self._ensure_socket(CAB_SIGNAL_SCREEN_ADDR, CAB_SIGNAL_SCREEN_PORT, sock_ref2)
+                        if s2:
+                            try:
+                                self._send_and_recv(s2, packet, recv=False)
+                                has_signal = True
+                                self.last_signal_packet = packet
+                                self.packets_sent += 1
+                                self.last_send_time = time.time()
+                                if sock_ref2:
+                                    self._sig_sock = sock_ref2[0]
+                            except Exception:
+                                if sock_ref2:
+                                    try:
+                                        sock_ref2[0].close()
+                                    except Exception:
+                                        pass
+                                self._sig_sock = None
 
                 self.connected = has_network or has_signal
 
