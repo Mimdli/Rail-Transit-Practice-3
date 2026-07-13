@@ -220,6 +220,16 @@ async def network_stop():
     return response(runtime.network_disconnect())
 
 
+@app.post("/api/cab_display/start")
+async def cab_display_start():
+    return response(runtime.cab_connect())
+
+
+@app.post("/api/cab_display/stop")
+async def cab_display_stop():
+    return response(runtime.cab_disconnect())
+
+
 @app.get("/api/plc/output")
 async def plc_output_get():
     return response(runtime.plc_output_state)
