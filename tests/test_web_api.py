@@ -3,6 +3,28 @@
 from fastapi.testclient import TestClient
 
 from src.web.app import app
+from src.logger.evaluator import Evaluator
+
+
+def test_smoothness_uses_jerk_trend_and_actual_frame_time():
+    """恒定加速度应比频繁改变加速度更平稳，且使用帧内真实时间。"""
+    def frames(speeds):
+        return [
+            {"simTime": float(index), "trains": [{
+                "id": "1车", "speedKmh": speed * 3.6,
+                "position": float(index * 10), "status": "运行",
+            }]}
+            for index, speed in enumerate(speeds)
+        ]
+
+    steady_score, steady_basis = Evaluator.smoothness_metrics(
+        frames([0, 1, 2, 3, 4, 5, 6]))
+    rough_score, rough_basis = Evaluator.smoothness_metrics(
+        frames([0, 2, 0, 2, 0, 2, 0]))
+
+    assert steady_basis["jerkP95"] == 0.0
+    assert rough_basis["jerkP95"] > 0.0
+    assert steady_score > rough_score
 
 
 def test_snapshot_and_dispatch_command():

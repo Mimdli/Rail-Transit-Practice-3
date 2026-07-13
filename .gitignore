@@ -10,3 +10,8 @@ switch_to_py3.ps1
 
 # Runtime logs
 logs/
+
+# Local UI test artifacts
+.playwright-cli/
+.impeccable/
+output/

@@ -1337,7 +1337,7 @@ class SimulationRuntime:
         return {
             "events": [{"id": i, **asdict(e)}
                        for i, e in enumerate(self.recorder.events)],
-            "evaluation": self.evaluator.evaluate(self.recorder),
+            "evaluation": self._evaluate_run(),
             "simTime": round(self.dispatch.sim_time, 2),
         }
 
@@ -1407,61 +1407,32 @@ class SimulationRuntime:
 
     def replay_snapshot(self) -> dict:
         frames = list(self.replay_frames)
-        summary = self.recorder.get_summary()
-        safety_score = max(0.0, 100.0
-                           - summary["超速次数"] * 5
-                           - summary["红灯违规次数"] * 20
-                           - summary["紧急制动次数"] * 10
-                           - summary["碰撞次数"] * 30)
-        accelerations = []
-        for previous, current in zip(frames, frames[1:]):
-            previous_by_id = {item["id"]: item for item in previous["trains"]}
-            for train in current["trains"]:
-                old = previous_by_id.get(train["id"])
-                if old:
-                    accelerations.append(abs(
-                        (train["speedKmh"] - old["speedKmh"]) / 3.6 / 0.5))
-        max_acceleration = max(accelerations, default=0.0)
-        smooth_score = max(0.0, 100.0 - max(0.0, max_acceleration - 1.0) * 25)
-        trains = list(self.dispatch.trains.values())
-        regen_ratio = (sum(train.controller.energy_regen_ratio for train in trains)
-                       / len(trains) if trains else 0.0)
-        energy_score = min(100.0, 70.0 + regen_ratio * 30.0)
-        command_failures = len([
-            event for event in self.recorder.events
-            if event.source == "web-ats" and event.severity == "WARNING"
-        ])
-        operation_score = max(0.0, 100.0 - command_failures * 5.0)
-        schedule_gap = abs(summary["发车次数"] - summary["到站次数"])
-        punctuality_score = max(0.0, 100.0 - schedule_gap * 10.0)
-        dimensions = {
-            "safety": round(safety_score, 1),
-            "punctuality": round(punctuality_score, 1),
-            "smoothness": round(smooth_score, 1),
-            "energy": round(energy_score, 1),
-            "operation": round(operation_score, 1),
-            "stopAccuracy": None,
-        }
-        available_scores = [value for value in dimensions.values()
-                            if value is not None]
-        score = sum(available_scores) / len(available_scores)
+        evaluation = self._evaluate_run()
         return {
             "ok": True,
             "scenario": self.active_scenario,
             "sampleIntervalMs": 500,
             "frames": frames,
             "eventCount": len(self.recorder.events),
-            "score": round(score, 1),
-            "grade": ("优秀" if score >= 90 else "良好" if score >= 80
-                      else "合格" if score >= 60 else "不合格"),
-            "dimensions": dimensions,
-            "evaluationBasis": {
-                "maxAcceleration": round(max_acceleration, 3),
-                "regenRatio": round(regen_ratio, 4),
-                "commandFailures": command_failures,
-                "scheduleGap": schedule_gap,
-            },
+            "score": evaluation["score"],
+            "grade": evaluation["grade"],
+            "dimensions": evaluation["dimensions"],
+            "evaluationBasis": evaluation["evaluationBasis"],
+            "weights": evaluation["weights"],
         }
+
+    def _evaluate_run(self) -> dict:
+        """向统一评价器提供 Web 可采集的回放与能耗数据。"""
+        regen_ratios = [
+            runtime.controller.energy_regen_ratio
+            for runtime in self.dispatch.trains.values()
+            if runtime.controller.energy_traction_kwh > 0.0
+        ]
+        return self.evaluator.evaluate(
+            self.recorder,
+            frames=list(self.replay_frames),
+            regen_ratios=regen_ratios,
+        )
 
     def snapshot(self) -> dict:
         self._snapshot_sequence += 1
@@ -1583,7 +1554,7 @@ class SimulationRuntime:
                 "totalLength": round(self.track.total_length(), 0),
             },
             "events": events,
-            "evaluation": self.evaluator.evaluate(self.recorder),
+            "evaluation": self._evaluate_run(),
         }
 
     def _serialize_line(self) -> dict:

@@ -338,7 +338,8 @@ def main():
         patch("src.network.vision_udp.VISION_REMOTE_PORT", port_vision),
         patch("src.network.vision_udp.VISION_CYCLE_MS", 200),
         # 司机台
-        patch("src.network.cab_display.CAB_DISPLAY_ADDR", "127.0.0.1"),
+        patch("src.network.cab_display.CAB_NETWORK_SCREEN_ADDR", "127.0.0.1"),
+        patch("src.network.cab_display.CAB_SIGNAL_SCREEN_ADDR", "127.0.0.1"),
         patch("src.network.cab_display.CAB_NETWORK_SCREEN_PORT", port_net),
         patch("src.network.cab_display.CAB_SIGNAL_SCREEN_PORT", port_sig_screen),
         patch("src.network.cab_display.CAB_DISPLAY_CYCLE_MS", 200),

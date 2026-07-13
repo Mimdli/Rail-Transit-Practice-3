@@ -13,7 +13,7 @@ import logging
 import time
 from typing import Optional, Callable
 from .constants import (
-    VISION_LOCAL_ADDR, VISION_REMOTE_ADDR,
+    VISION_LOCAL_ADDR, VISION_LOCAL_PORT, VISION_REMOTE_ADDR,
     VISION_REMOTE_PORT, VISION_CYCLE_MS,
 )
 from .codec import pack_vision_tcms2view
@@ -73,7 +73,7 @@ class VisionUDPClient:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.settimeout(0.01)
         try:
-            self._sock.bind((VISION_LOCAL_ADDR, 0))
+            self._sock.bind((VISION_LOCAL_ADDR, VISION_LOCAL_PORT))
         except OSError:
             pass
 

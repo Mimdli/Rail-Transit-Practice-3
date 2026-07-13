@@ -86,7 +86,9 @@ def test_evaluator_uses_incident_counts_and_returns_grade():
         evaluator.update_max_speed(20.0)
 
         result = evaluator.evaluate(recorder)
-        assert result["综合得分"] == 85.0
+        assert result["综合得分"] == 87.1
         assert result["评价等级"] == "良好"
         assert result["安全事件总数"] == 2
+        assert result["dimensions"]["safety"] == 85.0
+        assert result["dimensions"]["smoothness"] is None
         recorder.close()

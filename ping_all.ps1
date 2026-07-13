@@ -15,9 +15,9 @@ $targets = @(
     @{IP="9.38.1.3";       Name="Signal-Dev3 (9.38.1.3)"}
     @{IP="9.38.1.243";     Name="Signal-Gateway3 (9.38.1.243)"}
     @{IP="192.168.100.123"; Name="PLC-Device (192.168.100.123)"}
-    @{IP="192.168.100.121"; Name="Network-Screen (192.168.100.121)"}
-    @{IP="192.168.100.122"; Name="Signal-Screen (192.168.100.122)"}
-    @{IP="192.168.100.124"; Name="Vision-System (192.168.100.124)"}
+    @{IP="192.168.100.122"; Name="Network-Screen (192.168.100.122)"}
+    @{IP="192.168.100.121"; Name="Signal-Screen (192.168.100.121)"}
+    @{IP="18.32.115.28"; Name="Vision-System (18.32.115.28)"}
 )
 
 $total = $targets.Count
