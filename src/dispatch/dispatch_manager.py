@@ -53,6 +53,7 @@ class DispatchManager:
     """调度命令入口和所有列车的统一仿真时钟。"""
 
     ARRIVAL_TOLERANCE = 3.0
+    ARRIVAL_OVERSHOOT_TOLERANCE = 20.0
     SEPARATION_DECELERATION = 1.0
     MINIMUM_SEPARATION = 30.0
     WARNING_MARGIN = 80.0
@@ -147,9 +148,11 @@ class DispatchManager:
         if plan.turnback and runtime.plan_index == len(plan.station_ids) - 1 \
                 and runtime.plan_step > 0:
             runtime.controller.reverse_direction()
+            self._align_turnback_platform(runtime, plan.station_ids[-1])
             runtime.plan_step = -1
         elif plan.turnback and runtime.plan_index == 0 and runtime.plan_step < 0:
             runtime.controller.reverse_direction()
+            self._align_turnback_platform(runtime, plan.station_ids[0])
             runtime.plan_step = 1
         runtime.target_station_id = None
         runtime.status = TrainStatus.WAITING
@@ -602,7 +605,12 @@ class DispatchManager:
         distance = runtime.auto_drive.distance_to_target
         if distance is None:
             return
-        if abs(distance) <= self.ARRIVAL_TOLERANCE and runtime.controller.is_stopped:
+        arrived = (-self.ARRIVAL_OVERSHOOT_TOLERANCE <= distance
+                   <= self.ARRIVAL_TOLERANCE)
+        if arrived and runtime.controller.is_stopped:
+            # 制动离散步进可能造成小幅越站；停稳后校正到停车点，避免永久全制动。
+            if distance < -self.ARRIVAL_TOLERANCE:
+                self._place_train_head(runtime, runtime.auto_drive.target_position)
             self.interlocking.cancel_route(runtime.train_id)
             plan = runtime.service_plan
             if plan is None:
@@ -635,6 +643,7 @@ class DispatchManager:
                 self._record("调度", f"{runtime.train_id} 交路完成", runtime)
                 return
             if runtime.controller.reverse_direction():
+                self._align_turnback_platform(runtime, plan.station_ids[runtime.plan_index])
                 runtime.plan_step *= -1
                 runtime.completed_cycles += 1
                 self._record("折返", f"{runtime.train_id} 完成换端", runtime)
@@ -803,6 +812,28 @@ class DispatchManager:
         if seg is not None:
             return seg.abs_start + tp.offset
         return 0.0
+    def _align_turnback_platform(self, runtime: TrainRuntime,
+                                 station_id: int) -> None:
+        """换端后将列车落到新方向站台股道，保持显示、占用与进路一致。"""
+        station = self.trains.get_station(station_id)
+        position = resolve_station_track_position(
+            self.track, station, runtime.controller.direction)
+        runtime.track_adapter.set_active_route(None)
+        self._place_train_head(runtime, position)
+
+    @staticmethod
+    def _place_train_head(runtime: TrainRuntime, position) -> None:
+        """保持动力学累计量，仅重排停稳列车在指定头车位置后的几何位置。"""
+        controller = runtime.controller
+        slack = controller.pipeline.coupler_config.slack
+        for index, (state, car) in enumerate(
+                zip(controller.states, controller.consist)):
+            spacing = index * (car.length + slack)
+            state.position = runtime.track_adapter.advance_position(
+                position, -controller.direction * spacing)
+            state.velocity = 0.0
+            state.acceleration = 0.0
+        controller.coast()
 
     def _signal_route_segments(self, runtime: TrainRuntime) -> set[int]:
         if runtime.reserved_segments:

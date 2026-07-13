@@ -171,7 +171,7 @@ class TrackDataAdapter(ITrackQuery):
         if self._td.segments:
             if hint_seg_id is not None and hint_seg_id in self._td._seg_map:
                 # 有 hint：在同链上找 abs_start≈0 的根段，避免并行链歧义
-                chain_ids = self._build_chain_ids(hint_seg_id)
+                chain_ids = self._td.get_chain_ids(hint_seg_id)
                 for seg in self._td.segments:
                     if seg.seg_id in chain_ids and abs(seg.abs_start) < 0.01:
                         return TrackPosition(segment_id=seg.seg_id, offset=abs_pos)
@@ -268,27 +268,8 @@ class TrackDataAdapter(ITrackQuery):
         return visited
 
     def _build_chain_ids(self, seed_seg_id: int) -> set[int]:
-        """构建与 seed_seg_id 同链的段 ID 集合（双向遍历邻居）。
-
-        从种子段出发，沿 start_neighbor（上行方向）和 end_neighbor（下行方向）
-        双向遍历，收集所有属于同一物理链的 segment ID。
-        """
-        seg_map = self._td._seg_map
-        seed = seg_map.get(seed_seg_id)
-        if seed is None:
-            return set()
-        chain = {seed_seg_id}
-        # 沿 end_neighbor 方向遍历（下行）
-        sid = seed.end_neighbor
-        while sid > 0 and sid != 65535 and sid in seg_map:
-            chain.add(sid)
-            sid = seg_map[sid].end_neighbor
-        # 沿 start_neighbor 方向遍历（上行）
-        sid = seed.start_neighbor
-        while sid > 0 and sid != 65535 and sid in seg_map:
-            chain.add(sid)
-            sid = seg_map[sid].start_neighbor
-        return chain
+        """[已废弃] 请使用 self._td.get_chain_ids()。"""
+        return self._td.get_chain_ids(seed_seg_id)
 
     def _disambiguate_candidates(self, candidates, abs_pos, hint_seg_id: Optional[int] = None):
         """从多个候选 segment 中选择正确的 segment。
@@ -316,7 +297,7 @@ class TrackDataAdapter(ITrackQuery):
         # 构建 hint_seg_id 所在链的 ID 集合
         chain_ids: set[int] = set()
         if hint_seg_id is not None:
-            chain_ids = self._build_chain_ids(hint_seg_id)
+            chain_ids = self._td.get_chain_ids(hint_seg_id)
 
         # 优先级 2: 同链匹配 — 主线候选在同链上
         for seg in main_candidates:
