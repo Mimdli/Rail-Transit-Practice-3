@@ -429,7 +429,7 @@ class SimulationRuntime:
         """为司机台显示屏准备网络屏和信号屏数据。
 
         参照桌面版 _feed_cab_display()，从首列车的控制器状态构造
-        网络屏 (572B → 总控:8888) 和信号屏 (68B → 总控:9999) 的数据字典。
+        网络屏 (570B → 总控:8888) 和信号屏 (68B → 总控:9999) 的数据字典。
         """
         runtimes = list(self.dispatch.trains.values())
         if not runtimes:
@@ -476,12 +476,13 @@ class SimulationRuntime:
                 "power_state": (0 if self.power_supply.can_traction() else 1),
                 "door_states": door_states,
                 "has_power": self.power_supply.can_traction(),
+                "train_no": 1,
             }
 
         # 信号屏数据源
         def _sig_source():
             return {
-                "speed": head_speed,
+                "speed": head_speed * 3.6,
                 "acceleration": head_accel,
                 "speed_limit": track_limit,
                 "mode": 5,

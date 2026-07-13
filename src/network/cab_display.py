@@ -1,8 +1,8 @@
 """司机台显示屏 TCP 通信模块
 
 通过 TCP 向总控发送司机台显示数据，由总控转发给硬件司机台。
-- 网络屏: 572 bytes, 端口 8888 (双向通信)
-- 信号屏: 66 bytes, 端口 9999
+- 网络屏: 570 bytes, 端口 8888 (双向通信)
+- 信号屏: 实际载荷 68 bytes, 端口 9999
 - 周期: 100ms
 
 协议参考: 《轨交多系统平台接口协议汇总.md》司机驾驶模拟台网络屏/信号屏协议
@@ -244,7 +244,7 @@ class CabDisplayClient:
                 has_network = False
                 has_signal = False
 
-                # --- 网络屏 (572 bytes → 192.168.100.122:8888) ---
+                # --- 网络屏 (570 bytes → 192.168.100.122:8888) ---
                 if self._network_data_source:
                     data = self._network_data_source()
                     if data:
@@ -262,6 +262,7 @@ class CabDisplayClient:
                             power_state=data.get("power_state", 0),
                             door_states=data.get("door_states"),
                             has_power=data.get("has_power", True),
+                            train_no=data.get("train_no", 1),
                             timestamp_ms=timestamp_ms,
                         )
                         # 复用既有连接，避免每100ms重新占用设备唯一客户端连接。
