@@ -418,6 +418,79 @@ class SimulationRuntime:
             pass
         return {"ok": True, "message": "司机台显示数据已更新", "state": dict(self.cab_display_state)}
 
+    def _update_cab_display_from_simulation(self):
+        """从仿真列车自动更新司机台显示屏数据"""
+        if not self.dispatch or not self.dispatch.trains:
+            return
+        # 取第一列运行的列车
+        runtime = None
+        for r in self.dispatch.trains.values():
+            if r.status.name in ("RUNNING", "DWELLING", "WAITING", "HELD"):
+                runtime = r
+                break
+        if runtime is None:
+            runtime = next(iter(self.dispatch.trains.values()), None)
+        if runtime is None:
+            return
+
+        ctrl = runtime.controller
+        speed_ms = ctrl.head_speed
+        self.cab_display_state["speed"] = round(speed_ms, 2)
+        if ctrl.states:
+            self.cab_display_state["acceleration"] = round(ctrl.states[0].acceleration, 3)
+
+        # 限速
+        try:
+            limit = self.signal.get_effective_speed_limit_for_direction(
+                runtime.head_abs, ctrl.direction, runtime.track_adapter
+            )
+            self.cab_display_state["speed_limit"] = round(limit, 1)
+        except Exception:
+            pass
+
+        # 运行方向: 1=正向, -1=反向
+        self.cab_display_state["run_dir"] = 1 if ctrl.direction == 1 else -1
+
+        # 运行模式: 0=惰行, 1=牵引, 2=制动, 4=快速制动
+        throttle = ctrl.throttle
+        brake = ctrl.brake_level
+        if brake >= 0.9:
+            self.cab_display_state["run_mode"] = 4  # 快速制动
+        elif brake > 0.05:
+            self.cab_display_state["run_mode"] = 2  # 制动
+        elif throttle > 0.05:
+            self.cab_display_state["run_mode"] = 1  # 牵引
+        else:
+            self.cab_display_state["run_mode"] = 0  # 惰行
+
+        # 驾驶模式
+        if ctrl.running_mode.name == "AUTOMATIC":
+            self.cab_display_state["mode"] = 5  # ATO模式
+        else:
+            self.cab_display_state["mode"] = 0  # 人工模式
+
+        # 牵引/制动级位百分比
+        self.cab_display_state["power_pull"] = int(max(throttle, brake) * 100)
+
+        # 车站信息
+        if runtime.service_plan and runtime.plan_index < len(runtime.service_plan.station_ids):
+            self.cab_display_state["curr_station"] = runtime.service_plan.station_ids[runtime.plan_index]
+        self.cab_display_state["next_station"] = runtime.target_station_id or 0
+        if runtime.service_plan:
+            self.cab_display_state["end_station"] = runtime.service_plan.station_ids[-1]
+
+        # 门状态 (0=关, 1=开)
+        door_state = 1 if ctrl.any_door_open else 0
+        self.cab_display_state["door_states"] = [door_state] * 4
+
+        # 制动状态
+        self.cab_display_state["brake_state"] = 1 if brake > 0.05 else 0
+        self.cab_display_state["urgency_stop"] = 1 if ctrl.interlock.emergency_brake_required else 0
+
+        # 供电状态
+        self.cab_display_state["has_power"] = self.power_supply.can_traction()
+        self.cab_display_state["power_state"] = 1 if self.cab_display_state["has_power"] else 0
+
     async def _run(self):
         while True:
             if not self.paused:
@@ -437,6 +510,9 @@ class SimulationRuntime:
                 self.power_supply.step(dt)
                 self.recorder.step(dt)
                 self._record_replay_frame()
+                # 从仿真列车自动更新司机台显示屏数据
+                if self.cab_started:
+                    self._update_cab_display_from_simulation()
                 # 周期发送PLC输出（每步100ms，每步都发）
                 if self.network_started:
                     self._plc_output_counter += 1
