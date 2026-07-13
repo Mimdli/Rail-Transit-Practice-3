@@ -108,13 +108,13 @@ class TrackDataAdapter(ITrackQuery):
     # ── 位置坐标转换 ───────────────────────────────────────────
 
     def advance_position(self, pos: TrackPosition, distance: float) -> TrackPosition:
-        """沿区段拓扑推进，支持跨段、道岔与线路末端共线接续。"""
-        if distance == 0:
-            return pos
+        """沿区段拓扑推进，支持跨段、道岔与线路末端共线接续。
 
         通过绝对坐标转换实现，支持跨区段推进。
         超出线路终点时钳位到终点；允许起点之前的负位置（列车尾部）。
         """
+        if distance == 0:
+            return pos
         total = self._td.total_length()
         abs_pos = self.to_absolute(pos)
         new_abs = abs_pos + distance
