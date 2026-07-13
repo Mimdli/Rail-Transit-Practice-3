@@ -18,6 +18,14 @@ def test_snapshot_and_dispatch_command():
         assert "/scripts/app.js" in frontend.text
         for asset in ("/styles/tokens.css", "/styles/app.css",
                       "/styles/responsive.css", "/scripts/api.js",
+                      "/scripts/dispatch-center.js",
+                      "/scripts/train-center.js",
+                      "/scripts/signal-center.js",
+                      "/scripts/interface-center.js",
+                      "/scripts/scene-center.js",
+                      "/scripts/replay-center.js",
+                      "/scripts/power-center.js",
+                      "/scripts/cab-center.js",
                       "/scripts/app.js"):
             response = client.get(asset)
             assert response.status_code == 200
@@ -45,8 +53,53 @@ def test_snapshot_and_dispatch_command():
         assert "tractiveForceKn" in data["trains"][0]
         assert "brakeForceKn" in data["trains"][0]
         assert "energyKwh" in data["trains"][0]
+        assert "carForces" in data["trains"][0]
+        assert "energy" in data["trains"][0]
+        assert "gradientPermille" in data["trains"][0]
+        assert "maxCouplerForceKn" in data["trains"][0]
 
-        command = client.post("/api/trains/1%E8%BD%A6/depart")
+        mode = client.post(
+            "/api/trains/1%E8%BD%A6/control/action",
+            json={"action": "mode", "value": "manual"},
+        )
+        assert mode.status_code == 200
+        assert mode.json()["ok"] is True
+
+        door = client.post(
+            "/api/trains/1%E8%BD%A6/control/action",
+            json={"action": "door", "value": "left"},
+        )
+        assert door.status_code == 200
+        assert door.json()["ok"] is True
+        client.post(
+            "/api/trains/1%E8%BD%A6/control/action",
+            json={"action": "door", "value": "close"},
+        )
+
+        level = client.post(
+            "/api/trains/1%E8%BD%A6/control/action",
+            json={"action": "level", "value": "P1"},
+        )
+        assert level.status_code == 200
+        assert level.json()["ok"] is True
+        load = client.post(
+            "/api/trains/1%E8%BD%A6/control/action",
+            json={"action": "load", "value": "AW3"},
+        )
+        assert load.status_code == 200
+        dwell = client.post(
+            "/api/trains/1%E8%BD%A6/control/action",
+            json={"action": "dwell", "value": "30"},
+        )
+        assert dwell.status_code == 200
+        speed = client.post("/api/simulation/10")
+        assert speed.status_code == 200
+        client.post(
+            "/api/trains/1%E8%BD%A6/control/action",
+            json={"action": "mode", "value": "automatic"},
+        )
+
+        command = client.post("/api/trains/1%E8%BD%A6/hold")
         assert command.status_code == 200
         assert command.json()["ok"] is True
 
@@ -56,7 +109,7 @@ def test_snapshot_and_dispatch_command():
             if event["source"] == "web-ats"
         ]
         assert web_events[-1]["train_id"] == "1车"
-        assert web_events[-1]["entity_id"] == "depart"
+        assert web_events[-1]["entity_id"] == "hold"
 
         scenario = client.post("/api/scenarios/power_outage")
         assert scenario.status_code == 200
@@ -97,8 +150,13 @@ def test_snapshot_and_dispatch_command():
         replay = client.get("/api/replay")
         assert replay.status_code == 200
         assert replay.json()["sampleIntervalMs"] == 500
+        assert set(replay.json()["dimensions"]) == {
+            "safety", "punctuality", "smoothness", "energy",
+            "operation", "stopAccuracy",
+        }
+        assert replay.json()["grade"] in {"优秀", "良好", "合格", "不合格"}
 
         with client.websocket_connect("/ws/realtime") as websocket:
             live = websocket.receive_json()
             assert live["type"] == "snapshot"
-            assert live["trains"][0]["status"] in {"运行", "进路等待"}
+            assert live["trains"][0]["status"] in {"运行", "进路等待", "扣车"}

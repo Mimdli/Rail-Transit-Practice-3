@@ -2,6 +2,8 @@
 
 from src.dispatch import DispatchManager, ServicePlan, TrainStatus
 from src.track.loader import TrackLoader
+from src.track.db_loader import DBLoader
+from src.dispatch.train_manager import resolve_station_track_position
 from src.track.data import Signal
 from src.signal.system import SignalSystem
 from src.logger.recorder import Recorder
@@ -288,3 +290,45 @@ def test_reverse_direction_keeps_train_geometry_and_changes_target_sign():
     for _ in range(30):
         runtime.controller.step(0.033)
     assert runtime.head_abs < start_head
+
+
+def test_database_terminal_turnback_aligns_train_with_up_platform():
+    """数据库双线终点换端后，车体、占用起点和返程进路必须位于同一股道。"""
+    track = DBLoader().load_from_db()
+    stations = sorted(track.stations, key=lambda item: item.position)
+    dispatch = DispatchManager(track)
+    dispatch.add_service_plan(ServicePlan(
+        "db-loop", "数据库折返", tuple(item.station_id for item in stations),
+        turnback=True, dwell_time=0.1,
+    ))
+    terminal = stations[-1]
+    assert dispatch.add_train("折返车", terminal.station_id, direction=1).ok
+    assert dispatch.assign_plan("折返车", "db-loop").ok
+
+    runtime = dispatch.trains.require("折返车")
+    expected = resolve_station_track_position(track, terminal, direction=-1)
+    assert runtime.controller.direction == -1
+    assert runtime.controller.states[0].position.segment_id == expected.segment_id
+
+    assert dispatch.depart("折返车").ok
+    assert runtime.controller.states[0].position.segment_id in runtime.reserved_segments
+    assert runtime.reserved_segments[-1] == resolve_station_track_position(
+        track, stations[-2], direction=-1).segment_id
+
+
+def test_stopped_train_recovers_from_small_station_overshoot():
+    """列车小幅越过停车点并停稳后仍应完成到站，不得永久保持全制动。"""
+    dispatch = _make_dispatch()
+    assert dispatch.add_train("越站车", 1).ok
+    assert dispatch.assign_plan("越站车", "loop").ok
+    assert dispatch.depart("越站车").ok
+    runtime = dispatch.trains.require("越站车")
+    target = runtime.auto_drive.target_position
+    overshot = runtime.track_adapter.advance_position(target, 5.0)
+    dispatch._place_train_head(runtime, overshot)
+
+    dispatch._check_arrival(runtime)
+
+    assert runtime.status == TrainStatus.DWELLING
+    assert runtime.target_station_id is None
+    assert runtime.controller.states[0].position == target
