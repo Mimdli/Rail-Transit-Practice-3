@@ -52,7 +52,7 @@ PLC_PORT_3: Final[int] = PLC["ports"][2]
 PLC_CYCLE_MS: Final[int] = PLC["cycle_ms"]
 
 PLC_RECV_SIZE: Final[int] = PLC["recv_size"]   # 46 bytes
-PLC_SEND_SIZE: Final[int] = PLC["send_size"]   # 26 bytes
+PLC_SEND_SIZE: Final[int] = PLC["send_size"]   # 28 bytes
 
 # ============================================================
 # ATP DMI 通信（协议 ATP通信协议规范）
