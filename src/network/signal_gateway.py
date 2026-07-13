@@ -17,7 +17,7 @@ from .constants import (
     SIGNAL_LOCAL_PORT, SIGNAL_GATEWAY_CYCLE_MS,
     SIGNAL_GATEWAY_RECV_CYCLE_MS,
 )
-from .codec import pack_signal_switch_signal, _make_signal_header
+from .codec import pack_signal_switch_signal, unpack_signal_packet
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class SignalGateway:
         self._thread: Optional[threading.Thread] = None
 
         # 数据源/回调
-        self._send_source: Optional[Callable[[], tuple[list, list]]] = None
+        self._send_source: Optional[Callable[[], tuple]] = None
         self._recv_callback: Optional[Callable[[bytes], None]] = None
 
         self.connected = False
@@ -50,9 +50,10 @@ class SignalGateway:
         # 最近收发的原始报文（hex dump用）
         self.last_sent_packet: bytes = b''
         self.last_recv_packet: bytes = b''
+        self.last_parsed_data: Optional[dict] = None
 
-    def set_send_source(self, source: Callable[[], tuple[list, list]]):
-        """设置发送数据源，返回 (switches, signals)"""
+    def set_send_source(self, source: Callable[[], tuple]):
+        """设置发送数据源，返回 (switches, signals[, train_commands])。"""
         self._send_source = source
 
     def set_recv_callback(self, cb: Callable[[bytes], None]):
@@ -101,8 +102,10 @@ class SignalGateway:
                 send_counter = 0
                 if self._send_source:
                     try:
-                        switches, signals = self._send_source()
-                        data = pack_signal_switch_signal(switches, signals)
+                        payload = self._send_source()
+                        switches, signals = payload[:2]
+                        train_commands = payload[2] if len(payload) > 2 else []
+                        data = pack_signal_switch_signal(switches, signals, train_commands)
                         self._sock.sendto(data, remote)
                         self.packets_sent += 1
                         self.last_sent_packet = data
@@ -113,6 +116,7 @@ class SignalGateway:
             # 接收 (每loop_ms)
             try:
                 data, addr = self._sock.recvfrom(4096)
+                self.last_parsed_data = unpack_signal_packet(data)
                 if self._recv_callback:
                     self._recv_callback(data)
                 self._last_recv_time = time.time()

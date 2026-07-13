@@ -118,7 +118,7 @@ class NetworkManager:
         """设置车辆数据源回调"""
         self.vehicle_udp.set_send_source(source)
 
-    def set_vehicle_recv_callback(self, cb: Callable[[list[tuple[float, float, float]]], None]):
+    def set_vehicle_recv_callback(self, cb: Callable[[list[tuple[float, float]]], None]):
         """设置车辆接收回调"""
         self.vehicle_udp.set_recv_callback(cb)
 
@@ -128,8 +128,8 @@ class NetworkManager:
 
     # ---- 信号网关 ----
 
-    def set_signal_send_source(self, source: Callable[[], tuple[list, list]]):
-        """设置信号发送数据源"""
+    def set_signal_send_source(self, source: Callable[[], tuple]):
+        """设置信号发送数据源，可附带列车牵引制动命令。"""
         self.signal_gateway.set_send_source(source)
 
     def set_signal_recv_callback(self, cb: Callable[[bytes], None]):
@@ -144,7 +144,7 @@ class NetworkManager:
 
     def send_plc_output(self, atp_safe_out: int = 0):
         """发送输出到PLC"""
-        self.plc.send_output(atp_safe_out)
+        self.plc.send_output(output_bits=atp_safe_out)
 
     @property
     def plc_data(self) -> Optional[dict]:

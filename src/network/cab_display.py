@@ -244,7 +244,7 @@ class CabDisplayClient:
                 has_network = False
                 has_signal = False
 
-                # --- 网络屏 (572 bytes → 192.168.100.121:8888) ---
+                # --- 网络屏 (572 bytes → 192.168.100.122:8888) ---
                 if self._network_data_source:
                     data = self._network_data_source()
                     if data:
@@ -264,7 +264,8 @@ class CabDisplayClient:
                             has_power=data.get("has_power", True),
                             timestamp_ms=timestamp_ms,
                         )
-                        sock_ref = []
+                        # 复用既有连接，避免每100ms重新占用设备唯一客户端连接。
+                        sock_ref = [self._net_sock] if self._net_sock else []
                         s = self._ensure_socket(CAB_NETWORK_SCREEN_ADDR, CAB_NETWORK_SCREEN_PORT, sock_ref)
                         if s:
                             try:
@@ -294,7 +295,7 @@ class CabDisplayClient:
                                         pass
                                 self._net_sock = None
 
-                # --- 信号屏 (66 bytes → 192.168.100.122:9999) ---
+                # --- 信号屏 (字段表闭合为68 bytes → 192.168.100.121:9999) ---
                 if self._signal_data_source:
                     data = self._signal_data_source()
                     if data:
@@ -317,7 +318,7 @@ class CabDisplayClient:
                             next_station_dist=data.get("next_station_dist", 0.0),
                             timestamp_ms=timestamp_ms,
                         )
-                        sock_ref2 = []
+                        sock_ref2 = [self._sig_sock] if self._sig_sock else []
                         s2 = self._ensure_socket(CAB_SIGNAL_SCREEN_ADDR, CAB_SIGNAL_SCREEN_PORT, sock_ref2)
                         if s2:
                             try:
