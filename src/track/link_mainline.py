@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 
 from src.common.track_position import TrackPosition
@@ -24,35 +23,47 @@ class MainlineLink:
     length_m: float
 
 
-@lru_cache(maxsize=1)
-def load_mainline_links() -> dict[str, tuple[MainlineLink, ...]]:
-    """加载上下行 Link 链，并保持工作簿中的连接次序。"""
+def load_mainline_links(source: str = "directions") -> dict[str, tuple[MainlineLink, ...]]:
+    """加载上下行 Link 链，并保持工作簿中的连接次序。
+
+    Args:
+        source: 数据源键名，``"directions"``（数据库线路，默认）
+                或 ``"demo"``（演示线路）。
+    """
     payload = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    if source not in payload:
+        raise KeyError(f"link_mainline.json 中缺少键: {source}（可用: {list(payload)}）")
     return {
         direction: tuple(MainlineLink(**item) for item in items)
-        for direction, items in payload["directions"].items()
+        for direction, items in payload[source].items()
     }
 
 
 def mainline_segment_ids() -> set[int]:
-    """返回上下行主线 Link ID 并集。"""
-    return {
-        link.link_id
-        for links in load_mainline_links().values()
-        for link in links
-    }
+    """返回上下行主线 Link ID 并集（含演示数据）。"""
+    payload = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    ids: set[int] = set()
+    # 正式线路数据
+    for links in payload.get("directions", {}).values():
+        for link in links:
+            ids.add(link["link_id"])
+    # 演示线路数据
+    for links in payload.get("demo", {}).values():
+        for link in links:
+            ids.add(link["link_id"])
+    return ids
 
 
 class LinkCoordinateMapper:
     """把 Seg 内位置转换为线路图唯一使用的 Link 公里标。"""
 
-    def __init__(self, track: TrackData):
+    def __init__(self, track: TrackData, link_source: str = "directions"):
         segment_lengths = {
             segment.seg_id: segment.length for segment in track.segments
         }
         self._links = {}
         self._directions = {}
-        for direction, links in load_mainline_links().items():
+        for direction, links in load_mainline_links(link_source).items():
             for link in links:
                 if (link.link_id in segment_lengths
                         and abs(segment_lengths[link.link_id]

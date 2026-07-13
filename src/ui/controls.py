@@ -376,6 +376,25 @@ class ControlPanel(QWidget):
 
         layout.addWidget(run_group)
 
+        # === 岔口进路（feature 分支：演示侧线走行） ===
+        route_group = QGroupBox("岔口进路")
+        route_group.setObjectName("panelGroup")
+        route_layout = QHBoxLayout(route_group)
+        route_layout.setSpacing(5)
+        route_layout.setContentsMargins(8, 14, 8, 8)
+
+        btn_lateral = QPushButton("走侧线")
+        btn_lateral.setToolTip("在下一处侧向岔口优先走侧线分支")
+        btn_lateral.clicked.connect(self._on_use_lateral_fork)
+        route_layout.addWidget(btn_lateral)
+
+        btn_main = QPushButton("恢复主线")
+        btn_main.setToolTip("清除手动岔口设定，恢复默认主线走行")
+        btn_main.clicked.connect(self._on_clear_fork_routes)
+        route_layout.addWidget(btn_main)
+
+        layout.addWidget(route_group)
+
         # === 牵引/制动手柄（司控器） ===
         self._handle_group = QGroupBox("牵引/制动手柄（司控器）")
         handle_group = self._handle_group
@@ -751,6 +770,36 @@ class ControlPanel(QWidget):
         # 同步手柄按钮到常用制动位
         self._sync_handle_button(ControlLevel.SERVICE_BRAKE)
 
+    def _on_use_lateral_fork(self):
+        """在首个可用侧向岔口设定走侧线。"""
+        ta = self.track_adapter
+        use_lateral = getattr(ta, "use_lateral_fork", None)
+        if use_lateral is None:
+            self._show_mode_transition(False, "✗ 当前线路适配器不支持岔口路由")
+            return
+        td = getattr(ta, "track_data", None)
+        segments = getattr(td, "segments", []) if td is not None else []
+        for seg in segments:
+            if seg.end_lateral > 0 and seg.end_lateral != 65535:
+                if use_lateral(seg.seg_id):
+                    self._record_operation(f"岔口进路：区段 {seg.seg_id} → 侧线 {seg.end_lateral}")
+                    self._reset_status_style()
+                    self.status_label.setText(
+                        f"已设定区段 {seg.seg_id} 走侧线 → {seg.end_lateral}")
+                    return
+        self._show_mode_transition(False, "✗ 当前线路无可用侧线岔口")
+
+    def _on_clear_fork_routes(self):
+        """清除手动岔口设定，恢复默认主线。"""
+        clear = getattr(self.track_adapter, "clear_fork_routes", None)
+        if clear is None:
+            self._show_mode_transition(False, "✗ 当前线路适配器不支持岔口路由")
+            return
+        clear()
+        self._record_operation("岔口进路：恢复主线")
+        self._reset_status_style()
+        self.status_label.setText("已清除岔口设定，恢复默认主线")
+
     def _on_reset_to_station(self):
         """跳转到选定车站。"""
         idx = self.station_combo.currentIndex()
@@ -890,8 +939,11 @@ class ControlPanel(QWidget):
         if self.controller.states:
             head_abs = self.track_adapter.to_absolute(self.controller.states[0].position)
 
-        # 查找下一站（通过 AutoDriveController 统一入口）
-        next_station = self.auto_drive.find_next_station(head_abs)
+        # 查找下一站（根据运行方向选择查站策略）
+        if self.controller.direction == 1:
+            next_station = self.auto_drive.find_next_station(head_abs)
+        else:
+            next_station = self.auto_drive._find_station_reverse(head_abs)
 
         if next_station is None:
             self._show_mode_transition(False, "✗ 切换失败: 无前方车站")

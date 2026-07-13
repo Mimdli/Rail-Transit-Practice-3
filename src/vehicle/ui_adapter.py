@@ -49,7 +49,8 @@ class TrackDataQuery(ITrackQuery):
         return self._active_route
 
     def advance_position(self, pos: TrackPosition, distance: float) -> TrackPosition:
-        return self.from_absolute(self.to_absolute(pos) + distance)
+        return self.from_absolute(self.to_absolute(pos) + distance,
+                                  hint_seg_id=pos.segment_id)
 
     def to_absolute(self, pos: TrackPosition) -> float:
         seg = self.track._seg_map.get(pos.segment_id)
@@ -60,17 +61,61 @@ class TrackDataQuery(ITrackQuery):
     def from_absolute(self, abs_pos: float, hint_seg_id: Optional[int] = None) -> TrackPosition:
         # 允许尾部车辆在发车初始阶段位于线路起点前方，避免编组被强行压缩到 0m。
         if abs_pos < 0:
+            # 有 hint 时在同链上找 abs_start≈0 的根段，避免并行链歧义
+            if hint_seg_id is not None and hint_seg_id in self.track._seg_map:
+                chain_ids = self._build_chain_ids(hint_seg_id)
+                for seg in self.track.segments:
+                    if seg.seg_id in chain_ids and abs(seg.abs_start) < 0.01:
+                        return TrackPosition(seg.seg_id, abs_pos)
+                return TrackPosition(hint_seg_id, abs_pos)
             first_seg = self.track.segments[0].seg_id if self.track.segments else 1
             return TrackPosition(first_seg, abs_pos)
 
+        # 收集所有覆盖该绝对位置的候选段（处理并行链重叠坐标）
+        candidates = []
         for seg in self.track.segments:
             if seg.abs_start <= abs_pos < seg.abs_start + seg.length:
-                return TrackPosition(seg.seg_id, abs_pos - seg.abs_start)
+                candidates.append(seg)
+
+        if len(candidates) == 1:
+            seg = candidates[0]
+            return TrackPosition(seg.seg_id, abs_pos - seg.abs_start)
+
+        if len(candidates) > 1 and hint_seg_id is not None:
+            # 链消歧：优先选择与 hint_seg_id 在同一链上的段
+            chain_ids = self._build_chain_ids(hint_seg_id)
+            for seg in candidates:
+                if seg.seg_id in chain_ids:
+                    return TrackPosition(seg.seg_id, abs_pos - seg.abs_start)
+
+        # 兜底：返回第一个候选
+        if candidates:
+            seg = candidates[0]
+            return TrackPosition(seg.seg_id, abs_pos - seg.abs_start)
 
         if self.track.segments:
             last = max(self.track.segments, key=lambda s: s.abs_start + s.length)
             return TrackPosition(last.seg_id, last.length)
         return TrackPosition(1, 0.0)
+
+    def _build_chain_ids(self, seed_seg_id: int) -> "set[int]":
+        """构建与 seed_seg_id 同链的段 ID 集合（双向遍历邻居）。"""
+        chain = {seed_seg_id}
+        seg_map = self.track._seg_map
+        seed = seg_map.get(seed_seg_id)
+        if seed is None:
+            return chain
+        # 沿 end_neighbor 方向遍历
+        sid = seed.end_neighbor
+        while sid > 0 and sid != 65535 and sid in seg_map:
+            chain.add(sid)
+            sid = seg_map[sid].end_neighbor
+        # 沿 start_neighbor 方向遍历
+        sid = seed.start_neighbor
+        while sid > 0 and sid != 65535 and sid in seg_map:
+            chain.add(sid)
+            sid = seg_map[sid].start_neighbor
+        return chain
 
 
 class VehicleUiAdapter:

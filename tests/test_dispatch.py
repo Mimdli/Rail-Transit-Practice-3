@@ -48,15 +48,19 @@ def test_dispatch_writes_structured_train_events(tmp_path):
 
 
 def test_manual_train_brakes_for_stationary_train_ahead(tmp_path):
-    """人工驾驶也必须受独立列车间隔防护。"""
+    """人工驾驶也必须受独立列车间隔防护（双链中两车须在同一链上）。"""
     track = TrackLoader().load_demo_data()
     recorder = Recorder(log_dir=str(tmp_path))
     recorder.start()
     dispatch = DispatchManager(track, recorder=recorder)
+    # 两车均加入后，手动将后车重置到前车同链（UP链 seg1→seg2）
     assert dispatch.add_train("后车", 1).ok
     assert dispatch.add_train("前车", 2).ok
     follower = dispatch.trains.require("后车")
+    leader = dispatch.trains.require("前车")
+    # 将两车置于同一条链上：后车在 seg1 offset=130，前车在 seg2 offset=0
     follower.controller.reset_states(1, 130.0)
+    leader.controller.reset_states(2, 0.0)
     follower.status = TrainStatus.MANUAL
     follower.controller.set_throttle(1.0)
 
@@ -74,7 +78,7 @@ def test_manual_train_brakes_for_stationary_train_ahead(tmp_path):
 
 
 def test_body_overlap_emergency_stops_both_trains(tmp_path):
-    """车体重叠后双方都应紧急制动并记录严重事件。"""
+    """车体重叠后双方都应紧急制动并记录严重事件（双链中两车须在同一链上）。"""
     track = TrackLoader().load_demo_data()
     recorder = Recorder(log_dir=str(tmp_path))
     recorder.start()
@@ -83,7 +87,9 @@ def test_body_overlap_emergency_stops_both_trains(tmp_path):
     assert dispatch.add_train("前车", 2).ok
     follower = dispatch.trains.require("后车")
     leader = dispatch.trains.require("前车")
+    # 将两车置于同一条 UP 链上，后车追上前车
     follower.controller.reset_states(1, 200.0)
+    leader.controller.reset_states(2, 0.0)
     follower.status = TrainStatus.MANUAL
 
     dispatch.step(0.033)
@@ -104,11 +110,14 @@ def test_separation_protection_clears_after_distance_recovers():
     assert dispatch.add_train("前车", 2).ok
     follower = dispatch.trains.require("后车")
     leader = dispatch.trains.require("前车")
+    # 将两车置于同一条 UP 链上
     follower.controller.reset_states(1, 130.0)
+    leader.controller.reset_states(2, 0.0)
     follower.status = TrainStatus.MANUAL
     dispatch.step(0.033)
     assert follower.status == TrainStatus.BLOCKED
 
+    # 前车移动到更远的位置（seg3, offset=200 → abs=700），解除阻塞
     leader.controller.reset_states(3, 200.0)
     dispatch.step(0.033)
 
@@ -162,8 +171,9 @@ def test_manual_train_can_be_driven_through_dispatch_clock():
 
 def test_dispatch_signal_red_applies_vehicle_protection():
     track = TrackLoader().load_demo_data()
+    # 信号须与列车在同一链上（列车默认入站方向为 DOWN 链 seg5）
     track.signals = [Signal(
-        "D01", position=100.0, direction="down", seg_id=1, offset=100.0)]
+        "D01", position=100.0, direction="down", seg_id=5, offset=100.0)]
     signal_system = SignalSystem()
     dispatch = DispatchManager(track, signal_system=signal_system)
     assert dispatch.add_train("2车", 1).ok

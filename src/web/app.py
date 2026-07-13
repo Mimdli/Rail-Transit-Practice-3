@@ -55,6 +55,50 @@ class PowerRequest(BaseModel):
     status: str
 
 
+class DoorRequest(BaseModel):
+    side: str  # "left", "right", "close"
+
+
+class ModeRequest(BaseModel):
+    mode: str  # "manual", "auto"
+
+
+class ControlLevelRequest(BaseModel):
+    level: str  # "FULL_TRACTION", "MEDIUM_TRACTION", "LOW_TRACTION", "COAST", "SERVICE_BRAKE", "FULL_BRAKE", "EMERGENCY_BRAKE"
+
+
+class LoadLevelRequest(BaseModel):
+    level: str  # "AW0", "AW1", "AW2", "AW3"
+
+
+class DwellTimeRequest(BaseModel):
+    seconds: float
+
+
+class WeatherRequest(BaseModel):
+    weather: str  # "DRY", "RAIN", "SNOW"
+
+
+class ConsistPresetRequest(BaseModel):
+    preset: str  # "4M2T", "6M0T", "1M4T"
+
+
+class RouteRequest(BaseModel):
+    route_id: str
+
+
+class StationJumpRequest(BaseModel):
+    station_id: str
+
+
+class NetworkToggleRequest(BaseModel):
+    enabled: bool
+
+
+class TrackSourceRequest(BaseModel):
+    source: str  # "database" | "demo"
+
+
 def response(result: dict):
     return JSONResponse(result, status_code=200 if result["ok"] else 409)
 
@@ -91,29 +135,79 @@ async def assign_plan(train_id: str, body: PlanRequest):
         lambda: runtime.dispatch.assign_plan(train_id, body.plan_id)))
 
 
-@app.post("/api/trains/{train_id}/{command}")
-async def train_command(train_id: str, command: str):
-    commands = {
-        "depart": runtime.dispatch.depart,
-        "hold": runtime.dispatch.hold,
-        "release": runtime.dispatch.release,
-        "emergency-stop": runtime.dispatch.emergency_stop,
-        "restore": runtime.dispatch.restore,
-    }
-    action = commands.get(command)
-    if action is None:
-        return JSONResponse(
-            {"ok": False, "message": f"未知列车命令: {command}"},
-            status_code=404,
-        )
-    result = runtime.command(lambda: action(train_id))
-    runtime.record_web_command(train_id, command, result)
-    return response(result)
-
-
 @app.post("/api/power")
 async def set_power(body: PowerRequest):
     return response(runtime.set_power(body.status))
+
+
+@app.post("/api/trains/{train_id}/doors")
+async def door_control(train_id: str, body: DoorRequest):
+    result = runtime.door_command(train_id, body.side)
+    runtime.record_web_command(train_id, f"door-{body.side}", result)
+    return response(result)
+
+
+@app.post("/api/trains/{train_id}/mode")
+async def set_mode(train_id: str, body: ModeRequest):
+    result = runtime.set_running_mode(train_id, body.mode)
+    runtime.record_web_command(train_id, f"mode-{body.mode}", result)
+    return response(result)
+
+
+@app.post("/api/trains/{train_id}/control-level")
+async def set_control_level(train_id: str, body: ControlLevelRequest):
+    result = runtime.apply_control_level(train_id, body.level)
+    runtime.record_web_command(train_id, f"handle-{body.level}", result)
+    return response(result)
+
+
+@app.post("/api/trains/{train_id}/load-level")
+async def set_load_level(train_id: str, body: LoadLevelRequest):
+    result = runtime.set_load_level(train_id, body.level)
+    runtime.record_web_command(train_id, f"load-{body.level}", result)
+    return response(result)
+
+
+@app.post("/api/trains/{train_id}/dwell-time")
+async def set_dwell_time(train_id: str, body: DwellTimeRequest):
+    result = runtime.set_dwell_time(train_id, body.seconds)
+    runtime.record_web_command(train_id, f"dwell-{body.seconds}", result)
+    return response(result)
+
+
+@app.post("/api/environment")
+async def set_weather(body: WeatherRequest):
+    return response(runtime.set_weather(body.weather))
+
+
+@app.post("/api/simulation/fast-forward/{train_id}")
+async def fast_forward(train_id: str):
+    result = runtime.fast_forward_to_next_station(train_id)
+    runtime.record_web_command(train_id, "fast-forward", result)
+    return response(result)
+
+
+@app.get("/api/scenes")
+async def list_scenes():
+    scenes = [
+        {"id": scene_id, **scene}
+        for scene_id, scene in runtime.scenes.items()
+    ]
+    return {
+        "ok": True,
+        "scenes": scenes,
+        "current": runtime.current_scene,
+    }
+
+
+@app.post("/api/scenes/{scene_id}/apply")
+async def apply_scene(scene_id: str):
+    return response(runtime.apply_scene(scene_id))
+
+
+@app.get("/api/replay")
+async def replay():
+    return runtime.replay_data()
 
 
 @app.post("/api/network/start")
@@ -164,7 +258,7 @@ async def simulation_command(command: str):
         runtime.paused = True
     elif command == "resume":
         runtime.paused = False
-    elif command in {"1", "2", "5"}:
+    elif command in {"1", "2", "5", "10"}:
         runtime.speed_multiplier = int(command)
     else:
         return JSONResponse(
@@ -172,6 +266,97 @@ async def simulation_command(command: str):
             status_code=404,
         )
     return {"ok": True, "message": "仿真状态已更新"}
+
+
+# ── Phase 4: 图表与力表格 ──────────────────────────────
+
+@app.get("/api/trains/{train_id}/chart/speed-force")
+async def speed_force_chart(train_id: str):
+    return runtime.get_chart_speed_force(train_id)
+
+
+@app.get("/api/trains/{train_id}/chart/energy")
+async def energy_chart(train_id: str):
+    return runtime.get_chart_energy(train_id)
+
+
+@app.get("/api/trains/{train_id}/force-table")
+async def force_table(train_id: str):
+    return runtime.get_force_table(train_id)
+
+
+# ── Phase 5: 编组配置 ──────────────────────────────────
+
+@app.post("/api/trains/{train_id}/consist/preset")
+async def consist_preset(train_id: str, body: ConsistPresetRequest):
+    result = runtime.apply_consist_preset(train_id, body.preset)
+    runtime.record_web_command(train_id, f"consist-{body.preset}", result)
+    return response(result)
+
+
+@app.get("/api/trains/{train_id}/consist")
+async def get_consist(train_id: str):
+    return runtime.get_consist_config(train_id)
+
+
+# ── Phase 6: 交路选择与车站跳转 ─────────────────────────
+
+@app.get("/api/trains/{train_id}/routes")
+async def get_routes(train_id: str):
+    return runtime.get_available_routes(train_id)
+
+
+@app.post("/api/trains/{train_id}/route")
+async def set_route(train_id: str, body: RouteRequest):
+    result = runtime.set_route(train_id, body.route_id)
+    runtime.record_web_command(train_id, f"route-{body.route_id}", result)
+    return response(result)
+
+
+@app.post("/api/trains/{train_id}/jump-station")
+async def jump_station(train_id: str, body: StationJumpRequest):
+    result = runtime.jump_to_station(train_id, body.station_id)
+    runtime.record_web_command(train_id, f"jump-{body.station_id}", result)
+    return response(result)
+
+
+@app.post("/api/trains/{train_id}/{command}")
+async def train_command(train_id: str, command: str):
+    commands = {
+        "depart": runtime.dispatch.depart,
+        "hold": runtime.dispatch.hold,
+        "release": runtime.dispatch.release,
+        "emergency-stop": runtime.dispatch.emergency_stop,
+        "restore": runtime.dispatch.restore,
+    }
+    action = commands.get(command)
+    if action is None:
+        return JSONResponse(
+            {"ok": False, "message": f"未知列车命令: {command}"},
+            status_code=404,
+        )
+    result = runtime.command(lambda: action(train_id))
+    runtime.record_web_command(train_id, command, result)
+    return response(result)
+
+
+# ── Phase 7: 网络开关 ──────────────────────────────────
+
+@app.post("/api/network/toggle")
+async def network_toggle(body: NetworkToggleRequest):
+    return response(runtime.toggle_network(body.enabled))
+
+
+# ── 数据源切换 ──────────────────────────────────────
+
+@app.get("/api/track/source")
+async def get_track_source():
+    return {"ok": True, "source": runtime.data_source}
+
+
+@app.post("/api/track/source")
+async def switch_track_source(body: TrackSourceRequest):
+    return response(runtime.switch_track_source(body.source))
 
 
 @app.websocket("/ws/realtime")

@@ -1,6 +1,20 @@
 {
   "source": "Link公里标最新数据-校对.xlsx",
   "unit": "m",
+  "demo": {
+    "up": [
+      {"link_id": 1, "start_m": 0.0, "end_m": 250.0, "length_m": 250.0},
+      {"link_id": 2, "start_m": 250.0, "end_m": 500.0, "length_m": 250.0},
+      {"link_id": 3, "start_m": 500.0, "end_m": 750.0, "length_m": 250.0},
+      {"link_id": 4, "start_m": 750.0, "end_m": 1000.0, "length_m": 250.0}
+    ],
+    "down": [
+      {"link_id": 5, "start_m": 0.0, "end_m": 250.0, "length_m": 250.0},
+      {"link_id": 6, "start_m": 250.0, "end_m": 500.0, "length_m": 250.0},
+      {"link_id": 7, "start_m": 500.0, "end_m": 750.0, "length_m": 250.0},
+      {"link_id": 8, "start_m": 750.0, "end_m": 1000.0, "length_m": 250.0}
+    ]
+  },
   "directions": {
     "up": [
       {

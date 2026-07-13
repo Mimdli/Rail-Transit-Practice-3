@@ -4,6 +4,7 @@ import heapq
 from dataclasses import dataclass
 from typing import Optional
 
+from src.common.track_position import TrackPosition
 from src.logger.recorder import Recorder
 from src.track.data import TrackData
 from src.vehicle.enums import DoorSide, RunningMode
@@ -14,6 +15,32 @@ from src.track.route import Route
 from .interlocking import BlockOccupancyManager, InterlockingService
 from .models import ServicePlan, TrainRuntime, TrainStatus
 from .train_manager import TrainManager, resolve_station_track_position
+
+
+def _resolve_target_from_route(track: TrackData, station,
+                                reserved_segments: tuple[int, ...]):
+    """从进路末段推导目标站台的 TrackPosition。
+
+    折返后 resolve_station_track_position 按 direction 选择
+    平台方向可能选到列车后方的站台。本函数改为直接从进路的
+    末段 ID 匹配站台，保证目标位置与进路一致。
+    """
+    if not reserved_segments:
+        return None
+    last_seg_id = reserved_segments[-1]
+    last_seg = track._seg_map.get(last_seg_id)
+    if last_seg is None:
+        return None
+    platform = next(
+        (p for p in track.platforms
+         if p.station_id == station.station_id and p.seg_id == last_seg_id),
+        None,
+    )
+    if platform is None:
+        return None
+    offset = max(0.0, min(last_seg.length,
+                         platform.position - last_seg.abs_start))
+    return TrackPosition(last_seg_id, offset)
 
 
 @dataclass(frozen=True)
@@ -291,7 +318,11 @@ class DispatchManager:
             self.occupancy.snapshot, self.interlocking.locks)
 
     def _apply_signal_protection(self, runtime: TrainRuntime) -> bool:
-        """红灯前切除牵引并制动，形成调度—信号—车辆闭环。"""
+        """红灯前切除牵引并制动，形成调度—信号—车辆闭环。
+
+        若列车目标站在红灯信号机之前（无需越过该信号即可到站），
+        则放行列车，避免信号误拦导致无法正常进站。
+        """
         if self.signal_system is None:
             return False
         controller = runtime.controller
@@ -309,6 +340,54 @@ class DispatchManager:
         if self.signal_system.get_signal_aspect(signal) != SignalAspect.RED:
             self._clear_signal_block(runtime)
             return False
+
+        # 若列车目标站在信号机之前，无需越过该信号，放行
+        if runtime.target_station_id is not None:
+            try:
+                target_station = self.trains.get_station(runtime.target_station_id)
+                # 优先使用实际目标 TrackPosition（链感知），
+                # 避免 station.position 在并行链拓扑中指错站台
+                target_tp = runtime.auto_drive.target_position
+                tgt_pos = (self._track_position_abs(target_tp)
+                           if target_tp is not None
+                           else target_station.position)
+                sig_pos = signal.position
+                train_pos = runtime.head_abs
+
+                # 目标在行驶方向上是否位于信号机之前（即列车→目标→信号）？
+                # 条件：目标在前方，且信号在目标之后（同向比较）
+                tgt_ahead = controller.direction * (tgt_pos - train_pos)
+                sig_beyond_tgt = controller.direction * (sig_pos - tgt_pos)
+
+                if tgt_ahead > 0 and sig_beyond_tgt > 0:
+                    # 信号机在目标站之后 → 列车到站前不会越过它
+                    self._clear_signal_block(runtime)
+                    return False
+
+                # 兜底：用绝对距离比较（处理方向判断的边界情况）
+                if tgt_ahead > 0 and abs(sig_pos - train_pos) > abs(tgt_pos - train_pos):
+                    self._clear_signal_block(runtime)
+                    return False
+            except ValueError:
+                pass
+
+        # 若红灯防护的区段在全路线内（尚未被 _route_window 锁但即将锁），
+        # 放行通过。否则列车永远无法进入下一区段来触发滚动锁闭 → 死锁。
+        if runtime.reserved_segments:
+            protected_seg = self.signal_system._protected_segment_id(
+                signal, self.track)
+            if protected_seg in runtime.reserved_segments:
+                self._clear_signal_block(runtime)
+                return False
+
+        # 若列车目标在信号所在区段上（而非防护区段），则列车可在
+        # 不进入防护区段的情况下到站。回程（折返后反向运行）时
+        # 信号可能位于列车与目标之间，但目标仍在信号所在区段内。
+        target_pos = runtime.auto_drive.target_position
+        if target_pos is not None and target_pos.segment_id == signal.seg_id:
+            self._clear_signal_block(runtime)
+            return False
+
         distance = controller.direction * (signal.position - runtime.head_abs)
         runtime.blocked_reason = f"前方信号 {signal.signal_id} 红灯（{distance:.0f}m）"
         runtime.status = TrainStatus.BLOCKED
@@ -576,18 +655,16 @@ class DispatchManager:
             return DispatchResult(False, "交路已到终点")
         target_station = self.trains.get_station(plan.station_ids[next_index])
         start_segment = runtime.controller.states[0].position.segment_id
-        runtime.reserved_segments = compute_station_route(
-            self.track, start_segment, target_station.station_id,
-            runtime.controller.direction)
-        if not runtime.reserved_segments:
-            runtime.reserved_segments = self.interlocking.route_between(
-                runtime.head_abs, target_station.position,
-                runtime.controller.direction)
+
+        # 计算进路：优先按运行方向选择站台方向，若目标在列车后方
+        # 则尝试另一侧站台（演示线路折返后 direction 反转但列车需沿
+        # 同一物理轨道反向行驶，此时 direction→platform 映射会选错）。
+        runtime.reserved_segments, target_position = \
+            self._compute_leg_route_and_target(
+                start_segment, target_station, runtime)
         if not runtime.reserved_segments:
             return DispatchResult(False, f"无法生成到 {target_station.name} 的进路")
 
-        target_position = resolve_station_track_position(
-            self.track, target_station, runtime.controller.direction)
         if runtime.reserved_segments[-1] != target_position.segment_id:
             runtime.reserved_segments = tuple(runtime.reserved_segments) + (
                 target_position.segment_id,)
@@ -609,6 +686,123 @@ class DispatchManager:
             return DispatchResult(False, request.reason)
         runtime.blocked_reason = ""
         return DispatchResult(True, f"目标站 {target_station.name}")
+
+    def _compute_leg_route_and_target(self, start_segment: int, target_station,
+                                       runtime: TrainRuntime):
+        """计算到目标站的进路与目标位置，折返后自动纠正站台方向。
+
+        先按运行方向选择站台方向计算进路；若算出的目标在列车后方
+        （distance_to_target ≤ 0），说明折返后 direction→platform 映射
+        选错了站台（演示线路单链拓扑折返时会发生），则改用另一侧站台重算。
+
+        若 compute_station_route 返回空（起终点在不同链），说明折返后
+        列车需要换链运行。此时找到当前站另一链的站台作为新起点重算进路，
+        避免回退到 route_between（会导致并行链段混入进路，造成跨链死锁）。
+        """
+        direction = runtime.controller.direction
+        head_abs = runtime.head_abs
+
+        # 第一次尝试：按运行方向选择站台
+        segments, target = self._try_compute_route(
+            start_segment, target_station, direction, head_abs)
+
+        if segments and target is not None:
+            target_abs = self._track_position_abs(target)
+            if direction * (target_abs - head_abs) > 0:
+                return segments, target
+
+        # 若 compute_station_route 未找到路径（起终点在不同链），
+        # 尝试找到当前站另一侧站台作为新起点，实现折返换链。
+        if not segments:
+            alt_start = self._resolve_alt_chain_start(
+                start_segment, target_station, direction, runtime)
+            if alt_start is not None:
+                # 重定位头车到新链站台，后续车厢由 reset_to 自动排列
+                runtime.controller.reset_to(alt_start)
+                runtime.track_adapter.set_active_route(None)
+                new_start = alt_start.segment_id
+                # 更新 head_abs（换链后绝对坐标可能变化）
+                new_head_abs = runtime.head_abs
+                segments, target = self._try_compute_route(
+                    new_start, target_station, direction, new_head_abs)
+                if segments and target is not None:
+                    target_abs = self._track_position_abs(target)
+                    if direction * (target_abs - new_head_abs) > 0:
+                        return segments, target
+
+        # 目标在后方或计算失败 → 尝试另一侧站台
+        fallback_segments, fallback_target = self._try_compute_route(
+            start_segment, target_station, -direction, head_abs)
+        if fallback_segments and fallback_target is not None:
+            return fallback_segments, fallback_target
+
+        # 兜底：返回第一次结果（即使目标在后方也比没有好）
+        if segments:
+            return segments, target
+        return (), None
+
+    def _resolve_alt_chain_start(self, start_segment: int, target_station,
+                                  direction: int,
+                                  runtime: TrainRuntime) -> Optional[TrackPosition]:
+        """折返换链：找到当前站（按 plan_index 确定）另一侧链的站台。
+
+        当 compute_station_route 无法找到从 start_segment 到目标站
+        的路径时（说明两段在不同物理链上），此方法定位列车当前所在
+        车站的另一侧站台，作为换链后的新起点。
+
+        使用 plan_index 而非物理段号来确定当前车站，避免因列车
+        停在站前容差范围内（ARRIVAL_TOLERANCE=3m）而误判车站。
+
+        Returns:
+            另一侧站台的 TrackPosition，或 None（无可用的替代站台）。
+        """
+        plan = runtime.service_plan
+        if plan is None or runtime.plan_index < 0:
+            return None
+        if runtime.plan_index >= len(plan.station_ids):
+            return None
+        current_station_id = plan.station_ids[runtime.plan_index]
+        current_station = self.trains.get_station(current_station_id)
+
+        # 找另一侧站台：同车站、不同 seg_id、方向匹配新运行方向
+        expected_dir = "down" if direction >= 0 else "up"
+        for platform in self.track.platforms:
+            if (platform.station_id == current_station.station_id
+                    and platform.seg_id != start_segment
+                    and platform.direction.lower() == expected_dir
+                    and platform.seg_id in self.track._seg_map):
+                seg = self.track._seg_map[platform.seg_id]
+                offset = max(0.0, min(seg.length,
+                                      platform.position - seg.abs_start))
+                return TrackPosition(platform.seg_id, offset)
+        return None
+
+    def _try_compute_route(self, start_segment: int, target_station,
+                            direction: int, head_abs: float):
+        """尝试用指定方向计算进路，返回 (segments, target_position)。
+
+        仅使用 compute_station_route（基于拓扑邻接关系的寻路），
+        不再回退到 route_between（基于绝对坐标，会在并行链拓扑中混入
+        另一链的区段，导致折返后两车互相阻塞）。
+        """
+        segments = compute_station_route(
+            self.track, start_segment, target_station.station_id, direction)
+        if not segments:
+            return (), None
+
+        target = _resolve_target_from_route(
+            self.track, target_station, segments)
+        if target is None:
+            target = resolve_station_track_position(
+                self.track, target_station, direction)
+        return segments, target
+
+    def _track_position_abs(self, tp: TrackPosition) -> float:
+        """计算 TrackPosition 的绝对里程。"""
+        seg = self.track._seg_map.get(tp.segment_id)
+        if seg is not None:
+            return seg.abs_start + tp.offset
+        return 0.0
 
     def _signal_route_segments(self, runtime: TrainRuntime) -> set[int]:
         if runtime.reserved_segments:

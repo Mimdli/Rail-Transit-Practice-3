@@ -14,13 +14,16 @@ TrackData（基于绝对浮点位置）包装为 ITrackQuery（基于 TrackPosit
 """
 
 from collections import deque
-from typing import Optional, Dict, TYPE_CHECKING
+from typing import Optional, Dict, List, Set, TYPE_CHECKING
 
 from src.common.track_position import TrackPosition, ITrackQuery
 from src.track.data import TrackData
 
 if TYPE_CHECKING:
     from src.track.route import Route
+
+# 共线岔点处区段端点里程允许的最大间隙 (m)
+_OVERLAP_JUNCTION_TOL = 2.0
 
 
 class TrackDataAdapter(ITrackQuery):
@@ -50,9 +53,27 @@ class TrackDataAdapter(ITrackQuery):
 
         # ── 进路状态 ─────────────────────────────────────────
         self._active_route: Optional["Route"] = None
+        self._fork_routes: Dict[int, int] = {}
 
         # ── 主线 segment ID 集合（仅 forward neighbor 链） ──
         self._main_line_seg_ids: set[int] = self._compute_main_line_seg_ids()
+
+    # ── 岔口路由（演示侧线走行）──────────────────────────────
+
+    def set_fork_route(self, at_seg_id: int, next_seg_id: int) -> None:
+        """指定列车离开 at_seg_id 终点时进入的相邻区段。"""
+        self._fork_routes[at_seg_id] = next_seg_id
+
+    def use_lateral_fork(self, at_seg_id: int) -> bool:
+        """在 at_seg_id 终点优先走侧向分支。"""
+        seg = self._td._seg_map.get(at_seg_id)
+        if seg is None or seg.end_lateral <= 0 or seg.end_lateral == 65535:
+            return False
+        self._fork_routes[at_seg_id] = seg.end_lateral
+        return True
+
+    def clear_fork_routes(self) -> None:
+        self._fork_routes.clear()
 
     # ── 线路查询 ───────────────────────────────────────────────
 
@@ -62,7 +83,7 @@ class TrackDataAdapter(ITrackQuery):
 
     def get_gradient(self, pos: TrackPosition) -> float:
         abs_pos = self.to_absolute(pos)
-        return self._td.get_gradient_at(abs_pos)
+        return self._td.get_gradient_at(abs_pos, seg_id=pos.segment_id)
 
     def get_is_tunnel(self, pos: TrackPosition) -> bool:
         return pos.segment_id in self._tunnel_seg_ids
@@ -87,7 +108,9 @@ class TrackDataAdapter(ITrackQuery):
     # ── 位置坐标转换 ───────────────────────────────────────────
 
     def advance_position(self, pos: TrackPosition, distance: float) -> TrackPosition:
-        """沿线路推进指定距离。
+        """沿区段拓扑推进，支持跨段、道岔与线路末端共线接续。"""
+        if distance == 0:
+            return pos
 
         通过绝对坐标转换实现，支持跨区段推进。
         超出线路终点时钳位到终点；允许起点之前的负位置（列车尾部）。
@@ -97,7 +120,7 @@ class TrackDataAdapter(ITrackQuery):
         new_abs = abs_pos + distance
         if new_abs > total:
             new_abs = total
-        return self.from_absolute(new_abs)
+        return self.from_absolute(new_abs, hint_seg_id=pos.segment_id)
 
     def to_absolute(self, pos: TrackPosition) -> float:
         """TrackPosition → 线路绝对里程 (m)。"""
@@ -146,6 +169,16 @@ class TrackDataAdapter(ITrackQuery):
 
         # Step 3: 兜底 — abs_pos < 0 或落在段间隙中
         if self._td.segments:
+            if hint_seg_id is not None and hint_seg_id in self._td._seg_map:
+                # 有 hint：在同链上找 abs_start≈0 的根段，避免并行链歧义
+                chain_ids = self._build_chain_ids(hint_seg_id)
+                for seg in self._td.segments:
+                    if seg.seg_id in chain_ids and abs(seg.abs_start) < 0.01:
+                        return TrackPosition(segment_id=seg.seg_id, offset=abs_pos)
+                # 同链未找到根段，回退到 hint 段本身
+                return TrackPosition(segment_id=hint_seg_id, offset=abs_pos)
+
+            # 无 hint：原有逻辑，找第一个 abs_start≈0 的段作为根段
             root_seg = self._td.segments[0]
             for seg in self._td.segments:
                 if abs(seg.abs_start) < 0.01:
@@ -234,6 +267,29 @@ class TrackDataAdapter(ITrackQuery):
 
         return visited
 
+    def _build_chain_ids(self, seed_seg_id: int) -> set[int]:
+        """构建与 seed_seg_id 同链的段 ID 集合（双向遍历邻居）。
+
+        从种子段出发，沿 start_neighbor（上行方向）和 end_neighbor（下行方向）
+        双向遍历，收集所有属于同一物理链的 segment ID。
+        """
+        seg_map = self._td._seg_map
+        seed = seg_map.get(seed_seg_id)
+        if seed is None:
+            return set()
+        chain = {seed_seg_id}
+        # 沿 end_neighbor 方向遍历（下行）
+        sid = seed.end_neighbor
+        while sid > 0 and sid != 65535 and sid in seg_map:
+            chain.add(sid)
+            sid = seg_map[sid].end_neighbor
+        # 沿 start_neighbor 方向遍历（上行）
+        sid = seed.start_neighbor
+        while sid > 0 and sid != 65535 and sid in seg_map:
+            chain.add(sid)
+            sid = seg_map[sid].start_neighbor
+        return chain
+
     def _disambiguate_candidates(self, candidates, abs_pos, hint_seg_id: Optional[int] = None):
         """从多个候选 segment 中选择正确的 segment。
 
@@ -260,17 +316,7 @@ class TrackDataAdapter(ITrackQuery):
         # 构建 hint_seg_id 所在链的 ID 集合
         chain_ids: set[int] = set()
         if hint_seg_id is not None:
-            last = self._td._seg_map.get(hint_seg_id)
-            if last is not None:
-                chain_ids = {last.seg_id}
-                sid = last.end_neighbor
-                while sid > 0 and sid != 65535 and sid in self._td._seg_map:
-                    chain_ids.add(sid)
-                    sid = self._td._seg_map[sid].end_neighbor
-                sid = last.start_neighbor
-                while sid > 0 and sid != 65535 and sid in self._td._seg_map:
-                    chain_ids.add(sid)
-                    sid = self._td._seg_map[sid].start_neighbor
+            chain_ids = self._build_chain_ids(hint_seg_id)
 
         # 优先级 2: 同链匹配 — 主线候选在同链上
         for seg in main_candidates:

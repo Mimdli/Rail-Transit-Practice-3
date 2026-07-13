@@ -339,11 +339,13 @@ class VehicleController:
         abs_pos = station.position if hasattr(station, 'position') else station.abs_pos
         return self.reset_to_absolute(abs_pos)
 
-    def reset_to_absolute(self, abs_position: float) -> bool:
+    def reset_to_absolute(self, abs_position: float,
+                          hint_seg_id: Optional[int] = None) -> bool:
         """重置到线路绝对位置 (m)。
 
         Args:
             abs_position: 线路上从头算起的绝对距离 (m)。
+            hint_seg_id: 可选的消歧段号，用于并行线选择正确链。
 
         Returns:
             True 如果成功。
@@ -351,8 +353,12 @@ class VehicleController:
         if self.track is None:
             return False
 
+        # 如果有 direction 但没有显式 hint，用方向推导链提示
+        if hint_seg_id is None and self.states:
+            hint_seg_id = self.states[0].position.segment_id
+
         try:
-            pos = self.track.from_absolute(abs_position)
+            pos = self.track.from_absolute(abs_position, hint_seg_id=hint_seg_id)
         except Exception:
             return False
 
@@ -437,13 +443,36 @@ class VehicleController:
         推荐新代码使用 reset_to() 以支持更灵活的重置。
         """
         slack = self.pipeline.coupler_config.slack if pre_tension else 0.0
+        body_len = sum(
+            car.length + (slack if i < len(self.consist) - 1 else 0.0)
+            for i, car in enumerate(self.consist)
+        )
+        # 从线路起点发车时，头车需前移整列车长度，使尾车落在起点而非重叠
+        head_offset = body_len if start_offset < 1e-6 else start_offset
         self.states = []
-        # 头车 (i=0) 在最前方（最大 offset），后续车依次在后方（递减 offset）
-        head_offset = start_offset
-        for i, car_config in enumerate(self.consist):
-            offset = head_offset - self.direction * i * (car_config.length + slack)
+        head_pos = TrackPosition(segment_id=start_segment_id, offset=head_offset)
+        self.states.append(CarState(
+            position=head_pos,
+            velocity=0.0,
+            acceleration=0.0,
+        ))
+        for i in range(1, len(self.consist)):
+            gap_behind = sum(
+                self.consist[j].length + slack for j in range(i)
+            )
+            if self.track is not None:
+                head_abs = self.track.to_absolute(self.states[0].position)
+                back_abs = head_abs - self.direction * gap_behind
+                back_pos = self.track.from_absolute(
+                    back_abs, hint_seg_id=start_segment_id
+                )
+            else:
+                back_pos = TrackPosition(
+                    segment_id=start_segment_id,
+                    offset=head_offset - self.direction * gap_behind,
+                )
             self.states.append(CarState(
-                position=TrackPosition(segment_id=start_segment_id, offset=offset),
+                position=back_pos,
                 velocity=0.0,
                 acceleration=0.0,
             ))
