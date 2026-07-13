@@ -109,6 +109,7 @@ class SimulationRuntime:
             "btn_open_right": False,
             "btn_close_left": False,
             "btn_close_right": False,
+            "tag17": 0,
         }
         self.cab_display_state = {
             "speed": 0.0,
