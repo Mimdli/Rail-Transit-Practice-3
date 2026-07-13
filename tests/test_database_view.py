@@ -137,8 +137,10 @@ def test_database_station_placement_and_separation_use_down_platform_topology():
     leader = dispatch.trains.require("前车")
 
     assert leader.controller.states[0].position.segment_id == 55
-    segment = track._seg_map[54]
-    follower.controller.reset_states(54, 2300.0 - segment.abs_start)
+    # 将后车放在前车上游约 150m 净间距处；旧 2300m 坐标已落到 Seg 54
+    # 起点之前，会被 reset_states 当作零偏移并造成车体重叠。
+    segment = track._seg_map[25]
+    follower.controller.reset_states(25, segment.length - 98.0)
     follower.status = TrainStatus.MANUAL
     for state in follower.controller.states:
         state.velocity = 17.0
