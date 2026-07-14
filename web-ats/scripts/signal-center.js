@@ -75,8 +75,9 @@
     selectedRoute = null;
     selectedSignalKey = signal.key;
     applySelection();
-    const aspect = signal.aspect === "RED" ? ["stop", "红灯"] : signal.aspect === "YELLOW" ? ["warn", "黄灯"] : ["", "绿灯"];
-    detailRows(signal.id, { className: aspect[0], label: aspect[1] }, [["当前显示", aspect[1]], ["防护方向", signal.direction], ["所属 Seg", signal.segmentId], ["区段偏移", `${signal.offset.toFixed(1)} m`], ["线路位置", signal.linkPosition == null ? "未映射" : `${signal.linkPosition.toFixed(1)} m`], ["允许开放", signal.aspect === "GREEN" ? "是" : "否"], ["限制原因", signal.aspect === "RED" ? "前方区段占用或进路未建立" : signal.aspect === "YELLOW" ? "前方信号限制" : "无"]]);
+    const aspect = signal.aspect === "RED" ? ["stop", "红灯"] : signal.aspect === "YELLOW" ? ["warn", "黄灯"] : signal.aspect === "GREEN" ? ["", "绿灯"] : ["off", "未接入"];
+    const reason = signal.aspect === "RED" ? "前方区段占用或进路未建立" : signal.aspect === "YELLOW" ? "前方信号限制" : signal.aspect === "GREEN" ? "无" : "运行态信号数据未映射";
+    detailRows(signal.id, { className: aspect[0], label: aspect[1] }, [["当前显示", aspect[1]], ["防护方向", signal.direction], ["所属 Seg", signal.segmentId], ["区段偏移", `${signal.offset.toFixed(1)} m`], ["线路位置", signal.linkPosition == null ? "未映射" : `${signal.linkPosition.toFixed(1)} m`], ["允许开放", signal.aspect === "GREEN" ? "是" : "否"], ["限制原因", reason]]);
   }
 
   function showSwitch(state, switchId) {
@@ -94,7 +95,7 @@
     const components = (state.line.switchComponents || []).filter(component => ids.includes(component.id));
     const points = components.flatMap(component => component.points);
     if (!points.length) return;
-    selectedRoute = { ids, label, trainId: selectedRoute?.trainId || state.trains?.[0]?.id || "" };
+    selectedRoute = { ids, label, trainId: selectedRoute?.trainId || "" };
     renderRouteDetails(state);
   }
 
@@ -113,19 +114,27 @@
     const active = (state.operatorRoutes || []).find(route =>
       route.componentIds?.some(id => selectedRoute.ids.includes(Number(id))));
     const trains = state.trains || [];
-    if (!trains.some(train => train.id === selectedRoute.trainId)) selectedRoute.trainId = trains[0]?.id || "";
+    const movements = components.map(component => component.movement).filter(Boolean);
+    const eligibleTrains = movements.length ? trains.filter(train => movements.some(movement =>
+      train.trackDirection === movement.fromDirection && train.directionCode === movement.directionCode
+    )) : trains;
+    if (!eligibleTrains.some(train => train.id === selectedRoute.trainId)) selectedRoute.trainId = eligibleTrains[0]?.id || "";
     const roles = { crossover: "交叉渡线", "single-crossover": "单渡线", turnback: "折返线", stub: "尽头线", siding: "侧线" };
     const branchIds = [...new Set(components.flatMap(component => component.segmentIds || []))];
+    const directionName = direction => direction === "up" ? "上行" : "下行";
+    const movementText = movements.length
+      ? [...new Set(movements.map(movement => `${directionName(movement.fromDirection)}股道进入${directionName(movement.toDirection)}股道`))].join(" / ")
+      : "";
     const statusClass = active ? "warn" : "";
     const statusLabel = active ? `已锁闭 · ${active.trainId}` : "未办理";
     detail.innerHTML = `
       <div class="pane-title"><h2>${escapeHtml(selectedRoute.label)}</h2><span class="status ${statusClass}">${escapeHtml(statusLabel)}</span></div>
       <dl class="detail-list"><dt>线路类型</dt><dd>${escapeHtml([...new Set(components.map(component => roles[component.role] || "联锁支线"))].join(" / "))}</dd><dt>包含道岔</dt><dd>${escapeHtml(points.map(point => point.name).join("、"))}</dd><dt>反位区段</dt><dd>${escapeHtml(branchIds.join("、"))}</dd><dt>办理终点</dt><dd>${escapeHtml(active?.targetStation || "由列车下一站确定")}</dd></dl>
       <div class="route-control" aria-label="岔道进路操作">
-        <div class="field"><label for="switchRouteTrain">办理列车</label><select id="switchRouteTrain">${trains.map(train => `<option value="${escapeHtml(train.id)}" ${train.id === selectedRoute.trainId ? "selected" : ""}>${escapeHtml(train.id)} · ${escapeHtml(train.status)}</option>`).join("")}</select></div>
-        <div class="route-control-actions"><button class="button active" id="lockSwitchRoute" ${active || !trains.length ? "disabled" : ""}>办理并锁闭进路</button><button class="button" id="cancelSwitchRoute" ${active ? "" : "disabled"}>取消进路</button></div>
-        <p>系统将校验运行方向、区段占用和冲突锁闭；列车尾部通过后自动解锁。</p>
-        <div class="command-feedback ${active ? "success" : ""}" id="switchRouteFeedback" role="status" aria-live="polite">${active ? `${escapeHtml(active.trainId)} 的进路已锁闭` : "选择列车后办理进路"}</div>
+        <div class="field"><label for="switchRouteTrain">办理列车</label><select id="switchRouteTrain" ${eligibleTrains.length ? "" : "disabled"}>${eligibleTrains.map(train => `<option value="${escapeHtml(train.id)}" ${train.id === selectedRoute.trainId ? "selected" : ""}>${escapeHtml(train.id)} · ${escapeHtml(train.status)}</option>`).join("")}</select></div>
+        <div class="route-control-actions"><button class="button active" id="lockSwitchRoute" ${active || !eligibleTrains.length ? "disabled" : ""}>办理并锁闭进路</button><button class="button" id="cancelSwitchRoute" ${active ? "" : "disabled"}>取消进路</button></div>
+        <p>${movementText ? `该渡线按${escapeHtml(movementText)}办理；` : ""}系统将校验下一站、区段占用和冲突锁闭，列车尾部通过后自动解锁。</p>
+        <div class="command-feedback ${active ? "success" : eligibleTrains.length ? "" : "error"}" id="switchRouteFeedback" role="status" aria-live="polite">${active ? `${escapeHtml(active.trainId)} 的进路已锁闭` : eligibleTrains.length ? "选择列车后办理进路" : `当前没有符合“${escapeHtml(movementText || "指定方向")}”的列车`}</div>
       </div>`;
     const select = document.getElementById("switchRouteTrain");
     if (select) select.onchange = () => { selectedRoute.trainId = select.value; };

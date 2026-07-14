@@ -226,6 +226,7 @@ Rail-Transit-Practice-3/
 ├── resource/                   # 资源文件
 │   ├── 线路数据(1).xls         # 原始线路 Excel 数据
 │   ├── link_mainline.json      # 上下行主线 Link 链（校对后公里标）
+│   ├── vision_alignment.json   # 视景边公里标、站台范围与开门侧标注
 │   ├── ats_layout.json         # ATS 道岔与信号机布局
 │   └── 初步目标需求分析.md      # 需求分析文档
 ├── data/                       # 运行时数据

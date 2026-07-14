@@ -1,0 +1,63 @@
+{
+  "source": "视景系统公里标最新数据+站台位置20260703.xlsx",
+  "unit": "m",
+  "tracks": {
+    "up": [
+      {"edge_id": 2, "start_m": 0.0, "end_m": 215.49, "length_m": 215.49},
+      {"edge_id": 10, "start_m": 215.49, "end_m": 232.81, "length_m": 17.32},
+      {"edge_id": 13, "start_m": 232.81, "end_m": 300.19, "length_m": 67.38},
+      {"edge_id": 16, "start_m": 300.19, "end_m": 443.81, "length_m": 143.62},
+      {"edge_id": 19, "start_m": 443.81, "end_m": 511.19, "length_m": 67.38},
+      {"edge_id": 20, "start_m": 511.19, "end_m": 5146.644, "length_m": 4635.454},
+      {"edge_id": 23, "start_m": 5146.644, "end_m": 8352.184, "length_m": 3205.54},
+      {"edge_id": 27, "start_m": 8352.184, "end_m": 8632.564, "length_m": 280.38},
+      {"edge_id": 34, "start_m": 8632.564, "end_m": 14119.63, "length_m": 5487.066},
+      {"edge_id": 38, "start_m": 14119.63, "end_m": 14400.14, "length_m": 280.51},
+      {"edge_id": 42, "start_m": 14400.14, "end_m": 16207.82966, "length_m": 1807.68966},
+      {"edge_id": 46, "start_m": 16207.82966, "end_m": 16275.20966, "length_m": 67.38},
+      {"edge_id": 48, "start_m": 16275.20966, "end_m": 16489.02, "length_m": 213.81034}
+    ],
+    "down": [
+      {"edge_id": 3, "start_m": 0.0, "end_m": 215.49, "length_m": 215.49},
+      {"edge_id": 4, "start_m": 215.49, "end_m": 232.81, "length_m": 17.32},
+      {"edge_id": 7, "start_m": 232.81, "end_m": 300.19, "length_m": 67.38},
+      {"edge_id": 11, "start_m": 300.19, "end_m": 443.81, "length_m": 143.62},
+      {"edge_id": 14, "start_m": 443.81, "end_m": 511.19, "length_m": 67.38},
+      {"edge_id": 17, "start_m": 511.19, "end_m": 5274.8396, "length_m": 4763.6496},
+      {"edge_id": 21, "start_m": 5274.8396, "end_m": 8346.083, "length_m": 3071.2434},
+      {"edge_id": 24, "start_m": 8346.083, "end_m": 8687.02908, "length_m": 340.94608},
+      {"edge_id": 28, "start_m": 8687.02908, "end_m": 14039.49649, "length_m": 5352.46741},
+      {"edge_id": 36, "start_m": 14039.49649, "end_m": 16203.38149, "length_m": 2163.885},
+      {"edge_id": 43, "start_m": 16203.38149, "end_m": 16270.76149, "length_m": 67.38},
+      {"edge_id": 47, "start_m": 16270.76149, "end_m": 16484.57149, "length_m": 213.81}
+    ]
+  },
+  "platforms": [
+    {"track": 1, "direction": "up", "station_id": 1, "vision_station_id": 101, "station_code": "GGZ", "station_name": "郭公庄站", "center_m": 372.0, "stop_start_m": 313.0, "stop_end_m": 431.0, "platform_side": "left"},
+    {"track": 0, "direction": "down", "station_id": 1, "vision_station_id": 101, "station_code": "GGZ", "station_name": "郭公庄站", "center_m": 372.0, "stop_start_m": 313.0, "stop_end_m": 431.0, "platform_side": "right"},
+    {"track": 1, "direction": "up", "station_id": 2, "vision_station_id": 102, "station_code": "FSP", "station_name": "丰台科技园站", "center_m": 1724.14, "stop_start_m": 1665.14, "stop_end_m": 1783.14, "platform_side": "right"},
+    {"track": 0, "direction": "down", "station_id": 2, "vision_station_id": 102, "station_code": "FSP", "station_name": "丰台科技园站", "center_m": 1719.52, "stop_start_m": 1660.52, "stop_end_m": 1778.52, "platform_side": "left"},
+    {"track": 1, "direction": "up", "station_id": 3, "vision_station_id": 103, "station_code": "KYL", "station_name": "科怡路站", "center_m": 2512.677, "stop_start_m": 2453.677, "stop_end_m": 2571.677, "platform_side": "right"},
+    {"track": 0, "direction": "down", "station_id": 3, "vision_station_id": 103, "station_code": "KYL", "station_name": "科怡路站", "center_m": 2507.61, "stop_start_m": 2448.61, "stop_end_m": 2566.61, "platform_side": "left"},
+    {"track": 1, "direction": "up", "station_id": 4, "vision_station_id": 104, "station_code": "FTN", "station_name": "丰台南路站", "center_m": 3491.832, "stop_start_m": 3432.832, "stop_end_m": 3550.832, "platform_side": "right"},
+    {"track": 0, "direction": "down", "station_id": 4, "vision_station_id": 104, "station_code": "FTN", "station_name": "丰台南路站", "center_m": 3488.32, "stop_start_m": 3429.32, "stop_end_m": 3547.32, "platform_side": "left"},
+    {"track": 1, "direction": "up", "station_id": 5, "vision_station_id": 105, "station_code": "FTD", "station_name": "丰台东大街站", "center_m": 5079.5146, "stop_start_m": 5020.5146, "stop_end_m": 5138.5146, "platform_side": "right"},
+    {"track": 0, "direction": "down", "station_id": 5, "vision_station_id": 105, "station_code": "FTD", "station_name": "丰台东大街站", "center_m": 5074.834, "stop_start_m": 5015.834, "stop_end_m": 5133.834, "platform_side": "left"},
+    {"track": 1, "direction": "up", "station_id": 6, "vision_station_id": 106, "station_code": "QLZ", "station_name": "七里庄站", "center_m": 6405.27, "stop_start_m": 6346.27, "stop_end_m": 6464.27, "platform_side": "right"},
+    {"track": 0, "direction": "down", "station_id": 6, "vision_station_id": 106, "station_code": "QLZ", "station_name": "七里庄站", "center_m": 6400.274, "stop_start_m": 6341.274, "stop_end_m": 6459.274, "platform_side": "left"},
+    {"track": 1, "direction": "up", "station_id": 7, "vision_station_id": 107, "station_code": "LLQ", "station_name": "六里桥站", "center_m": 8199.103, "stop_start_m": 8140.103, "stop_end_m": 8258.103, "platform_side": "left"},
+    {"track": 0, "direction": "down", "station_id": 7, "vision_station_id": 107, "station_code": "LLQ", "station_name": "六里桥站", "center_m": 8179.204, "stop_start_m": 8120.204, "stop_end_m": 8238.204, "platform_side": "right"},
+    {"track": 1, "direction": "up", "station_id": 8, "vision_station_id": 108, "station_code": "LLE", "station_name": "六里桥东站", "center_m": 9508.30248, "stop_start_m": 9449.30248, "stop_end_m": 9567.30248, "platform_side": "right"},
+    {"track": 0, "direction": "down", "station_id": 8, "vision_station_id": 108, "station_code": "LLE", "station_name": "六里桥东站", "center_m": 9488.344, "stop_start_m": 9429.344, "stop_end_m": 9547.344, "platform_side": "left"},
+    {"track": 1, "direction": "up", "station_id": 9, "vision_station_id": 109, "station_code": "BWR", "station_name": "北京西站", "center_m": 10656.17848, "stop_start_m": 10597.17848, "stop_end_m": 10715.17848, "platform_side": "right"},
+    {"track": 0, "direction": "down", "station_id": 9, "vision_station_id": 109, "station_code": "BWR", "station_name": "北京西站", "center_m": 10659.11378, "stop_start_m": 10600.11378, "stop_end_m": 10718.11378, "platform_side": "left"},
+    {"track": 1, "direction": "up", "station_id": 10, "vision_station_id": 110, "station_code": "JBG", "station_name": "军事博物馆站", "center_m": 12057.87933, "stop_start_m": 11998.87933, "stop_end_m": 12116.87933, "platform_side": "right"},
+    {"track": 0, "direction": "down", "station_id": 10, "vision_station_id": 110, "station_code": "JBG", "station_name": "军事博物馆站", "center_m": 12058.07, "stop_start_m": 11999.07, "stop_end_m": 12117.07, "platform_side": "left"},
+    {"track": 1, "direction": "up", "station_id": 11, "vision_station_id": 111, "station_code": "BDZ", "station_name": "白堆子站", "center_m": 13967.68649, "stop_start_m": 13908.68649, "stop_end_m": 14026.68649, "platform_side": "right"},
+    {"track": 0, "direction": "down", "station_id": 11, "vision_station_id": 111, "station_code": "BDZ", "station_name": "白堆子站", "center_m": 13970.28014, "stop_start_m": 13911.28014, "stop_end_m": 14029.28014, "platform_side": "left"},
+    {"track": 1, "direction": "up", "station_id": 12, "vision_station_id": 112, "station_code": "BQS", "station_name": "白石桥南站", "center_m": 15012.51349, "stop_start_m": 14953.51349, "stop_end_m": 15071.51349, "platform_side": "right"},
+    {"track": 0, "direction": "down", "station_id": 12, "vision_station_id": 112, "station_code": "BQS", "station_name": "白石桥南站", "center_m": 15013.91, "stop_start_m": 14954.91, "stop_end_m": 15072.91, "platform_side": "left"},
+    {"track": 1, "direction": "up", "station_id": 13, "vision_station_id": 113, "station_code": "GTG", "station_name": "国家图书馆站", "center_m": 16105.57149, "stop_start_m": 16046.57149, "stop_end_m": 16164.57149, "platform_side": "left"},
+    {"track": 0, "direction": "down", "station_id": 13, "vision_station_id": 113, "station_code": "GTG", "station_name": "国家图书馆站", "center_m": 16110.01966, "stop_start_m": 16051.01966, "stop_end_m": 16169.01966, "platform_side": "right"}
+  ]
+}

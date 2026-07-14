@@ -60,6 +60,7 @@ class AutoDriveController:
     KP_TRACTION_APPROACH = 0.15  # 接近段欠速补偿（温和）
     # ── 制动距离安全系数 ─────────────────────────────────────
     BRAKE_MARGIN = 1.3     # 制动距离安全余量（30%），比原 20% 更保守
+    STOP_POSITION_TOLERANCE = 0.15  # 精准停车允许误差 (m)
 
     def __init__(self, controller: VehicleController,
                  interlock: "DoorInterlock | None" = None,
@@ -261,9 +262,13 @@ class AutoDriveController:
         )
 
         # ── 到站判断 ──────────────────────────────────────────
-        # 容忍小幅 overshoot（abs 而非 >=0），与 dispatch._check_arrival 对齐。
-        # 避免因制动距离不足略过目标点后永久卡死在 APPROACHING。
-        if self.controller.is_stopped and abs(distance) < 3.0:
+        # 仅在15cm内判定对标完成；提前停住时继续低速牵引贴近停车中心。
+        if (self.controller.is_stopped
+                and abs(distance) <= self.STOP_POSITION_TOLERANCE):
+            self._enter_dwell()
+            return
+        if self.controller.is_stopped and distance < 0.0:
+            # 小幅越标无法靠正向牵引修正，交给调度层停稳校正。
             self._enter_dwell()
             return
 
@@ -313,8 +318,19 @@ class AutoDriveController:
                     brake_cmd = max(brake_floor, min(0.7, feedback + brake_floor))
                     self._set_throttle(0.0)
                     self._set_brake(brake_cmd)
+                elif (distance > self.STOP_POSITION_TOLERANCE
+                      and (current_speed < 0.03
+                           or current_speed < v_target_creep - 0.01)):
+                    # 提前停住或蠕行不足时重新起步，避免在目标前3m直接结束。
+                    # 完整编组静止时需要足够的起步牵引克服基本阻力；
+                    # 一旦移动，立即恢复较小牵引并跟随蠕行速度曲线。
+                    if current_speed < 0.03:
+                        throttle_cmd = 0.3
+                    else:
+                        throttle_cmd = 0.12
+                    self._set_throttle(throttle_cmd)
+                    self._set_brake(0.0)
                 elif current_speed < 0.05:
-                    # 几乎停止 → 施加保持制动防止溜车
                     self._set_throttle(0.0)
                     self._set_brake(max(brake_floor, 0.4))
                 else:

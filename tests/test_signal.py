@@ -157,6 +157,25 @@ def test_dispatch_lock_and_occupancy_drive_signal_aspects():
     assert ss.get_signal_aspect(signals[0]) == SignalAspect.RED
 
 
+def test_dispatch_aspects_can_be_derived_without_overwriting_runtime_state():
+    """ATS 展示层可独立计算全量灯色，不污染列车防护使用的缓存。"""
+    track = TrackLoader().load_demo_data()
+    signals = [
+        Signal("layout:1", direction="down", seg_id=1, offset=100.0),
+        Signal("layout:2", direction="down", seg_id=2, offset=100.0),
+    ]
+    track.signals = signals
+    track.build_coordinates()
+    ss = SignalSystem()
+    ss.set_signal_aspect("layout:1", SignalAspect.GREEN)
+
+    aspects = ss.derive_aspects_from_dispatch(
+        signals, track, {2: frozenset({"2车"})})
+
+    assert aspects["layout:1"] == SignalAspect.RED
+    assert ss.get_signal_aspect(signals[0]) == SignalAspect.GREEN
+
+
 def test_directional_signal_query_supports_reverse_running():
     ss = SignalSystem()
     signals = [

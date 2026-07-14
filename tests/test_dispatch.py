@@ -341,3 +341,19 @@ def test_stopped_train_recovers_from_small_station_overshoot():
     assert runtime.status == TrainStatus.DWELLING
     assert runtime.target_station_id is None
     assert runtime.controller.states[0].position == target
+
+
+def test_stopped_train_is_aligned_to_exact_target_center():
+    """停稳后的厘米级残差应校正到精确停车目标。"""
+    dispatch = _make_dispatch()
+    assert dispatch.add_train("对标车", 1).ok
+    assert dispatch.assign_plan("对标车", "loop").ok
+    assert dispatch.depart("对标车").ok
+    runtime = dispatch.trains.require("对标车")
+    target = runtime.auto_drive.target_position
+    short = runtime.track_adapter.advance_position(target, -0.1)
+    dispatch._place_train_head(runtime, short)
+
+    dispatch._check_arrival(runtime)
+
+    assert runtime.controller.states[0].position == target

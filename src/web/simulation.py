@@ -12,6 +12,8 @@ from typing import Callable, Optional
 
 MAX_CHART_POINTS = 600   # 60s at 10Hz
 MAX_ENERGY_POINTS = 1200  # 120s at 10Hz
+# 补偿视景端按 km/h 数值解释速度造成的 3.6 倍显示偏差。
+VISION_SPEED_SCALE = 3.6
 
 from src.dispatch import DispatchManager, DispatchResult, ServicePlan
 from src.logger.evaluator import Evaluator
@@ -22,7 +24,9 @@ from src.signal.system import SignalAspect, SignalSystem
 from src.track.db_loader import DBLoader
 from src.track.ats_layout import load_ats_layout
 from src.track.link_mainline import LinkCoordinateMapper, load_mainline_links
+from src.track.vision_alignment import VisionCoordinateMapper
 from src.track.loader import TrackLoader
+from src.track.data import Signal
 from src.common.track_position import TrackPosition
 from src.common.consist import CONSIST_1M4T, CONSIST_4M2T, CONSIST_6M0T
 from src.track.semantic_line import build_semantic_line
@@ -48,7 +52,10 @@ class SimulationRuntime:
         self.network = NetworkManager()
         self.semantic_line = build_semantic_line(self.track, self._link_source)
         self.link_mapper = LinkCoordinateMapper(self.track, self._link_source)
+        self.vision_mapper = VisionCoordinateMapper(
+            self.track, self._link_source)
         self.ats_switches, self.ats_signals = load_ats_layout()
+        self._ats_runtime_signals = self._build_ats_runtime_signals()
         self.weather = WeatherType.DRY
         self.env = MockEnvironment(self.weather, self.track)
         self.dispatch = DispatchManager(
@@ -134,7 +141,7 @@ class SimulationRuntime:
             "door_states": [0, 0, 0, 0, 0, 0],
             "has_power": True,
             # 信号屏专有字段
-            "mode": 5,
+            "mode": 4,
             "pull_switch": 0,
             "pull_state": 0,
             "brake_state": 0,
@@ -486,21 +493,34 @@ class SimulationRuntime:
             if not runtime.controller.states:
                 continue
             state = runtime.controller.states[0]
+            vision_position = self.vision_mapper.to_vision_position(
+                state.position, runtime.controller.direction)
             other_trains.append({
-                "dist": int(state.position.offset * 1000),
-                "edge": state.position.segment_id,
+                "dist": int(round(
+                    (vision_position.offset_m if vision_position
+                     else state.position.offset) * 1000)),
+                "edge": (vision_position.edge_id if vision_position
+                         else state.position.segment_id),
                 "dir": 1 if runtime.controller.direction > 0 else -1,
                 "speed_cms": int(runtime.controller.head_speed * 100),
             })
 
+        primary_vision_position = self.vision_mapper.to_vision_position(
+            head_state.position, ctrl.direction)
+
         return {
             "signal_states": signal_states,
             "switch_states": switch_states,
-            "speed_mms": int(ctrl.head_speed * 1000),
+            "speed_mms": int(round(
+                ctrl.head_speed * 1000 * VISION_SPEED_SCALE)),
             "accel_pct": min(100, max(0, int(abs(head_accel) / 1.1 * 100))),
             "run_state": run_state,
-            "position_mm": int(head_state.position.offset * 1000),
-            "edge_id": head_state.position.segment_id,
+            "position_mm": int(round(
+                (primary_vision_position.offset_m if primary_vision_position
+                 else head_state.position.offset) * 1000)),
+            "edge_id": (primary_vision_position.edge_id
+                        if primary_vision_position
+                        else head_state.position.segment_id),
             "direction": 1 if ctrl.direction > 0 else -1,
             "other_trains": other_trains,
         }
@@ -658,7 +678,8 @@ class SimulationRuntime:
 
         # 驾驶模式
         if ctrl.running_mode.name == "AUTOMATIC":
-            self.cab_display_state["mode"] = 5  # ATO模式
+            # 实机信号屏确认：4=ATO，5 会显示为 DTO。
+            self.cab_display_state["mode"] = 4
         else:
             self.cab_display_state["mode"] = 0  # 人工模式
 
@@ -945,6 +966,9 @@ class SimulationRuntime:
     def request_switch_route(self, train_id: str, component_ids,
                              label: str = "") -> dict:
         """将 Web 示意图中的真实道岔组件转换为可执行联锁进路。"""
+        runtime = self.dispatch.trains.get(train_id)
+        if runtime is None:
+            return {"ok": False, "message": f"列车不存在: {train_id}"}
         available = {
             component["id"]: component
             for component in self._serialize_switch_components()
@@ -953,6 +977,33 @@ class SimulationRuntime:
             int(item) for item in component_ids if int(item) in available))
         if not selected_ids:
             return {"ok": False, "message": "未选择有效的道岔组件"}
+
+        # 按组件声明的股道转换方向办理，避免左右端渡线套用同一方向。
+        head = runtime.controller.states[0].position
+        track_direction = self.link_mapper.direction_for_segment(head.segment_id)
+        compatible_ids = tuple(
+            component_id for component_id in selected_ids
+            if not available[component_id].get("movement")
+            or (
+                track_direction
+                == available[component_id]["movement"]["fromDirection"]
+                and runtime.controller.direction
+                == available[component_id]["movement"]["directionCode"]
+            )
+        )
+        if not compatible_ids:
+            movements = [available[item].get("movement")
+                         for item in selected_ids]
+            movement = next((item for item in movements if item), None)
+            direction_names = {"up": "上行", "down": "下行"}
+            route_usage = (f"{direction_names[movement['fromDirection']]}股道列车进入"
+                           f"{direction_names[movement['toDirection']]}股道"
+                           if movement else "指定方向列车")
+            return {
+                "ok": False,
+                "message": f"所选渡线仅允许{route_usage}，当前列车方向不符",
+            }
+        selected_ids = compatible_ids
         branch_ids = {
             segment_id
             for component_id in selected_ids
@@ -1420,6 +1471,9 @@ class SimulationRuntime:
         try:
             self.semantic_line = build_semantic_line(self.track, self._link_source)
             self.link_mapper = LinkCoordinateMapper(self.track, self._link_source)
+            self.vision_mapper = VisionCoordinateMapper(
+                self.track, self._link_source)
+            self._ats_runtime_signals = self._build_ats_runtime_signals()
         except Exception:
             self._data_source = old_source
             raise
@@ -1557,19 +1611,44 @@ class SimulationRuntime:
             regen_ratios=regen_ratios,
         )
 
+    def _build_ats_runtime_signals(self) -> dict[int, Signal]:
+        """把 ATS 布局信号转换为具有唯一状态键的闭塞计算对象。"""
+        signals: dict[int, Signal] = {}
+        for layout_signal in self.ats_signals:
+            segment = self.track._seg_map.get(layout_signal.seg_id)
+            if segment is None:
+                continue
+            # ATS 表与运行数据库的上下行编码相反，97 个重合点均满足该关系。
+            direction = "down" if layout_signal.direction == "up" else "up"
+            signals[layout_signal.layout_id] = Signal(
+                signal_id=f"ats-layout:{layout_signal.layout_id}",
+                position=segment.abs_start + layout_signal.offset_m,
+                direction=direction,
+                seg_id=layout_signal.seg_id,
+                offset=layout_signal.offset_m,
+            )
+        return signals
+
     def snapshot(self) -> dict:
         self._snapshot_sequence += 1
         occupancy = self.dispatch.occupancy.snapshot
         locks = self.dispatch.interlocking.locks
         trains = [self._serialize_train(runtime)
                   for runtime in self.dispatch.trains.values()]
-        # ATS 布局保留同名信号机的不同物理位置，运行态按名称映射灯色。
-        runtime_signals = {signal.signal_id: signal for signal in self.track.signals}
+        # 同名信号机分布在多个车站；全量布局按唯一编号独立计算灯色。
+        runtime_signals = {
+            (signal.seg_id, round(signal.offset, 3)): signal
+            for signal in self.track.signals
+        }
+        layout_aspects = self.signal_system.derive_aspects_from_dispatch(
+            list(self._ats_runtime_signals.values()), self.track, occupancy)
         signals = []
         for signal in self.ats_signals:
-            runtime_signal = runtime_signals.get(signal.name)
-            aspect = (self.signal_system.get_signal_aspect(runtime_signal).name
-                      if runtime_signal is not None else "RED")
+            runtime_signal = runtime_signals.get(
+                (signal.seg_id, round(signal.offset_m, 3)))
+            layout_runtime_signal = self._ats_runtime_signals.get(signal.layout_id)
+            aspect = (layout_aspects[layout_runtime_signal.signal_id].name
+                      if layout_runtime_signal is not None else "UNKNOWN")
             position = self.link_mapper.to_link_position(
                 TrackPosition(signal.seg_id, signal.offset_m))
             signals.append({
@@ -1580,6 +1659,9 @@ class SimulationRuntime:
                 "offset": signal.offset_m,
                 "direction": signal.direction,
                 "aspect": aspect,
+                "mapped": layout_runtime_signal is not None,
+                "stateSource": ("runtime" if runtime_signal is not None
+                                else "derived"),
                 "linkPosition": round(position, 3) if position is not None else None,
             })
         events = [
@@ -1767,12 +1849,39 @@ class SimulationRuntime:
                 role = "stub"
             else:
                 role = "siding"
-            components.append({
+            component = {
                 "id": index,
                 "role": role,
                 "segmentIds": sorted(segment_ids),
+                "segmentLengths": {
+                    str(segment_id): round(
+                        self.track._seg_map[segment_id].length, 3)
+                    for segment_id in segment_ids
+                    if segment_id in self.track._seg_map
+                },
                 "points": points,
-            })
+            }
+            if role == "single-crossover":
+                up_point = next(point for point in points
+                                if point["direction"] == "up")
+                down_point = next(point for point in points
+                                  if point["direction"] == "down")
+                # 右端 SW-0103 用于下行转上行，其余已标注渡线用于上行转下行。
+                from_direction, to_direction = (
+                    ("down", "up") if index in (13, 14)
+                    else ("up", "down")
+                )
+                from_point = (up_point if from_direction == "up"
+                              else down_point)
+                to_point = (up_point if to_direction == "up"
+                            else down_point)
+                component["movement"] = {
+                    "fromDirection": from_direction,
+                    "toDirection": to_direction,
+                    "directionCode": (1 if to_point["position"]
+                                      > from_point["position"] else -1),
+                }
+            components.append(component)
         return sorted(components, key=lambda item: item["points"][0]["position"])
 
     def _switch_anchor(self, *segment_ids: int) -> float:
@@ -1879,6 +1988,8 @@ class SimulationRuntime:
                              if link_position is not None else None),
             "segmentId": head.segment_id if head else None,
             "offset": round(head.offset, 3) if head else None,
+            "trackDirection": (self.link_mapper.direction_for_segment(
+                head.segment_id) if head else None),
             "speedLimitKmh": round(limit, 1),
             "gradientPermille": round(gradient, 3),
             "targetStationId": runtime.target_station_id,

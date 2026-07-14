@@ -11,6 +11,7 @@ from src.vehicle.enums import DoorSide, RunningMode
 from src.signal.system import SignalAspect
 from src.track.semantic_line import compute_station_route
 from src.track.route import Route
+from src.track.vision_alignment import VisionCoordinateMapper
 
 from .interlocking import BlockOccupancyManager, InterlockingService
 from .models import ServicePlan, TrainRuntime, TrainStatus
@@ -52,7 +53,7 @@ class DispatchResult:
 class DispatchManager:
     """调度命令入口和所有列车的统一仿真时钟。"""
 
-    ARRIVAL_TOLERANCE = 3.0
+    ARRIVAL_TOLERANCE = 0.15
     ARRIVAL_OVERSHOOT_TOLERANCE = 20.0
     SEPARATION_DECELERATION = 1.0
     MINIMUM_SEPARATION = 30.0
@@ -67,6 +68,8 @@ class DispatchManager:
         self.occupancy = BlockOccupancyManager()
         self.interlocking = InterlockingService(track, self.occupancy)
         self.signal_system = signal_system
+        link_source = "demo" if len(track.segments) <= 10 else "directions"
+        self.vision_mapper = VisionCoordinateMapper(track, link_source)
         self.service_plans: dict[str, ServicePlan] = {}
         # Web ATS 人工办理的岔道进路；进路通过期间按列车尾部逐段解锁。
         self._operator_routes: dict[str, dict] = {}
@@ -732,8 +735,8 @@ class DispatchManager:
         arrived = (-self.ARRIVAL_OVERSHOOT_TOLERANCE <= distance
                    <= self.ARRIVAL_TOLERANCE)
         if arrived and runtime.controller.is_stopped:
-            # 制动离散步进可能造成小幅越站；停稳后校正到停车点，避免永久全制动。
-            if distance < -self.ARRIVAL_TOLERANCE:
+            # 停稳后统一落到标注中心，消除离散步进残留的厘米级误差。
+            if abs(distance) > 1e-6:
                 self._place_train_head(runtime, runtime.auto_drive.target_position)
             self.interlocking.cancel_route(runtime.train_id)
             self._operator_routes.pop(runtime.train_id, None)
@@ -747,7 +750,12 @@ class DispatchManager:
             terminal = runtime.plan_index in (0, len(plan.station_ids) - 1)
             runtime.status = (TrainStatus.TURNING_BACK
                               if terminal and plan.turnback else TrainStatus.DWELLING)
-            side = self.track.get_platform_side_at(runtime.head_abs)
+            head_position = runtime.controller.states[0].position
+            side = self.vision_mapper.platform_side_at(
+                head_position, runtime.controller.direction)
+            if not side:
+                side = self.track.get_platform_side_at(
+                    runtime.head_abs, head_position.segment_id)
             if side == "left":
                 runtime.controller.open_door(DoorSide.LEFT)
             elif side == "right":
@@ -885,7 +893,7 @@ class DispatchManager:
         车站的另一侧站台，作为换链后的新起点。
 
         使用 plan_index 而非物理段号来确定当前车站，避免因列车
-        停在站前容差范围内（ARRIVAL_TOLERANCE=3m）而误判车站。
+        停在站前容差范围内而误判车站。
 
         Returns:
             另一侧站台的 TrackPosition，或 None（无可用的替代站台）。

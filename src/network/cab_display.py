@@ -329,7 +329,7 @@ class CabDisplayClient:
                             speed=data.get("speed", 0.0),
                             acceleration=data.get("acceleration", 0.0),
                             speed_limit=data.get("speed_limit", 0.0),
-                            mode=data.get("mode", 5),
+                            mode=data.get("mode", 4),
                             run_dir=data.get("run_dir", 0),
                             curr_station=data.get("curr_station", 0),
                             next_station=data.get("next_station", 0),

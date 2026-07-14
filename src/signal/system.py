@@ -83,15 +83,22 @@ class SignalSystem:
         信号仅对占用亮红灯，锁闭由联锁系统保证互斥，
         不因段未被锁而亮红灯，避免滚动进路死锁。
         """
-        if not signals:
-            return
+        aspects = self.derive_aspects_from_dispatch(signals, track, occupancy)
+        self.set_signal_aspects(aspects)
+
+    def derive_aspects_from_dispatch(
+        self, signals: list, track,
+        occupancy: dict[int, frozenset[str]],
+    ) -> dict[str, SignalAspect]:
+        """计算独立信号灯色，不修改当前运行态缓存。"""
+        aspects: dict[str, SignalAspect] = {}
         for signal in signals:
             protected = self._protected_segment_id(signal, track)
             if protected in occupancy:
                 aspect = SignalAspect.RED
             else:
                 aspect = SignalAspect.GREEN
-            self.set_signal_aspect(signal.signal_id, aspect)
+            aspects[signal.signal_id] = aspect
 
         # 同方向红灯的前一架信号显示黄灯预告。
         for direction in ("down", "up"):
@@ -100,9 +107,10 @@ class SignalSystem:
             ordered.sort(key=lambda signal: signal.position,
                          reverse=direction == "up")
             for current, ahead in zip(ordered, ordered[1:]):
-                if (self.get_signal_aspect(current) != SignalAspect.RED
-                        and self.get_signal_aspect(ahead) == SignalAspect.RED):
-                    self.set_signal_aspect(current.signal_id, SignalAspect.YELLOW)
+                if (aspects[current.signal_id] != SignalAspect.RED
+                        and aspects[ahead.signal_id] == SignalAspect.RED):
+                    aspects[current.signal_id] = SignalAspect.YELLOW
+        return aspects
 
     def _protected_segment_id(self, signal, track) -> int:
         segment = track._seg_map.get(signal.seg_id)
