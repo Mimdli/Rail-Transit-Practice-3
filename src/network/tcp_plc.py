@@ -4,7 +4,7 @@
 PLC作为TCP服务端，仿真系统作为客户端主动连接。
 - 3端口: 8001(主控), 8002(备用), 8003(备用)
 - PLC→上位机: 46字节, 100ms周期
-- 上位机→PLC: 26字节, 按需发送
+- 上位机→PLC: 28字节, 按需发送
 
 协议参考: 《轨交多系统平台接口协议汇总.md》司机驾驶模拟台PLC协议
 """
@@ -52,6 +52,14 @@ class PLCClient:
         self.last_sent_packet: bytes = b''
         self.last_recv_packet: bytes = b''
 
+        # 三个 PLC 端口分别统计，供 Web 端定位主/备用链路状态。
+        self.port_packets_sent = [0, 0, 0]
+        self.port_packets_received = [0, 0, 0]
+        self.port_last_send_time = [0.0, 0.0, 0.0]
+        self.port_last_recv_time = [0.0, 0.0, 0.0]
+        self.port_last_sent_packet = [b'', b'', b'']
+        self.port_last_recv_packet = [b'', b'', b'']
+
     @property
     def last_plc_data(self) -> Optional[dict]:
         return self._last_plc_data
@@ -81,15 +89,22 @@ class PLCClient:
     def send_output(self, **kwargs):
         """发送上位机输出到PLC，kwargs 透传至 pack_plc_output"""
         data = pack_plc_output(**kwargs)
-        for s in self._sockets:
+        for index, s in enumerate(self._sockets):
             if s:
                 try:
                     s.sendall(data)
                     self.packets_sent += 1
                     self.last_sent_packet = data
                     self.last_send_time = time.time()
+                    self.port_packets_sent[index] += 1
+                    self.port_last_send_time[index] = self.last_send_time
+                    self.port_last_sent_packet[index] = data
                 except Exception:
-                    pass
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+                    self._sockets[index] = None
 
     def _run(self):
         # 连接三个端口（port <= 0 的跳过）
@@ -115,30 +130,38 @@ class PLCClient:
 
             self.connected = any(s is not None for s in self._sockets)
 
-            for idx, s in enumerate(self._sockets):
+            for index, s in enumerate(self._sockets):
                 if s is None:
                     continue
                 try:
                     chunk = s.recv(PLC_RECV_SIZE * 4)
                     if not chunk:
                         continue
-                    self._recv_buffers[idx].extend(chunk)
-                    while len(self._recv_buffers[idx]) >= PLC_RECV_SIZE:
-                        frame = bytes(self._recv_buffers[idx][:PLC_RECV_SIZE])
-                        del self._recv_buffers[idx][:PLC_RECV_SIZE]
+                    self._recv_buffers[index].extend(chunk)
+                    while len(self._recv_buffers[index]) >= PLC_RECV_SIZE:
+                        frame = bytes(self._recv_buffers[index][:PLC_RECV_SIZE])
+                        del self._recv_buffers[index][:PLC_RECV_SIZE]
                         parsed = unpack_plc_data(frame)
                         if parsed:
                             self._last_plc_data = parsed
                             self.last_recv_packet = frame
                             self.packets_received += 1
                             self.last_recv_time = time.time()
+                            self.port_packets_received[index] += 1
+                            self.port_last_recv_time[index] = self.last_recv_time
+                            self.port_last_recv_packet[index] = frame
                             if self._recv_callback:
                                 self._recv_callback(parsed)
                 except socket.timeout:
                     pass
                 except Exception as e:
                     logger.debug("PLC接收异常: %s", e)
-                    self._recv_buffers[idx].clear()
+                    self._recv_buffers[index].clear()
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+                    self._sockets[index] = None
 
             elapsed = (time.perf_counter() - cycle_start) * 1000
             sleep_ms = max(0, PLC_CYCLE_MS - elapsed)
