@@ -32,7 +32,7 @@ def test_latest_vision_annotation_is_complete_and_continuous():
     )
 
 
-def test_all_station_targets_map_to_latest_centers_and_door_sides():
+def test_all_station_targets_map_to_directional_head_stops_and_door_sides():
     track = DBLoader().load_from_db()
     mapper = VisionCoordinateMapper(track)
     _, platforms = load_vision_alignment()
@@ -47,7 +47,10 @@ def test_all_station_targets_map_to_latest_centers_and_door_sides():
         line_m = mapper.to_vision_line_m(target, direction)
         matched = mapper.platform_at(target, direction)
 
-        assert math.isclose(line_m, annotation.center_m, abs_tol=1e-6)
+        expected = (annotation.stop_end_m
+                    if annotation.direction == "down"
+                    else annotation.stop_start_m)
+        assert math.isclose(line_m, expected, abs_tol=1e-6)
         assert matched is not None
         assert matched.station_id == annotation.station_id
         assert matched.platform_side == annotation.platform_side
@@ -63,8 +66,8 @@ def test_mapper_returns_visual_edge_and_edge_relative_offset():
 
     assert position is not None
     assert position.edge_id == 11
-    assert math.isclose(position.line_m, 372.0, abs_tol=1e-6)
-    assert math.isclose(position.offset_m, 71.81, abs_tol=1e-6)
+    assert math.isclose(position.line_m, 431.0, abs_tol=1e-6)
+    assert math.isclose(position.offset_m, 130.81, abs_tol=1e-6)
 
 
 def test_door_interlock_uses_station_specific_platform_side():
@@ -85,8 +88,8 @@ def test_door_interlock_uses_station_specific_platform_side():
     assert interlock.get_allowed_door_side() == DoorSide.LEFT
 
 
-def test_dispatch_arrival_aligns_to_latest_vision_station_center():
-    """调度到站后的头车公里标必须精确落在最新 StationKm。"""
+def test_dispatch_arrival_aligns_head_to_platform_far_end():
+    """下行到站后的车头必须落在站台高里程端停车标。"""
     track = DBLoader().load_from_db()
     dispatch = DispatchManager(track)
     dispatch.add_service_plan(ServicePlan(
@@ -106,4 +109,4 @@ def test_dispatch_arrival_aligns_to_latest_vision_station_center():
     annotation = next(
         item for item in dispatch.vision_mapper.platforms
         if item.station_id == 2 and item.direction == "down")
-    assert math.isclose(actual, annotation.center_m, abs_tol=1e-6)
+    assert math.isclose(actual, annotation.stop_end_m, abs_tol=1e-6)

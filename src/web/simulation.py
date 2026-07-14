@@ -529,6 +529,21 @@ class SimulationRuntime:
         """刷新统一状态；两个屏的数据源只在初始化时注册一次。"""
         self._update_cab_display_from_simulation()
 
+    def _display_target_station(self, runtime):
+        """返回显示用车站及到实际停车点的沿线距离。"""
+        station_id = runtime.target_station_id
+        arrived = runtime.status in (
+            TrainStatus.DWELLING, TrainStatus.TURNING_BACK)
+        if arrived and runtime.service_plan:
+            station_id = runtime.service_plan.station_ids[runtime.plan_index]
+        station = next(
+            (item for item in self.track.stations
+             if item.station_id == station_id), None)
+        if arrived:
+            return station, 0.0
+        distance = runtime.auto_drive.distance_to_target
+        return station, (max(0.0, distance) if distance is not None else None)
+
     @staticmethod
     def _build_door_states(ctrl) -> list:
         """构造 6 节车厢的门状态列表。
@@ -572,7 +587,10 @@ class SimulationRuntime:
     def _setup_cab_display_source(self):
         """使用同一实时状态生成两个屏幕协议所需的单位口径。"""
         def _network_source():
-            return dict(self.cab_display_state)
+            data = dict(self.cab_display_state)
+            # 实体网络屏按 km/h 显示，仿真内部速度统一使用 m/s。
+            data["speed"] = float(data.get("speed", 0.0)) * 3.6
+            return data
 
         def _signal_source():
             data = dict(self.cab_display_state)
@@ -689,16 +707,16 @@ class SimulationRuntime:
         # 车站信息按实际位置计算，终点站取交路末站。
         stations = sorted(self.track.stations, key=lambda station: station.position)
         current_station = 0
-        next_station = runtime.target_station_id or 0
-        next_station_dist = 0.0
+        display_station, display_distance = self._display_target_station(runtime)
+        next_station = display_station.station_id if display_station else 0
+        next_station_dist = display_distance or 0.0
         for index, station in enumerate(stations):
             if station.position <= runtime.head_abs:
                 current_station = station.station_id
                 if not next_station and index + 1 < len(stations):
                     next_station = stations[index + 1].station_id
-        target = next((station for station in stations if station.station_id == next_station), None)
-        if target:
-            next_station_dist = abs(target.position - runtime.head_abs)
+        if runtime.status in (TrainStatus.DWELLING, TrainStatus.TURNING_BACK):
+            current_station = next_station
         self.cab_display_state["curr_station"] = current_station
         self.cab_display_state["next_station"] = next_station
         if runtime.service_plan:
@@ -774,6 +792,7 @@ class SimulationRuntime:
 
     async def _run(self):
         while True:
+            cycle_start = asyncio.get_running_loop().time()
             if not self.paused:
                 dt = self.STEP_SECONDS * self.speed_multiplier
                 if not self.power_supply.can_traction():
@@ -814,7 +833,10 @@ class SimulationRuntime:
                             **self.plc_output_state,
                             vehicle_speed=self.plc_output_vehicle_speed,
                         )
-            await asyncio.sleep(self.STEP_SECONDS)
+            # 100 ms 是完整周期而非额外休眠；扣除本步计算和网络状态更新耗时，
+            # 避免每步实际变成 100 ms + 计算耗时而让视景位置低于实时速度。
+            elapsed = asyncio.get_running_loop().time() - cycle_start
+            await asyncio.sleep(max(0.0, self.STEP_SECONDS - elapsed))
 
     def _step_fast_forward(self, dt: float):
         """快进模式：批量步进直到停止条件满足。"""
@@ -1909,9 +1931,7 @@ class SimulationRuntime:
                          if head is not None else None)
         limit = (runtime.track_adapter.get_speed_limit(head) * 3.6
                  if head is not None else 0.0)
-        target = next(
-            (station for station in self.track.stations
-             if station.station_id == runtime.target_station_id), None)
+        target, target_distance = self._display_target_station(runtime)
         plan = runtime.service_plan
         report = controller.last_report
         energy_summary = controller.energy_summary()
@@ -1994,8 +2014,8 @@ class SimulationRuntime:
             "gradientPermille": round(gradient, 3),
             "targetStationId": runtime.target_station_id,
             "targetStation": target.name if target else None,
-            "targetDistance": (round(abs(target.position - head_abs), 1)
-                               if target else None),
+            "targetDistance": (round(target_distance, 1)
+                               if target_distance is not None else None),
             "held": runtime.held,
             "emergency": runtime.emergency,
             "blockedReason": runtime.blocked_reason,

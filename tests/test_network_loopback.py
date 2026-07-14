@@ -469,3 +469,18 @@ def test_plc_receive():
         plc_mod.PLC_SERVER_ADDR = "192.168.100.123"
         plc_mod.PLC_CYCLE_MS = 100
         server.close()
+
+
+def test_plc_output_is_queued_without_socket_io():
+    """仿真线程更新 PLC 输出时不得直接执行阻塞式 TCP 发送。"""
+    from src.network.tcp_plc import PLCClient
+
+    class BlockingSocket:
+        def sendall(self, _data):
+            raise AssertionError("send_output 不应在调用线程直接发送")
+
+    client = PLCClient()
+    client._sockets[0] = BlockingSocket()
+    client.send_output(output_bits=1, vehicle_speed=36)
+
+    assert len(client._pending_output) == 28

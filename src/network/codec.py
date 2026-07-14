@@ -699,6 +699,7 @@ def pack_network_screen(
 ) -> bytes:
     """打包网络屏 570 字节实物报文 (TCP → 总控:8888)。
 
+    speed 与 speed_limit 按实体屏口径使用 km/h。
     尾部 faultCode 不下发，车号位于偏移 568-569。
     """
     buf = bytearray(570)

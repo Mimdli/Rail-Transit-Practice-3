@@ -70,8 +70,8 @@ class VisionCoordinateMapper:
     """把项目内部 TrackPosition 映射为视景边号和边内位移。
 
     两套线路的累计里程存在小幅差异，因此使用首尾点和 13 个站台停车点
-    做分段线性校准。列车到达项目中的停车目标时，会精确映射到视景表中的
-    对应站台中心。
+    做分段线性校准。协议位置表示车头，因此到站时按运行方向映射到站台
+    远端停车标，避免车头停在站台中心而视觉上提前约半个站台长度。
     """
 
     def __init__(self, track: TrackData, link_source: str = "directions"):
@@ -127,7 +127,11 @@ class VisionCoordinateMapper:
                 source_m = self._link_mapper.to_link_position(
                     TrackPosition(platform.seg_id, offset))
                 if source_m is not None:
-                    anchors.append((source_m, annotation.center_m))
+                    # 下行沿公里标递增，车头停在站台高里程端；上行相反。
+                    head_stop_m = (annotation.stop_end_m
+                                   if direction == "down"
+                                   else annotation.stop_start_m)
+                    anchors.append((source_m, head_stop_m))
             anchors.append((links[-1].end_m, edges[-1].end_m))
             if self._is_strictly_increasing(anchors):
                 anchors_by_direction[direction] = tuple(anchors)

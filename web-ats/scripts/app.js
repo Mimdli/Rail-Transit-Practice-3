@@ -21,7 +21,6 @@
     pageTemplates.replay=ReplayCenter.template;
     pageTemplates.power=PowerCenter.template;
     pageTemplates.cab=CabCenter.template;
-    pageTemplates.demo=DemoMap.template;
     let selectedTrainId='1车', selectedLinkId='', selectedScenario='normal', seconds=9*3600+42*60+31, rate=1, paused=false, liveState=null, socket=null, snapshotTimer=null, logTrain='', lastSnapshotAt=0, lastOverviewRender=0, reconnectTimer=null, toastTimer=null, replayData=null, replayTimer=null, trackZoom=1,trackPanX=0,trackDragging=false,trackDragStartX=0,trackDragPanX=0,trackDragTarget=null,sigZoom=1,sigPanX=0;const zoomState={track:{zoom:1,panX:0},signal:{zoom:1,panX:0}};
     const layers={trains:true,signals:true,links:false};
     const $=id=>document.getElementById(id);
@@ -43,7 +42,6 @@
       SignalCenter.bind(()=>renderSignalTrack());
       InterfaceCenter.bind(toggleNetwork);
       SceneCenter.bind();
-      DemoMap.bind();
       document.querySelectorAll('#subpage [data-open-page]').forEach(button=>button.onclick=()=>openSubpage(button.dataset.openPage));
       document.querySelectorAll('#subpage [data-select]').forEach(row=>row.onclick=()=>{row.closest('tbody').querySelectorAll('tr').forEach(x=>x.classList.remove('selected'));row.classList.add('selected')});
       document.querySelectorAll('#subpage [data-demo]').forEach(btn=>btn.onclick=()=>showToast('✓ '+btn.dataset.demo));
