@@ -20,6 +20,7 @@ from src.network.manager import NetworkManager
 from src.power.supply import PowerStatus, PowerSupply
 from src.signal.system import SignalAspect, SignalSystem
 from src.track.db_loader import DBLoader
+from src.track.ats_layout import load_ats_layout
 from src.track.link_mainline import LinkCoordinateMapper, load_mainline_links
 from src.track.loader import TrackLoader
 from src.common.track_position import TrackPosition
@@ -47,6 +48,7 @@ class SimulationRuntime:
         self.network = NetworkManager()
         self.semantic_line = build_semantic_line(self.track, self._link_source)
         self.link_mapper = LinkCoordinateMapper(self.track, self._link_source)
+        self.ats_switches, self.ats_signals = load_ats_layout()
         self.weather = WeatherType.DRY
         self.env = MockEnvironment(self.weather, self.track)
         self.dispatch = DispatchManager(
@@ -427,7 +429,7 @@ class SimulationRuntime:
         """为司机台显示屏准备网络屏和信号屏数据。
 
         参照桌面版 _feed_cab_display()，从首列车的控制器状态构造
-        网络屏 (572B → 总控:8888) 和信号屏 (68B → 总控:9999) 的数据字典。
+        网络屏 (570B → 总控:8888) 和信号屏 (68B → 总控:9999) 的数据字典。
         """
         runtimes = list(self.dispatch.trains.values())
         if not runtimes:
@@ -474,12 +476,13 @@ class SimulationRuntime:
                 "power_state": (0 if self.power_supply.can_traction() else 1),
                 "door_states": door_states,
                 "has_power": self.power_supply.can_traction(),
+                "train_no": 1,
             }
 
         # 信号屏数据源
         def _sig_source():
             return {
-                "speed": head_speed,
+                "speed": head_speed * 3.6,
                 "acceleration": head_accel,
                 "speed_limit": track_limit,
                 "mode": 5,
@@ -1440,21 +1443,25 @@ class SimulationRuntime:
         locks = self.dispatch.interlocking.locks
         trains = [self._serialize_train(runtime)
                   for runtime in self.dispatch.trains.values()]
-        signals = [
-            {
-                "id": signal.signal_id,
+        # ATS 布局保留同名信号机的不同物理位置，运行态按名称映射灯色。
+        runtime_signals = {signal.signal_id: signal for signal in self.track.signals}
+        signals = []
+        for signal in self.ats_signals:
+            runtime_signal = runtime_signals.get(signal.name)
+            aspect = (self.signal_system.get_signal_aspect(runtime_signal).name
+                      if runtime_signal is not None else "RED")
+            position = self.link_mapper.to_link_position(
+                TrackPosition(signal.seg_id, signal.offset_m))
+            signals.append({
+                "key": f"{signal.layout_id}:{signal.seg_id}:{signal.offset_m}",
+                "layoutId": signal.layout_id,
+                "id": signal.name,
                 "segmentId": signal.seg_id,
-                "offset": signal.offset,
+                "offset": signal.offset_m,
                 "direction": signal.direction,
-                "aspect": self.signal_system.get_signal_aspect(signal).name,
-                "linkPosition": (
-                    round(pos, 3) if (pos := self.link_mapper.to_link_position(
-                        TrackPosition(signal.seg_id, signal.offset)
-                    )) is not None else None
-                ),
-            }
-            for signal in self.track.signals
-        ]
+                "aspect": aspect,
+                "linkPosition": round(position, 3) if position is not None else None,
+            })
         events = [
             {"id": index, **asdict(event)}
             for index, event in enumerate(self.recorder.events[-120:])
@@ -1549,8 +1556,8 @@ class SimulationRuntime:
             "trackSummary": {
                 "segmentCount": len(self.track.segments),
                 "stationCount": len(self.track.stations),
-                "signalCount": len(self.track.signals),
-                "switchCount": getattr(self.track, "switches_count", 0),
+                "signalCount": len(self.ats_signals),
+                "switchCount": len(self.ats_switches),
                 "totalLength": round(self.track.total_length(), 0),
             },
             "events": events,
@@ -1570,7 +1577,99 @@ class SimulationRuntime:
             },
             "branches": [asdict(branch)
                          for branch in self.semantic_line.branches],
+            "switchComponents": self._serialize_switch_components(),
         }
+
+    def _serialize_switch_components(self) -> list[dict]:
+        """把反位 Seg 连通分量整理为 Web 可直接绘制的渡线组件。"""
+        main_ids = {
+            segment.seg_id for segment in self.track.segments
+            if self.link_mapper.link_for_segment(segment.seg_id)
+        }
+        adjacency = {segment.seg_id: set() for segment in self.track.segments}
+        for segment in self.track.segments:
+            for neighbor in (segment.start_neighbor, segment.start_lateral,
+                             segment.end_neighbor, segment.end_lateral):
+                if neighbor in adjacency and neighbor not in (0, 65535):
+                    adjacency[segment.seg_id].add(neighbor)
+                    adjacency[neighbor].add(segment.seg_id)
+
+        candidates = [
+            switch for switch in self.ats_switches
+            if switch.merge_seg_id in main_ids
+            and switch.normal_seg_id in main_ids
+            and switch.reverse_seg_id not in main_ids
+        ]
+        grouped: dict[frozenset[int], list] = {}
+        for switch in candidates:
+            seen = {switch.reverse_seg_id}
+            stack = [switch.reverse_seg_id]
+            while stack:
+                current = stack.pop()
+                for neighbor in adjacency.get(current, ()):
+                    if neighbor not in main_ids and neighbor not in seen:
+                        seen.add(neighbor)
+                        stack.append(neighbor)
+            grouped.setdefault(frozenset(seen), []).append(switch)
+
+        components = []
+        for index, (segment_ids, switches) in enumerate(grouped.items(), start=1):
+            points = []
+            for switch in switches:
+                reference = (switch.merge_seg_id
+                             if self.link_mapper.link_for_segment(switch.merge_seg_id)
+                             else switch.normal_seg_id)
+                points.append({
+                    "position": round(self._switch_anchor(
+                        switch.merge_seg_id, switch.normal_seg_id,
+                        switch.reverse_seg_id), 3),
+                    "direction": self.link_mapper.direction_for_segment(reference),
+                    "switchId": switch.switch_id,
+                    "name": switch.name,
+                    "mergeSegmentId": switch.merge_seg_id,
+                    "normalSegmentId": switch.normal_seg_id,
+                    "reverseSegmentId": switch.reverse_seg_id,
+                })
+            points.sort(key=lambda item: item["position"])
+            direction_counts = {
+                direction: sum(point["direction"] == direction for point in points)
+                for direction in {point["direction"] for point in points}
+            }
+            if len(points) == 4 and direction_counts == {"down": 2, "up": 2}:
+                role = "crossover"
+            elif len(points) == 2 and set(direction_counts) == {"down", "up"}:
+                role = "single-crossover"
+            elif len(points) >= 2 and set(direction_counts) == {"down", "up"}:
+                role = "turnback"
+            elif len(points) == 1:
+                role = "stub"
+            else:
+                role = "siding"
+            components.append({
+                "id": index,
+                "role": role,
+                "segmentIds": sorted(segment_ids),
+                "points": points,
+            })
+        return sorted(components, key=lambda item: item["points"][0]["position"])
+
+    def _switch_anchor(self, *segment_ids: int) -> float:
+        """取道岔相邻正线 Link 端点中最接近的连接位置。"""
+        links = [self.link_mapper.link_for_segment(segment_id)
+                 for segment_id in segment_ids]
+        links = [link for link in links if link is not None]
+        if len(links) == 1:
+            return (links[0].start_m + links[0].end_m) / 2.0
+        candidates = []
+        for left in links:
+            for right in links:
+                if left is right:
+                    continue
+                for left_pos in (left.start_m, left.end_m):
+                    for right_pos in (right.start_m, right.end_m):
+                        candidates.append((abs(left_pos - right_pos),
+                                           (left_pos + right_pos) / 2.0))
+        return min(candidates)[1]
 
     def _serialize_train(self, runtime) -> dict:
         controller = runtime.controller

@@ -602,7 +602,7 @@ def pack_vision_tcms2view(
 
 
 # ============================================================
-# 6. 司机台信号屏 编解码（66 bytes, TCP, 协议 § 信号屏）
+# 6. 司机台信号屏 编解码（实际载荷 68 bytes, TCP, 端口 9999）
 # ============================================================
 
 def pack_signal_screen(
@@ -624,14 +624,15 @@ def pack_signal_screen(
     next_station_dist: float = 0.0,
     timestamp_ms: int = 0,
 ) -> bytes:
-    """打包信号屏报文 (TCP → 总控:9999)
+    """打包信号屏报文 (TCP → 总控:9999)。
 
-    协议总长 68 字节（文档66字节，实际字段布局为68）。
+    实物协议保留历史包头长度 62/42，但 TCP 实际载荷固定为 68 字节；
+    speed 按屏幕协议使用 km/h。
     """
     buf = bytearray(68)
-    struct.pack_into("<I", buf, 0, 0x55AA55AA)       # _uIdentify
-    struct.pack_into("<H", buf, 4, 68)                 # _uTotalLen
-    struct.pack_into("<H", buf, 6, 68 - 8)             # _uDataLen
+    buf[0:4] = b"\x55\xAA\x55\xAA"                 # _uIdentify
+    struct.pack_into("<H", buf, 4, 62)                 # _uTotalLen（实物历史值）
+    struct.pack_into("<H", buf, 6, 42)                 # _uDataLen（实物历史值）
     struct.pack_into("<Q", buf, 8, timestamp_ms)       # _timestamp
     struct.pack_into("<H", buf, 16, 0)                 # _uVerifyType
     struct.pack_into("<H", buf, 18, 0)                 # _uVerifyCode
@@ -672,7 +673,7 @@ def pack_signal_screen(
 
 
 # ============================================================
-# 7. 司机台网络屏 编解码（572 bytes, TCP, 协议 § 网络屏）
+# 7. 司机台网络屏 编解码（570 bytes, TCP, 端口 8888）
 # ============================================================
 
 def pack_network_screen(
@@ -690,17 +691,18 @@ def pack_network_screen(
     power_state: int = 0,
     door_states: list[int] = None,
     has_power: bool = True,
+    train_no: int = 1,
     timestamp_ms: int = 0,
 ) -> bytes:
-    """打包网络屏 572字节报文 (TCP → 总控:8888)
+    """打包网络屏 570 字节实物报文 (TCP → 总控:8888)。
 
-    只填充需要的关键字段，其余填充默认值。
+    尾部 faultCode 不下发，车号位于偏移 568-569。
     """
-    buf = bytearray(572)
+    buf = bytearray(570)
     # 固定头
-    struct.pack_into("<I", buf, 0, 0x55AA55AA)       # _uIdentify
-    struct.pack_into("<H", buf, 4, 572)                # _uTotalLen
-    struct.pack_into("<H", buf, 6, 572 - 8)            # _uDataLen
+    buf[0:4] = b"\x55\xAA\x55\xAA"                 # _uIdentify
+    struct.pack_into("<H", buf, 4, 570)                # _uTotalLen
+    struct.pack_into("<H", buf, 6, 546)                # _uDataLen
     struct.pack_into("<Q", buf, 8, timestamp_ms)       # _timestamp
     struct.pack_into("<H", buf, 16, 0)                 # _uVerifyType
     struct.pack_into("<H", buf, 18, 0)                 # _uVerifyCode
@@ -740,6 +742,8 @@ def pack_network_screen(
             struct.pack_into("<I", buf, 60 + i * 4, ds & 0xFFFFFFFF)
     # 载客率 (168-173)
     struct.pack_into("<B", buf, 168, 50)               # 50% 载客率
+    # 实物报文尾部以车号结束，不包含原文档中的 faultCode。
+    struct.pack_into("<H", buf, 568, train_no & 0xFFFF)
 
     return bytes(buf)
 

@@ -258,6 +258,7 @@ class DispatchManager:
         controller = runtime.controller
         if runtime.emergency:
             controller.interlock.emergency_brake_required = True
+            controller.interlock.traction_permitted = False
             controller.emergency_brake()
             return
         controller.interlock.emergency_brake_required = False
@@ -492,6 +493,7 @@ class DispatchManager:
                     f"与列车 {other.train_id if involved is runtime else runtime.train_id} "
                     "发生车体重叠")
                 involved.controller.interlock.emergency_brake_required = True
+                involved.controller.interlock.traction_permitted = False
                 involved.controller.emergency_brake()
             if pair not in self._collision_pairs:
                 self._record(
@@ -595,6 +597,8 @@ class DispatchManager:
         self._clear_other_separation_pairs(runtime.train_id, ("", ""))
         if runtime.blocked_reason.startswith("前车"):
             runtime.blocked_reason = ""
+            # 只撤销列车间隔防护施加的制动，避免安全距离恢复后仍抱闸运行。
+            runtime.controller.set_brake(0.0)
             runtime.status = (TrainStatus.RUNNING
                               if runtime.target_station_id is not None
                               else TrainStatus.MANUAL)

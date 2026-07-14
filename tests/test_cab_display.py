@@ -4,7 +4,7 @@
     cd E:\\2025py\\shixun3\\Rail-Transit-Practice-3
     py -3.13 tests\\test_cab_display.py
 
-信号屏(9999) 66 bytes + 网络屏(8888) 572 bytes
+信号屏(9999) 68 bytes + 网络屏(8888) 570 bytes
 通过总控 192.168.200.102 转发至司机台物理屏幕。
 """
 import socket
@@ -36,6 +36,7 @@ network_data = {
     "power_state": 1,        # 供电正常
     "door_states": [1, 1, 1, 1],  # 车门状态
     "has_power": True,
+    "train_no": 1,
 }
 
 signal_data = {
@@ -77,7 +78,7 @@ for i in range(0, len(signal_packet), 8):
 
 print()
 print("【网络屏报文 ({} bytes)  ==>  {}:{}】".format(len(network_packet), RELAY_ADDR, NETWORK_PORT))
-print("  (仅显示前 64 bytes, 共 572)")
+print("  (仅显示前 64 bytes, 共 570)")
 for i in range(0, min(64, len(network_packet)), 8):
     chunk = network_packet[i:i+8]
     h = " ".join("{:02X}".format(b) for b in chunk)

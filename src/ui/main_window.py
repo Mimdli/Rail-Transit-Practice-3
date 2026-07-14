@@ -968,10 +968,11 @@ class MainWindow(QMainWindow):
             "power_state": self.power_supply.status.value if hasattr(self.power_supply, 'status') else 0,
             "door_states": self._get_door_states(),
             "has_power": self.power_supply.can_traction(),
+            "train_no": 1,
         }
 
         sig_data = {
-            "speed": head_speed,
+            "speed": head_speed * 3.6,
             "acceleration": head_accel,
             "speed_limit": effective_limit,
             "mode": 5,  # RM mode default

@@ -129,18 +129,24 @@ class TestCodec:
     def test_signal_screen(self):
         data = codec.pack_signal_screen(
             speed=15.5, acceleration=0.5, speed_limit=22.0,
-            mode=3, curr_station=2, next_station=3, next_station_dist=500.0,
+            mode=3, run_dir=1, curr_station=2, next_station=3,
+            train_no=9, next_station_dist=500.0,
         )
         assert len(data) == 68
+        assert data[:8] == b"\x55\xAA\x55\xAA\x3E\x00\x2A\x00"
+        assert data[42:44] == b"\x01\x00"
         assert abs(struct.unpack_from("<f", data, 44)[0] - 15.5) < 0.01
+        assert struct.unpack_from("<H", data, 62)[0] == 9
 
     def test_network_screen(self):
         data = codec.pack_network_screen(
             speed=12.0, acceleration=-0.3, speed_limit=20.0,
-            run_mode=2, door_states=[1, 0, 0, 0, 0, 0],
+            run_mode=2, door_states=[1, 0, 0, 0, 0, 0], train_no=9,
         )
-        assert len(data) == 572
+        assert len(data) == 570
+        assert data[:8] == b"\x55\xAA\x55\xAA\x3A\x02\x22\x02"
         assert abs(struct.unpack_from("<f", data, 40)[0] - 12.0) < 0.01
+        assert struct.unpack_from("<H", data, 568)[0] == 9
 
 
 # ============================================================
@@ -352,7 +358,7 @@ def test_cab_display_tcp_loopback():
         accept_one(sig_server, sig_data)
 
         assert len(net_data) == 1, "未收到网络屏 TCP 数据"
-        assert net_data[0][1] == 572
+        assert net_data[0][1] == 570
         assert len(sig_data) >= 1, "未收到信号屏 TCP 数据"
         assert sig_data[0][1] == 68
     finally:

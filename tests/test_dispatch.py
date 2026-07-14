@@ -5,7 +5,7 @@ from src.track.loader import TrackLoader
 from src.track.db_loader import DBLoader
 from src.dispatch.train_manager import resolve_station_track_position
 from src.track.data import Signal
-from src.signal.system import SignalSystem
+from src.signal.system import SignalAspect, SignalSystem
 from src.logger.recorder import Recorder
 
 
@@ -60,9 +60,11 @@ def test_manual_train_brakes_for_stationary_train_ahead(tmp_path):
     assert dispatch.add_train("前车", 2).ok
     follower = dispatch.trains.require("后车")
     leader = dispatch.trains.require("前车")
-    # 将两车置于同一条链上：后车在 seg1 offset=130，前车在 seg2 offset=0
-    follower.controller.reset_states(1, 130.0)
-    leader.controller.reset_states(2, 0.0)
+    # 同一区段内构造约 3m 净间距，避免测试依赖已变化的跨段拓扑。
+    follower.controller.direction = 1
+    leader.controller.direction = 1
+    follower.controller.reset_states(1, 120.0)
+    leader.controller.reset_states(1, 240.0)
     follower.status = TrainStatus.MANUAL
     follower.controller.set_throttle(1.0)
 
@@ -89,9 +91,11 @@ def test_body_overlap_emergency_stops_both_trains(tmp_path):
     assert dispatch.add_train("前车", 2).ok
     follower = dispatch.trains.require("后车")
     leader = dispatch.trains.require("前车")
-    # 将两车置于同一条 UP 链上，后车追上前车
-    follower.controller.reset_states(1, 200.0)
-    leader.controller.reset_states(2, 0.0)
+    # 同一区段内让两车车体重叠约 7m，验证碰撞保底逻辑。
+    follower.controller.direction = 1
+    leader.controller.direction = 1
+    follower.controller.reset_states(1, 130.0)
+    leader.controller.reset_states(1, 240.0)
     follower.status = TrainStatus.MANUAL
 
     dispatch.step(0.033)
@@ -100,6 +104,8 @@ def test_body_overlap_emergency_stops_both_trains(tmp_path):
     assert leader.status == TrainStatus.EMERGENCY_STOP
     assert follower.controller.interlock.emergency_brake_required
     assert leader.controller.interlock.emergency_brake_required
+    assert follower.controller.interlock.traction_permitted is False
+    assert leader.controller.interlock.traction_permitted is False
     collisions = recorder.query(
         event_type="列车碰撞", severity="CRITICAL")
     assert len(collisions) == 1
@@ -112,9 +118,11 @@ def test_separation_protection_clears_after_distance_recovers():
     assert dispatch.add_train("前车", 2).ok
     follower = dispatch.trains.require("后车")
     leader = dispatch.trains.require("前车")
-    # 将两车置于同一条 UP 链上
-    follower.controller.reset_states(1, 130.0)
-    leader.controller.reset_states(2, 0.0)
+    # 同一区段内先触发间隔制动，再把前车移至远处验证状态清理。
+    follower.controller.direction = 1
+    leader.controller.direction = 1
+    follower.controller.reset_states(1, 120.0)
+    leader.controller.reset_states(1, 240.0)
     follower.status = TrainStatus.MANUAL
     dispatch.step(0.033)
     assert follower.status == TrainStatus.BLOCKED
@@ -125,6 +133,7 @@ def test_separation_protection_clears_after_distance_recovers():
 
     assert follower.status == TrainStatus.MANUAL
     assert follower.blocked_reason == ""
+    assert follower.controller.brake_level == 0.0
 
 
 def test_opposing_train_ahead_uses_relative_closing_speed():
@@ -175,14 +184,14 @@ def test_dispatch_signal_red_applies_vehicle_protection():
     track = TrackLoader().load_demo_data()
     # 信号须与列车在同一链上（列车默认入站方向为 DOWN 链 seg5）
     track.signals = [Signal(
-        "D01", position=100.0, direction="down", seg_id=5, offset=100.0)]
+        "D01", position=200.0, direction="down", seg_id=5, offset=200.0)]
     signal_system = SignalSystem()
     dispatch = DispatchManager(track, signal_system=signal_system)
     assert dispatch.add_train("2车", 1).ok
     runtime = dispatch.trains.require("2车")
     runtime.status = TrainStatus.MANUAL
 
-    signal_system.set_signal_aspect("D01", signal_system.get_signal_aspect(track.signals[0]))
+    signal_system.set_signal_aspect("D01", SignalAspect.RED)
     assert dispatch._apply_signal_protection(runtime)
     assert runtime.status == TrainStatus.BLOCKED
     assert runtime.controller.interlock.traction_permitted is False
