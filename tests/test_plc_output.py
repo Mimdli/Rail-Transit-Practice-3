@@ -5,7 +5,7 @@
     py -3.13 tests\\test_plc_output.py
 
 发送内容说明：
-    26字节报文 = 24字节帧头 + 2字节开关量数据区
+    28字节报文 = 24字节帧头 + 4字节数据区（开关量 + 车辆速度）
 
     默认测试参数（模拟正常行驶状态）：
       - 门关好指示 = True        → Bit2 = 1
@@ -35,7 +35,7 @@ test_params = {
 
 # ---------- 打包 ----------
 packet = pack_plc_output(**test_params)
-assert len(packet) == 26, f"报文长度错误: {len(packet)}"
+assert len(packet) == 28, f"报文长度错误: {len(packet)}"
 
 # ---------- 打印详细内容 ----------
 print("=" * 60)
@@ -66,15 +66,15 @@ for k, v in {
     print("  {} = {}  // {}".format(k, str(val).ljust(5), v))
 
 print()
-print("【数据区 (2 bytes)】")
+print("【数据区 (4 bytes)】")
 byte0 = packet[24]
 byte1 = packet[25]
 print("  tag1~8 byte:  0x{:02X}  ({:08b})".format(byte0, byte0))
 print("  tag9~16 byte: 0x{:02X}  ({:08b})".format(byte1, byte1))
 
 print()
-print("【完整报文 HEX dump (26 bytes)】")
-for i in range(0, 26, 4):
+print("【完整报文 HEX dump (28 bytes)】")
+for i in range(0, 28, 4):
     chunk = packet[i:i + 4]
     hex_str = " ".join("{:02X}".format(b) for b in chunk)
     ascii_str = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
@@ -88,11 +88,11 @@ print("  帧头标识 (bytes 0-3):  {}  ==> 识别为 {}  ==> {}".format(
 ))
 print("  总长         (bytes 4-5):  {} ==> {}".format(
     int.from_bytes(packet[4:6], "little"),
-    "OK (26)" if int.from_bytes(packet[4:6], "little") == 26 else "ERR"
+    "OK (28)" if int.from_bytes(packet[4:6], "little") == 28 else "ERR"
 ))
 print("  数据长       (bytes 6-7):  {} ==> {}".format(
     int.from_bytes(packet[6:8], "little"),
-    "OK (2)" if int.from_bytes(packet[6:8], "little") == 2 else "ERR"
+    "OK (4)" if int.from_bytes(packet[6:8], "little") == 4 else "ERR"
 ))
 
 # ---------- 发送 ----------

@@ -29,7 +29,7 @@ def pack_vehicle_udp(
         trains: 长度为20的列表，每个元素为 (加速度, 速度, 累计里程)
 
     Returns:
-        480 bytes (20列车 × 3字段 × 8字节 double, 小端)
+        488 bytes（20列车 × 3字段，加1个现场保留double，小端）
     """
     buf = bytearray()
     for acc, spd, dist in trains[:VEHICLE_UDP_TRAIN_COUNT]:
@@ -38,6 +38,8 @@ def pack_vehicle_udp(
     remaining = VEHICLE_UDP_TRAIN_COUNT - len(trains)
     for _ in range(remaining):
         buf.extend(struct.pack("<ddd", 0.0, 0.0, 0.0))
+    # 抓包中模型上行固定为61个double；尾字段语义未在协议中定义，先置零。
+    buf.extend(struct.pack("<d", 0.0))
     return bytes(buf)
 
 
@@ -384,6 +386,7 @@ def unpack_plc_data(data: bytes) -> Optional[dict]:
 
 def pack_plc_output(
     output_bits: int | None = None,
+    vehicle_speed: int = 0,
     indicator_hv_contactor: bool = False,
     indicator_brake_release: bool = False,
     indicator_door_closed: bool = True,
@@ -401,9 +404,9 @@ def pack_plc_output(
     btn_close_left: bool = False,
     btn_close_right: bool = False,
 ) -> bytes:
-    """打包上位机→PLC报文 (26 bytes)
+    """打包上位机→PLC报文（28 bytes）。
 
-    最新协议规定为24字节帧头加2字节开关量数据区。
+    现场抓包为24字节帧头加4字节数据区：开关量WORD和车辆速度WORD。
     output_bits 可直接提供完整16位输出；未提供时由布尔参数组装。
     """
     # Byte 0: tag1~8 bitmask (低8位)
@@ -451,8 +454,8 @@ def pack_plc_output(
     t = _time.localtime(_time.time())
     header = struct.pack("<" + "I" + "H" * 10,
         0xAA55AA55,                      # _uIdentify (4B) 现场PLC发送55 AA 55 AA
-        26,                               # _uTotalLen (2B)
-        2,                                # _uDataLen (2B)
+        28,                               # _uTotalLen (2B)
+        4,                                # _uDataLen (2B)
         t.tm_year,                        # _uYear
         t.tm_mon,                         # _uMonth
         t.tm_mday,                        # _uDay
@@ -462,7 +465,9 @@ def pack_plc_output(
         0,                                # _uVerifyType
         0,                                # _uVerifyCode
     )
-    data = struct.pack("<BB", byte0 & 0xFF, byte1 & 0xFF)
+    data = struct.pack(
+        "<BBH", byte0 & 0xFF, byte1 & 0xFF, vehicle_speed & 0xFFFF
+    )
     return header + data
 
 

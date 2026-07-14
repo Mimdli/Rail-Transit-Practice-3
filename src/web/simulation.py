@@ -99,6 +99,8 @@ class SimulationRuntime:
         self.cab_started = False
         self._fast_forward: Optional[dict] = None
         self._plc_output_counter = 0
+        self.plc_output_manual_override = False
+        self.plc_output_vehicle_speed = 0
         self.plc_output_state = {
             "indicator_hv_contactor": False,
             "indicator_brake_release": False,
@@ -116,7 +118,6 @@ class SimulationRuntime:
             "btn_open_right": False,
             "btn_close_left": False,
             "btn_close_right": False,
-            "tag17": 0,
         }
         self.cab_display_state = {
             "speed": 0.0,
@@ -130,7 +131,7 @@ class SimulationRuntime:
             "next_station": 2,
             "end_station": 1,
             "power_state": 1,
-            "door_states": [0, 0, 0, 0],
+            "door_states": [0, 0, 0, 0, 0, 0],
             "has_power": True,
             # 信号屏专有字段
             "mode": 5,
@@ -417,106 +418,108 @@ class SimulationRuntime:
 
         self.network.set_plc_recv_callback(_on_plc_recv)
 
-        # 5. 视景系统数据源：使用默认内部数据生成
-        #    VisionUDPClient 内部已有 TCMS2VIEW 数据生成逻辑，无需手动设置
+        # 5. 视景系统：完整记录每个接收到的 UDP 报文。
+        def _on_vision_recv(data: bytes, addr: tuple[str, int]):
+            raw_hex = data.hex(" ").upper()
+            self.recorder.record(
+                "视景报文",
+                f"来源 {addr[0]}:{addr[1]} | {len(data)} 字节 | HEX {raw_hex}",
+                source="vision_udp",
+                entity_id=f"{addr[0]}:{addr[1]}",
+                severity="INFO",
+            )
+
+        self.network.set_vision_recv_callback(_on_vision_recv)
+        self.network.set_vision_data_source(self._build_vision_data)
 
         # 6. 司机台显示屏数据源
         self._setup_cab_display_source()
         # 6. 司机台显示屏数据源：接入仿真列车状态
         self._feed_cab_display()
 
-    def _feed_cab_display(self):
-        """为司机台显示屏准备网络屏和信号屏数据。
-
-        参照桌面版 _feed_cab_display()，从首列车的控制器状态构造
-        网络屏 (570B → 总控:8888) 和信号屏 (68B → 总控:9999) 的数据字典。
-        """
+    def _build_vision_data(self) -> dict:
+        """把 Web 仿真实时状态转换为 TCMS2VIEW 协议字段。"""
         runtimes = list(self.dispatch.trains.values())
-        if not runtimes:
-            return
-        runtime = runtimes[0]
-        ctrl = runtime.controller
-        head_abs = runtime.head_abs
-        head_speed = ctrl.head_speed
-        head_accel = ctrl.states[0].acceleration if ctrl.states else 0.0
+        if not runtimes or not runtimes[0].controller.states:
+            return {}
 
-        # 限速
-        track_limit = (runtime.track_adapter.get_speed_limit(
-            ctrl.states[0].position) * 3.6 if ctrl.states else 0.0)
+        primary = runtimes[0]
+        ctrl = primary.controller
+        head_state = ctrl.states[0]
+        head_accel = head_state.acceleration
 
-        # 当前/下一站
-        stations = sorted(self.track.stations, key=lambda s: s.position)
-        curr_station_id = 0
-        next_station_id = 0
-        next_station_dist = 0.0
-        for i, st in enumerate(stations):
-            if st.position <= head_abs:
-                curr_station_id = st.station_id
-                if i + 1 < len(stations):
-                    next_st = stations[i + 1]
-                    next_station_id = next_st.station_id
-                    next_station_dist = max(0.0, next_st.position - head_abs)
+        aspect_codes = {
+            SignalAspect.RED: 0x01,
+            SignalAspect.YELLOW: 0x02,
+            SignalAspect.GREEN: 0x04,
+        }
+        signal_states = [
+            aspect_codes.get(self.signal_system.get_signal_aspect(signal), 0x00)
+            for signal in self.track.signals
+        ]
 
-        # 车门状态 (6 节车厢，每位表示一扇门)
-        door_states = self._build_door_states(ctrl)
+        # 反位支线已被进路选中或正被列车占用时，道岔状态取反位。
+        active_segments = {
+            segment_id
+            for runtime in runtimes
+            for segment_id in runtime.reserved_segments
+        }
+        active_segments.update(
+            state.position.segment_id
+            for runtime in runtimes
+            for state in runtime.controller.states
+        )
+        switch_states = [
+            0x02 if switch.reverse_seg_id in active_segments else 0x01
+            for switch in self.ats_switches
+        ]
 
-        # 网络屏数据源
-        def _net_source():
-            return {
-                "speed": head_speed,
-                "acceleration": head_accel,
-                "speed_limit": track_limit,
-                "run_mode": ctrl.running_mode.value if ctrl.running_mode else 0,
-                "run_dir": 0 if ctrl.direction > 0 else 1,
-                "power_pull": int(ctrl.throttle * 100),
-                "net_pressure": 750 if self.power_supply.can_traction() else 0,
-                "curr_station": curr_station_id,
-                "next_station": next_station_id,
-                "end_station": curr_station_id,
-                "power_state": (0 if self.power_supply.can_traction() else 1),
-                "door_states": door_states,
-                "has_power": self.power_supply.can_traction(),
-                "train_no": 1,
-            }
+        if ctrl.throttle > 0.01:
+            run_state = 0x11
+        elif ctrl.brake_level > 0.01 or primary.emergency:
+            run_state = 0x12
+        else:
+            run_state = 0x13
 
-        # 信号屏数据源
-        def _sig_source():
-            return {
-                "speed": head_speed * 3.6,
-                "acceleration": head_accel,
-                "speed_limit": track_limit,
-                "mode": 5,
-                "run_dir": 0 if ctrl.direction > 0 else 1,
-                "curr_station": curr_station_id,
-                "next_station": next_station_id,
-                "end_station": curr_station_id,
-                "pull_switch": 1 if ctrl.throttle > 0 else 0,
-                "pull_state": int(ctrl.throttle * 100),
-                "brake_state": int(ctrl.brake_level * 100),
-                "urgency_stop": 1 if runtime.emergency else 0,
-                "event_id": 0,
-                "sig_state": 0,
-                "train_no": 1,
-                "next_station_dist": next_station_dist,
-            }
+        other_trains = []
+        for runtime in runtimes[1:]:
+            if not runtime.controller.states:
+                continue
+            state = runtime.controller.states[0]
+            other_trains.append({
+                "dist": int(state.position.offset * 1000),
+                "edge": state.position.segment_id,
+                "dir": 1 if runtime.controller.direction > 0 else -1,
+                "speed_cms": int(runtime.controller.head_speed * 100),
+            })
 
-        self.network.set_cab_network_source(_net_source)
-        self.network.set_cab_signal_source(_sig_source)
+        return {
+            "signal_states": signal_states,
+            "switch_states": switch_states,
+            "speed_mms": int(ctrl.head_speed * 1000),
+            "accel_pct": min(100, max(0, int(abs(head_accel) / 1.1 * 100))),
+            "run_state": run_state,
+            "position_mm": int(head_state.position.offset * 1000),
+            "edge_id": head_state.position.segment_id,
+            "direction": 1 if ctrl.direction > 0 else -1,
+            "other_trains": other_trains,
+        }
+
+    def _feed_cab_display(self):
+        """刷新统一状态；两个屏的数据源只在初始化时注册一次。"""
+        self._update_cab_display_from_simulation()
 
     @staticmethod
     def _build_door_states(ctrl) -> list:
         """构造 6 节车厢的门状态列表。
 
         简化实现：左门/右门统一状态。
-        bit0=左1, bit1=右1, bit8=左2, bit9=右2, ...
+        每节车均使用 bit0=左门、bit1=右门。
         """
         left_open = 1 if ctrl.left_door_open else 0
         right_open = 1 if ctrl.right_door_open else 0
-        states = []
-        for i in range(6):
-            ds = (left_open << (i * 2)) | (right_open << (i * 2 + 1))
-            states.append(ds)
-        return states
+        car_state = left_open | (right_open << 1)
+        return [car_state] * 6
 
     def network_disconnect(self) -> dict:
         """断开所有网络通信模块"""
@@ -547,24 +550,59 @@ class SimulationRuntime:
         return {"ok": True, "message": "司机台显示已断开"}
 
     def _setup_cab_display_source(self):
-        """设置司机台显示屏数据源"""
-        def _cab_display_source():
+        """使用同一实时状态生成两个屏幕协议所需的单位口径。"""
+        def _network_source():
             return dict(self.cab_display_state)
-        self.network.set_cab_network_source(_cab_display_source)
-        self.network.set_cab_signal_source(_cab_display_source)
+
+        def _signal_source():
+            data = dict(self.cab_display_state)
+            data["speed"] = float(data.get("speed", 0.0)) * 3.6
+            return data
+
+        self.network.set_cab_network_source(_network_source)
+        self.network.set_cab_signal_source(_signal_source)
 
     def set_plc_output(self, updates: dict) -> dict:
-        """更新 PLC 输出状态并立即发送一帧"""
+        """切换自动/手动模式，更新 PLC 输出并立即发送一帧。"""
+        if "manual_override" in updates:
+            self.plc_output_manual_override = bool(updates["manual_override"])
         for key in updates:
             if key in self.plc_output_state:
                 self.plc_output_state[key] = bool(updates[key])
-        # 如果网络已连接，立即发送
-        if self.network_started:
+        self._sync_plc_output_from_simulation()
+        # 仅在 PLC 已建立连接时声明发送成功；其余情况保留状态等待周期发送。
+        delivery = "saved"
+        if self.network_started and self.network.plc.connected:
             try:
-                self.network.plc.send_output(**self.plc_output_state)
+                self.network.plc.send_output(
+                    **self.plc_output_state,
+                    vehicle_speed=self.plc_output_vehicle_speed,
+                )
+                delivery = "sent"
             except Exception as e:
                 return {"ok": False, "message": f"发送失败: {e}"}
-        return {"ok": True, "message": "PLC输出已更新", "state": dict(self.plc_output_state)}
+        mode = "手动覆盖" if self.plc_output_manual_override else "自动跟随仿真"
+        if delivery == "sent":
+            message = f"PLC输出已发送（{mode}）"
+        elif self.network_started:
+            message = f"PLC输出已保存，PLC未连接（{mode}）"
+        else:
+            message = f"PLC输出已保存，网络未启动（{mode}）"
+        return {
+            "ok": True, "message": message, "delivery": delivery,
+            "state": dict(self.plc_output_state), "manual_override": self.plc_output_manual_override,
+        }
+
+    def set_plc_raw_output(self, value: int) -> dict:
+        """把16位ATP/开关量值转换为可持续发送的手动覆盖状态。"""
+        for index, key in enumerate(self.plc_output_state):
+            self.plc_output_state[key] = bool(value & (1 << index))
+        self.plc_output_manual_override = True
+        result = self.set_plc_output({"manual_override": True})
+        if result["ok"]:
+            action = "已发送并保持" if result["delivery"] == "sent" else "已保存并保持"
+            result["message"] = f"PLC原始输出{action}: 0x{value:04X}"
+        return result
 
     def set_cab_display(self, updates: dict) -> dict:
         """更新司机台显示数据并立即发送一帧"""
@@ -577,7 +615,7 @@ class SimulationRuntime:
         return {"ok": True, "message": "司机台显示数据已更新", "state": dict(self.cab_display_state)}
 
     def _update_cab_display_from_simulation(self):
-        """从仿真列车自动更新司机台显示屏数据"""
+        """从仿真列车生成网络屏和信号屏共用的实时状态。"""
         if not self.dispatch or not self.dispatch.trains:
             return
         # 取第一列运行的列车
@@ -597,17 +635,14 @@ class SimulationRuntime:
         if ctrl.states:
             self.cab_display_state["acceleration"] = round(ctrl.states[0].acceleration, 3)
 
-        # 限速
-        try:
-            limit = self.signal.get_effective_speed_limit_for_direction(
-                runtime.head_abs, ctrl.direction, runtime.track_adapter
-            )
-            self.cab_display_state["speed_limit"] = round(limit, 1)
-        except Exception:
-            pass
+        track_limit = self.track.get_speed_limit_at(runtime.head_abs)
+        limit = self.signal_system.get_effective_speed_limit_for_direction(
+            runtime.head_abs, ctrl.direction, track_limit, self.track.signals,
+        )
+        self.cab_display_state["speed_limit"] = round(limit * 3.6, 1)
 
-        # 运行方向: 1=正向, -1=反向
-        self.cab_display_state["run_dir"] = 1 if ctrl.direction == 1 else -1
+        # 屏幕协议统一使用 0=正向、1=反向。
+        self.cab_display_state["run_dir"] = 0 if ctrl.direction > 0 else 1
 
         # 运行模式: 0=惰行, 1=牵引, 2=制动, 4=快速制动
         throttle = ctrl.throttle
@@ -628,37 +663,93 @@ class SimulationRuntime:
             self.cab_display_state["mode"] = 0  # 人工模式
 
         # 牵引/制动级位百分比
-        self.cab_display_state["power_pull"] = int(max(throttle, brake) * 100)
+        self.cab_display_state["power_pull"] = int(throttle * 100)
 
-        # 车站信息
-        if runtime.service_plan and runtime.plan_index < len(runtime.service_plan.station_ids):
-            self.cab_display_state["curr_station"] = runtime.service_plan.station_ids[runtime.plan_index]
-        self.cab_display_state["next_station"] = runtime.target_station_id or 0
+        # 车站信息按实际位置计算，终点站取交路末站。
+        stations = sorted(self.track.stations, key=lambda station: station.position)
+        current_station = 0
+        next_station = runtime.target_station_id or 0
+        next_station_dist = 0.0
+        for index, station in enumerate(stations):
+            if station.position <= runtime.head_abs:
+                current_station = station.station_id
+                if not next_station and index + 1 < len(stations):
+                    next_station = stations[index + 1].station_id
+        target = next((station for station in stations if station.station_id == next_station), None)
+        if target:
+            next_station_dist = abs(target.position - runtime.head_abs)
+        self.cab_display_state["curr_station"] = current_station
+        self.cab_display_state["next_station"] = next_station
         if runtime.service_plan:
             self.cab_display_state["end_station"] = runtime.service_plan.station_ids[-1]
+        elif stations:
+            self.cab_display_state["end_station"] = stations[-1].station_id
+        self.cab_display_state["next_station_dist"] = round(next_station_dist, 1)
 
-        # 门状态 (0=关, 1=开)
-        door_state = 1 if ctrl.any_door_open else 0
-        self.cab_display_state["door_states"] = [door_state] * 4
+        # 网络屏固定使用6节车门状态。
+        self.cab_display_state["door_states"] = self._build_door_states(ctrl)
 
         # 制动状态
-        self.cab_display_state["brake_state"] = 1 if brake > 0.05 else 0
-        self.cab_display_state["urgency_stop"] = 1 if ctrl.interlock.emergency_brake_required else 0
+        self.cab_display_state["pull_switch"] = 1 if (
+            not self.power_supply.can_traction() or runtime.emergency) else 0
+        self.cab_display_state["pull_state"] = int(throttle * 100)
+        self.cab_display_state["brake_state"] = int(brake * 100)
+        emergency = runtime.emergency or ctrl.interlock.emergency_brake_required
+        self.cab_display_state["urgency_stop"] = 1 if emergency else 0
+        self.cab_display_state["event_id"] = 1 if emergency else 0
 
         # 供电状态
         self.cab_display_state["has_power"] = self.power_supply.can_traction()
         self.cab_display_state["power_state"] = 1 if self.cab_display_state["has_power"] else 0
+        self.cab_display_state["net_pressure"] = 750 if self.cab_display_state["has_power"] else 0
 
-        # 记录到运行日志
-        self.recorder.record(
-            "司机台",
-            f"cab_display speed={self.cab_display_state['speed']*3.6:.1f}km/h "
-            f"mode={self.cab_display_state['run_mode']} dir={self.cab_display_state['run_dir']} "
-            f"station={self.cab_display_state['curr_station']}→{self.cab_display_state['next_station']} "
-            f"power={self.cab_display_state['power_state']} brake={self.cab_display_state['brake_state']} "
-            f"urg={self.cab_display_state['urgency_stop']}",
-            severity="DEBUG",
+        nearest_signal = self.signal_system.get_nearest_signal_for_direction(
+            runtime.head_abs, ctrl.direction, self.track.signals,
+            look_ahead=float("inf"),
         )
+        aspect_codes = {
+            SignalAspect.RED: 0x01,
+            SignalAspect.YELLOW: 0x02,
+            SignalAspect.GREEN: 0x04,
+        }
+        aspect = self.signal_system.get_signal_aspect(nearest_signal) if nearest_signal else None
+        self.cab_display_state["sig_state"] = aspect_codes.get(aspect, 0)
+        digits = "".join(char for char in runtime.train_id if char.isdigit())
+        self.cab_display_state["train_no"] = int(digits or 1)
+
+    def _sync_plc_output_from_simulation(self):
+        """自动模式下把列车安全状态映射到PLC开关量和速度。"""
+        if not self.dispatch.trains:
+            return
+        runtime = next(iter(self.dispatch.trains.values()))
+        ctrl = runtime.controller
+        # 手动覆盖只作用于开关量，车辆速度始终保持实时。
+        self.plc_output_vehicle_speed = max(0, min(65535, round(ctrl.head_speed * 3.6)))
+        if self.plc_output_manual_override:
+            return
+        emergency = runtime.emergency or ctrl.interlock.emergency_brake_required
+        powered = self.power_supply.can_traction()
+        automatic = ctrl.running_mode == RunningMode.AUTOMATIC
+        left_open = ctrl.left_door_open
+        right_open = ctrl.right_door_open
+        self.plc_output_state.update({
+            "indicator_hv_contactor": powered,
+            "indicator_brake_release": ctrl.brake_level <= 0.05 and not emergency,
+            "indicator_door_closed": not ctrl.any_door_open,
+            "indicator_network_fault": self.network_fault_injected,
+            "mode_ato_available": powered and not emergency,
+            "mode_ato_active": automatic and not emergency,
+            "mode_ar": False,
+            "btn_emergency_brake": emergency,
+            "btn_forced_release": False,
+            "btn_forced_pump": False,
+            "btn_emergency_command": emergency,
+            "btn_parking_brake": ctrl.head_speed < 0.1 and ctrl.brake_level > 0.05,
+            "btn_open_left": left_open,
+            "btn_open_right": right_open,
+            "btn_close_left": not left_open,
+            "btn_close_right": not right_open,
+        })
 
     async def _run(self):
         while True:
@@ -678,12 +769,10 @@ class SimulationRuntime:
                     self._feed_chart_buffers()
                 self.power_supply.step(dt)
                 self.recorder.step(dt)
-                if self.network_started:
-                    self._feed_cab_display()
+                # 页面展示与实际发包始终共用同一份实时状态。
+                self._update_cab_display_from_simulation()
+                self._sync_plc_output_from_simulation()
                 self._record_replay_frame()
-                # 从仿真列车自动更新司机台显示屏数据
-                if self.cab_started:
-                    self._update_cab_display_from_simulation()
                 if self._fast_forward:
                     fast_train = self.dispatch.trains.get(
                         self._fast_forward["train_id"])
@@ -700,7 +789,10 @@ class SimulationRuntime:
                     self._plc_output_counter += 1
                     if self._plc_output_counter >= 1:
                         self._plc_output_counter = 0
-                        self.network.plc.send_output(**self.plc_output_state)
+                        self.network.plc.send_output(
+                            **self.plc_output_state,
+                            vehicle_speed=self.plc_output_vehicle_speed,
+                        )
             await asyncio.sleep(self.STEP_SECONDS)
 
     def _step_fast_forward(self, dt: float):
@@ -849,6 +941,37 @@ class SimulationRuntime:
             severity="INFO" if result["ok"] else "WARNING",
             entity_id=command,
         )
+
+    def request_switch_route(self, train_id: str, component_ids,
+                             label: str = "") -> dict:
+        """将 Web 示意图中的真实道岔组件转换为可执行联锁进路。"""
+        available = {
+            component["id"]: component
+            for component in self._serialize_switch_components()
+        }
+        selected_ids = tuple(dict.fromkeys(
+            int(item) for item in component_ids if int(item) in available))
+        if not selected_ids:
+            return {"ok": False, "message": "未选择有效的道岔组件"}
+        branch_ids = {
+            segment_id
+            for component_id in selected_ids
+            for segment_id in available[component_id]["segmentIds"]
+        }
+        route_label = str(label).strip()[:40] or (
+            "道岔进路 " + "/".join(str(item) for item in selected_ids))
+        route_id = "SW-" + "-".join(str(item) for item in selected_ids)
+        result = self.command(lambda: self.dispatch.request_switch_route(
+            train_id, route_id, route_label, branch_ids, selected_ids))
+        self.record_web_command(train_id, f"switch-route-{route_id}", result)
+        return result
+
+    def cancel_switch_route(self, train_id: str) -> dict:
+        """取消尚未被列车占用的 Web 人工岔道进路。"""
+        result = self.command(
+            lambda: self.dispatch.cancel_switch_route(train_id))
+        self.record_web_command(train_id, "switch-route-cancel", result)
+        return result
 
     def set_power(self, value: str) -> dict:
         try:
@@ -1266,11 +1389,8 @@ class SimulationRuntime:
 
     def toggle_network(self, enabled: bool) -> dict:
         if enabled:
-            self.network.start()
-            return {"ok": True, "message": "网络通信已开启"}
-        else:
-            self.network.stop()
-            return {"ok": True, "message": "网络通信已关闭"}
+            return self.network_connect()
+        return self.network_disconnect()
 
     # ── 数据源切换 ─────────────────────────────────────────
 
@@ -1495,6 +1615,13 @@ class SimulationRuntime:
             "occupancy": {str(key): sorted(value)
                           for key, value in occupancy.items()},
             "locks": {str(key): value for key, value in locks.items()},
+            "operatorRoutes": [
+                {"trainId": train_id, **{
+                    key: list(value) if isinstance(value, tuple) else value
+                    for key, value in info.items()
+                }}
+                for train_id, info in self.dispatch.operator_routes.items()
+            ],
             "signals": signals,
             "power": {
                 "status": self.power_supply.status.name,
@@ -1511,14 +1638,9 @@ class SimulationRuntime:
             "network_started": self.network_started,
             "cab_started": self.cab_started,
             "plc_output_state": dict(self.plc_output_state),
+            "plc_output_manual_override": self.plc_output_manual_override,
+            "plc_output_vehicle_speed": self.plc_output_vehicle_speed,
             "cab_display_state": dict(self.cab_display_state),
-            "networkInterfaces": [
-                {"id": "vehicle_udp",     "label": "车辆UDP",     "protocol": "UDP", "cycleMs": 20,  "bidirectional": True},
-                {"id": "signal_gateway",  "label": "信号网关",    "protocol": "UDP", "cycleMs": 250, "bidirectional": True},
-                {"id": "plc",             "label": "司机台PLC",   "protocol": "TCP", "cycleMs": 100, "bidirectional": True},
-                {"id": "vision",          "label": "视景系统",    "protocol": "UDP", "cycleMs": 100, "bidirectional": False},
-                {"id": "cab_display",     "label": "司机台显示",  "protocol": "TCP", "cycleMs": 100, "bidirectional": True},
-            ],
             "plc_data": self.network.plc_data,
             "networkFaultInjected": self.network_fault_injected,
             "environment": {
@@ -1534,9 +1656,9 @@ class SimulationRuntime:
                 {"id": "plc", "label": "实体司机台 PLC",
                  "protocol": "TCP", "cycleMs": 100, "bidirectional": True},
                 {"id": "vision", "label": "视景系统",
-                 "protocol": "UDP", "cycleMs": 100, "bidirectional": False},
+                 "protocol": "UDP", "cycleMs": 100, "bidirectional": True},
                 {"id": "cab_display", "label": "司机台显示屏",
-                 "protocol": "TCP", "cycleMs": 100, "bidirectional": False},
+                 "protocol": "TCP", "cycleMs": 100, "bidirectional": True},
             ],
             "alarms": {
                 "active": len(active_alarms),

@@ -87,6 +87,11 @@ class RouteRequest(BaseModel):
     route_id: str
 
 
+class SwitchRouteRequest(BaseModel):
+    component_ids: list[int] = Field(min_length=1)
+    label: str = Field(default="", max_length=40)
+
+
 class StationJumpRequest(BaseModel):
     station_id: str
 
@@ -240,17 +245,6 @@ async def cab_display_stop():
     return response(runtime.cab_disconnect())
 
 
-@app.get("/api/plc/output")
-async def plc_output_get():
-    return response(runtime.plc_output_state)
-
-
-@app.post("/api/plc/output")
-async def plc_output_post(body: Request):
-    updates = await body.json()
-    return response(runtime.set_plc_output(updates))
-
-
 @app.get("/api/cab_display")
 async def cab_display_get():
     return JSONResponse(runtime.cab_display_state)
@@ -333,6 +327,19 @@ async def set_route(train_id: str, body: RouteRequest):
     return response(result)
 
 
+@app.post("/api/trains/{train_id}/switch-route")
+async def request_switch_route(train_id: str, body: SwitchRouteRequest):
+    """办理并锁闭一条经过指定真实道岔组件的进路。"""
+    return response(runtime.request_switch_route(
+        train_id, body.component_ids, body.label))
+
+
+@app.delete("/api/trains/{train_id}/switch-route")
+async def cancel_switch_route(train_id: str):
+    """取消列车尚未进入的人工岔道进路。"""
+    return response(runtime.cancel_switch_route(train_id))
+
+
 @app.post("/api/trains/{train_id}/jump-station")
 async def jump_station(train_id: str, body: StationJumpRequest):
     result = runtime.jump_to_station(train_id, body.station_id)
@@ -389,14 +396,14 @@ async def switch_track_source(body: TrackSourceRequest):
     return response(runtime.switch_track_source(body.source))
 
 
-@app.post("/api/network/stop")
-async def network_stop():
-    return response(runtime.network_disconnect())
-
-
 @app.get("/api/plc/output")
 async def plc_output_get():
-    return {"ok": True, "state": dict(runtime.plc_output_state)}
+    return {
+        "ok": True,
+        "state": dict(runtime.plc_output_state),
+        "manual_override": runtime.plc_output_manual_override,
+        "vehicle_speed": runtime.plc_output_vehicle_speed,
+    }
 
 
 @app.post("/api/plc/output")
@@ -405,20 +412,17 @@ async def plc_output_post(body: Request):
     updates = await body.json()
     if "atp_safe_out" in updates:
         value = PlcOutputRequest(**updates).atp_safe_out
-        if not runtime.network_started:
-            return JSONResponse(
-                {"ok": False, "message": "网络未启动，请先点击联调连接"},
-                status_code=409,
-            )
         try:
-            runtime.network.send_plc_output(value)
+            result = runtime.set_plc_raw_output(value)
+            if not result["ok"]:
+                raise RuntimeError(result["message"])
             runtime.recorder.record(
                 "PLC输出",
                 f"ATP安全输出: 0x{value:04X}",
                 source="web-ats",
                 severity="INFO",
             )
-            return {"ok": True, "message": f"PLC输出已发送: 0x{value:04X}"}
+            return result
         except Exception as exc:
             return JSONResponse(
                 {"ok": False, "message": f"PLC输出发送失败: {exc}"},
