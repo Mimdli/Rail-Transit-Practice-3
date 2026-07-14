@@ -5,11 +5,12 @@
     - VehicleModel (旧单质点，已废弃)
 """
 
-from typing import Union, Tuple
+from typing import Optional, Union
 from src.vehicle.model import VehicleModel, DoorSide
 from src.vehicle.vehicle_controller import VehicleController
-from src.common.track_position import ITrackQuery
+from src.common.track_position import ITrackQuery, TrackPosition
 from src.track.data import TrackData
+from src.track.vision_alignment import VisionCoordinateMapper
 
 
 class DoorInterlock:
@@ -21,10 +22,14 @@ class DoorInterlock:
 
     def __init__(self, vehicle: Union[VehicleModel, VehicleController],
                  track: TrackData,
-                 track_adapter: ITrackQuery = None):
+                 track_adapter: ITrackQuery = None,
+                 vision_mapper: Optional[VisionCoordinateMapper] = None):
         self.vehicle = vehicle
         self.track = track
         self.track_adapter = track_adapter
+        link_source = "demo" if len(track.segments) <= 10 else "directions"
+        self.vision_mapper = vision_mapper or VisionCoordinateMapper(
+            track, link_source)
 
     # ── 车辆状态访问（兼容新旧模型）──────────────────────────
 
@@ -53,6 +58,12 @@ class DoorInterlock:
             return v.doors_closed()
         return v.doors_closed()
 
+    def _get_track_position(self) -> Optional[TrackPosition]:
+        """新版控制器可提供无歧义的 Seg 内位置。"""
+        if isinstance(self.vehicle, VehicleController) and self.vehicle.states:
+            return self.vehicle.states[0].position
+        return None
+
     # ── 联锁逻辑 ────────────────────────────────────────────
 
     def can_open_door(self) -> tuple:
@@ -64,7 +75,14 @@ class DoorInterlock:
     def get_allowed_door_side(self) -> DoorSide:
         """获取到站后允许开门的侧"""
         pos = self._get_position_abs()
-        side = self.track.get_platform_side_at(pos)
+        track_position = self._get_track_position()
+        side = ""
+        if track_position is not None:
+            side = self.vision_mapper.platform_side_at(
+                track_position, self.vehicle.direction)
+        if not side:
+            segment_id = 0 if track_position is None else track_position.segment_id
+            side = self.track.get_platform_side_at(pos, segment_id)
         if side == "left":
             return DoorSide.LEFT
         elif side == "right":
@@ -80,8 +98,9 @@ class DoorInterlock:
     def is_at_platform(self) -> bool:
         """判断列车是否在站台范围内"""
         pos = self._get_position_abs()
-        for p in self.track.platforms:
-            platform_length = getattr(p, "length", 120.0)
-            if abs(pos - p.position) < platform_length / 2:
-                return True
-        return False
+        track_position = self._get_track_position()
+        if track_position is not None and self.vision_mapper.platform_at(
+                track_position, self.vehicle.direction) is not None:
+            return True
+        segment_id = 0 if track_position is None else track_position.segment_id
+        return self.track.get_platform_at(pos, segment_id) is not None

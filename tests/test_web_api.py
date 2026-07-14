@@ -30,33 +30,89 @@ def test_smoothness_uses_jerk_trend_and_actual_frame_time():
 
 
 def test_web_switch_route_locks_and_guides_train_to_reverse_branch():
-    """Web 办理进路后应锁闭真实区段，并让车辆适配器选择反位支线。"""
+    """SW-0100 应让上行车经 Seg 44/17 进入下行站台。"""
     runtime = SimulationRuntime()
-    train_id = "1车"
+    down_train, train = list(runtime.dispatch.trains.values())
+    train_id = train.train_id
 
-    result = runtime.request_switch_route(train_id, [4, 5], "SW-0100")
+    rejected = runtime.request_switch_route(
+        down_train.train_id, [4], "SW-0100 上行转下行")
+    assert rejected["ok"] is False
+    assert "上行股道列车" in rejected["message"]
+
+    # 构造 2车返抵郭公庄前的状态；下行站台必须先由 1车腾空。
+    down_train.controller.reset_states(100, 10.0)
+    runtime.dispatch.interlocking.cancel_route(train_id)
+    train.reserved_segments = ()
+    train.track_adapter.set_active_route(None)
+    train.target_station_id = None
+    train.plan_index = 1
+    train.plan_step = -1
+    train.controller.reset_states(43, 1.0)
+    runtime.dispatch.occupancy.update(runtime.dispatch.trains.values())
+
+    result = runtime.request_switch_route(
+        train_id, [4], "SW-0100 上行转下行")
 
     assert result["ok"] is True
-    train = runtime.dispatch.trains.require(train_id)
+    assert train.reserved_segments == (43, 44, 17, 14, 13)
     assert {17, 44}.issubset(train.reserved_segments)
     assert runtime.dispatch.interlocking.locked_by(17) == train_id
-    assert runtime.dispatch.operator_routes[train_id]["componentIds"] == (4, 5)
+    assert runtime.dispatch.operator_routes[train_id]["componentIds"] == (4,)
 
-    switch_segment = runtime.track._seg_map[14]
     entered = train.track_adapter.advance_position(
-        TrackPosition(14, switch_segment.length - 1.0), 2.0)
-    assert entered.segment_id == 17
+        TrackPosition(43, 1.0), -2.0)
+    assert entered.segment_id == 44
 
     cancelled = runtime.cancel_switch_route(train_id)
     assert cancelled["ok"] is True
     assert runtime.dispatch.operator_routes == {}
     assert runtime.dispatch.interlocking.locked_by(17) is None
 
-    assert runtime.request_switch_route(train_id, [4, 5], "SW-0100")["ok"]
-    train.controller.reset_states(49, 90.0)
-    runtime.dispatch.step(0.1)
+    assert runtime.request_switch_route(
+        train_id, [4], "SW-0100 上行转下行")["ok"]
+    for state in train.controller.states:
+        state.position = TrackPosition(13, 100.0)
+    runtime.dispatch._release_cleared_operator_routes(
+        runtime.dispatch.trains.values())
     assert runtime.dispatch.operator_routes == {}
     assert runtime.dispatch.interlocking.locked_by(17) is None
+
+
+def test_web_switch_routes_cover_sw0101_and_sw0103():
+    """SW-0101 中部渡线和 SW-0103 右端渡线均应生成唯一真实进路。"""
+    runtime = SimulationRuntime()
+    first, second = list(runtime.dispatch.trains.values())
+
+    # SW-0101：上行股道向右进入下行股道，继续运行至 QLZ。
+    runtime.dispatch.interlocking.cancel_route(first.train_id)
+    first.reserved_segments = ()
+    first.track_adapter.set_active_route(None)
+    first.target_station_id = None
+    first.plan_index = 4
+    first.plan_step = 1
+    first.controller.reset_states(78, 1.0)
+    runtime.dispatch.occupancy.update(runtime.dispatch.trains.values())
+    result = runtime.request_switch_route(
+        first.train_id, [8], "SW-0101 上行转下行")
+    assert result["ok"] is True
+    assert first.reserved_segments[:4] == (78, 80, 65, 64)
+    assert runtime.cancel_switch_route(first.train_id)["ok"] is True
+
+    # SW-0103：右端下行股道向左进入上行站台，终点为 GTG。
+    first.controller.reset_states(100, 10.0)
+    runtime.dispatch.interlocking.cancel_route(second.train_id)
+    second.reserved_segments = ()
+    second.track_adapter.set_active_route(None)
+    second.target_station_id = None
+    second.plan_index = 11
+    second.plan_step = 1
+    second.controller.reset_states(211, 6.0)
+    runtime.dispatch.occupancy.update(runtime.dispatch.trains.values())
+    result = runtime.request_switch_route(
+        second.train_id, [14], "SW-0103 下行转上行")
+    assert result["ok"] is True
+    assert second.reserved_segments == (211, 212, 224, 222, 221, 220)
 
 
 def test_web_network_sources_include_live_vision_data():
@@ -70,8 +126,26 @@ def test_web_network_sources_include_live_vision_data():
     data = source()
     primary = next(iter(runtime.dispatch.trains.values()))
     head_state = primary.controller.states[0]
-    assert data["edge_id"] == head_state.position.segment_id
-    assert data["position_mm"] == int(head_state.position.offset * 1000)
+    vision_position = runtime.vision_mapper.to_vision_position(
+        head_state.position, primary.controller.direction)
+    assert vision_position is not None
+    assert data["edge_id"] == vision_position.edge_id
+    assert data["position_mm"] == int(round(vision_position.offset_m * 1000))
+    # 初始下行车位于郭公庄站，新标注应编码为视景边 11、边内 71.81m。
+    assert data["edge_id"] == 11
+    assert data["position_mm"] == 71810
+
+    # 按真实变长数组计算偏移，确认最终 UDP 字节中的位置和边号没有被改写。
+    import struct
+    from src.network.codec import pack_vision_tcms2view
+    packet = pack_vision_tcms2view(live_counter=1, **data)
+    position_offset = (
+        4 + 1 + len(data["signal_states"])
+        + 1 + len(data["switch_states"])
+        + 4 + 2 + 1 + 1
+    )
+    assert struct.unpack_from("<i", packet, position_offset)[0] == 71810
+    assert struct.unpack_from("<h", packet, position_offset + 4)[0] == 11
     assert len(data["signal_states"]) == len(runtime.track.signals)
     assert len(data["switch_states"]) == len(runtime.ats_switches)
     assert len(data["other_trains"]) == len(runtime.dispatch.trains) - 1
@@ -102,16 +176,19 @@ def test_network_stats_expose_all_physical_endpoints():
     assert endpoints["cab_network"]["frame_size"] == "570 / 570 B"
     assert endpoints["cab_signal"]["remote"] == "192.168.100.122:9999"
     assert endpoints["cab_signal"]["frame_size"] == "68 B"
-    assert endpoints["vision"]["local"] == "192.168.100.124:8303"
+    assert endpoints["vision"]["local"] == "192.168.100.67:8303"
+    assert endpoints["vision"]["remote"] == "192.168.100.124:8303"
 
 
 def test_cab_and_plc_outputs_share_live_simulation_state():
     """页面、两块屏和PLC周期输出应使用同一份实时状态。"""
     from src.network.codec import pack_network_screen, pack_signal_screen
+    from src.vehicle.enums import RunningMode
 
     runtime = SimulationRuntime()
     runtime._setup_network_sources()
     primary = next(iter(runtime.dispatch.trains.values()))
+    primary.controller.set_running_mode(RunningMode.AUTOMATIC)
     for state in primary.controller.states:
         state.velocity = 10.0
 
@@ -128,6 +205,7 @@ def test_cab_and_plc_outputs_share_live_simulation_state():
     assert display["sig_state"] in (1, 2, 4)
     assert network_data == display
     assert signal_data["speed"] == 36.0
+    assert signal_data["mode"] == 4
     network_keys = {
         "speed", "acceleration", "speed_limit", "run_mode", "run_dir",
         "power_pull", "net_pressure", "curr_station", "next_station",
@@ -141,8 +219,10 @@ def test_cab_and_plc_outputs_share_live_simulation_state():
     }
     assert len(pack_network_screen(**{
         key: network_data[key] for key in network_keys})) == 570
-    assert len(pack_signal_screen(**{
-        key: signal_data[key] for key in signal_keys})) == 68
+    signal_packet = pack_signal_screen(**{
+        key: signal_data[key] for key in signal_keys})
+    assert len(signal_packet) == 68
+    assert signal_packet[56] == 4
     assert runtime.plc_output_vehicle_speed == 36
     assert runtime.plc_output_state["indicator_hv_contactor"] is True
     assert runtime.plc_output_state["indicator_door_closed"] is True
@@ -228,11 +308,46 @@ def test_snapshot_and_dispatch_command():
         assert any(signal["linkPosition"] is not None
                    for signal in data["signals"])
         assert len(data["signals"]) == 157
+        # 同名信号机按唯一布局位置独立计算，不能把一处 Z2 的红灯复制到全线。
+        z2_signals = [signal for signal in data["signals"]
+                      if signal["id"] == "Z2"]
+        assert len(z2_signals) > 1
+        assert {signal["aspect"] for signal in z2_signals} == {"GREEN", "RED"}
+        assert all(signal["aspect"] != "UNKNOWN" for signal in data["signals"])
+        assert sum(signal["mapped"] for signal in data["signals"]) == 157
+        assert sum(signal["stateSource"] == "runtime"
+                   for signal in data["signals"]) == 97
+        assert sum(signal["stateSource"] == "derived"
+                   for signal in data["signals"]) == 60
         assert data["trackSummary"]["switchCount"] == 60
         assert any(component["role"] == "crossover"
                    for component in data["line"]["switchComponents"])
         assert any(component["role"] == "single-crossover"
                    for component in data["line"]["switchComponents"])
+        sw0100_entry = next(component for component in
+                            data["line"]["switchComponents"]
+                            if component["id"] == 4)
+        assert sw0100_entry["movement"] == {
+            "fromDirection": "up",
+            "toDirection": "down",
+            "directionCode": -1,
+        }
+        assert sw0100_entry["segmentLengths"]["17"] > 0
+        sw0101 = next(component for component in
+                      data["line"]["switchComponents"]
+                      if component["id"] == 8)
+        sw0103_left = next(component for component in
+                           data["line"]["switchComponents"]
+                           if component["id"] == 14)
+        assert sw0101["movement"] == {
+            "fromDirection": "up", "toDirection": "down",
+            "directionCode": 1,
+        }
+        assert sw0103_left["movement"] == {
+            "fromDirection": "down", "toDirection": "up",
+            "directionCode": -1,
+        }
+        assert data["trains"][0]["trackDirection"] == "down"
         assert "acceleration" in data["trains"][0]
         assert "tractiveForceKn" in data["trains"][0]
         assert "brakeForceKn" in data["trains"][0]

@@ -270,12 +270,32 @@ class TrackData:
                 return station
         return None
 
-    def get_platform_side_at(self, position: float) -> str:
-        """获取指定位置的站台侧 ('left' / 'right' / '')"""
-        for p in self.platforms:
-            if abs(p.position - position) < 60:
-                return "right" if p.direction == "down" else "left"
-        return ""
+    def get_platform_at(self, position: float,
+                        segment_id: int = 0) -> Optional[Platform]:
+        """按内部绝对里程和可选 Seg 定位站台。
+
+        数据库中的部分站台里程落在关联 Seg 之外，调度层会把停车点钳位到
+        Seg 边界；这里使用相同口径，避免开门判断与实际停车目标错位。
+        """
+        for platform in self.platforms:
+            if segment_id and platform.seg_id != segment_id:
+                continue
+            center = platform.position
+            segment = self._seg_map.get(platform.seg_id)
+            if segment is not None:
+                offset = max(0.0, min(
+                    segment.length, platform.position - segment.abs_start))
+                center = segment.abs_start + offset
+            if abs(center - position) < 60:
+                return platform
+        return None
+
+    def get_platform_side_at(self, position: float, segment_id: int = 0) -> str:
+        """获取指定位置的站台侧 ('left' / 'right' / '')。"""
+        platform = self.get_platform_at(position, segment_id)
+        if platform is None:
+            return ""
+        return "right" if platform.direction == "down" else "left"
 
     def get_nearest_station_ahead(self, position: float) -> Optional[Station]:
         """获取前方最近的车站"""

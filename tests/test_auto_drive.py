@@ -207,7 +207,7 @@ def test_auto_drive_full_stop():
     for step in range(max_steps):
         auto.step()
         ctrl.step(0.033)
-        if step >= min_steps and auto.is_stopped:
+        if step >= min_steps and auto.station_phase.name == "DWELL":
             break
 
     assert step < max_steps - 1, f"列车应在目标附近停车, 运行了{max_steps}步未停, speed={ctrl.head_speed:.2f}"
@@ -215,10 +215,34 @@ def test_auto_drive_full_stop():
     # 头车应前进了相当距离（验证自动控制循环正常运行）
     head_abs = track.to_absolute(ctrl.states[0].position)
     assert head_abs > 50.0, f"列车应前进了, 实际 head_abs={head_abs:.1f}m"
+    assert abs(head_abs - target_offset) <= auto.STOP_POSITION_TOLERANCE
 
     # 所有车应已停止
     for s in ctrl.states:
         assert s.velocity < 0.1, f"有车厢未停止: v={s.velocity:.3f}"
+
+
+def test_auto_drive_restarts_creep_when_stopped_short_of_target():
+    """提前停在目标前方时应重新低速牵引，而不是误判到站。"""
+    track = MockTrackQuery()
+    ctrl = VehicleController(
+        CONSIST_4M2T, track, MockEnvironment(WeatherType.DRY))
+    auto = AutoDriveController(ctrl)
+    ctrl.reset_to(TrackPosition(segment_id=1, offset=199.0))
+    auto.set_target(TrackPosition(segment_id=1, offset=200.0))
+
+    auto.step()
+
+    assert auto.station_phase.name == "APPROACHING"
+    assert ctrl.throttle == 0.3
+    assert ctrl.brake_level == 0.0
+
+    # 完整编组可能在停车点前以极低速卡滞，此时仍应保持起步牵引。
+    for state in ctrl.states:
+        state.velocity = 0.011
+    auto.step()
+    assert ctrl.throttle == 0.3
+    assert ctrl.brake_level == 0.0
 
 
 def test_distance_to_target_updates():

@@ -19,6 +19,9 @@
   .message-layout, .config-layout { grid-template-columns:1fr; }
   .replay-workspace { grid-template-columns:1fr; }
   .power-workspace { grid-template-columns:1fr; }
+  .demo-map-workspace { grid-template-columns:1fr; }
+  .demo-map-main { border-right:0; }
+  .demo-map-side { border-top:1px solid var(--line); }
   .data-metrics { grid-template-columns:repeat(2,1fr); }
   .interface-tabs { overflow-x:auto; padding-inline:16px; }
   .train-tabs { overflow-x: auto; padding-inline: 16px; }

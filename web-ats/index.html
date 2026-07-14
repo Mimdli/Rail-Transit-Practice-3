@@ -16,14 +16,14 @@
       <div class="system-strip">
         <span id="backendStatus"><i class="dot off"></i>后端连接中</span><span id="signalStatus"><i class="dot off"></i>信号未连接</span><span id="plcStatus"><i class="dot off"></i>司机台未连接</span><span id="visionStatus"><i class="dot off"></i>视景未连接</span>
       </div>
-      <div class="top-actions"><div class="clock"><strong id="clock">09:42:31</strong><small>仿真时间 · <span id="rate">5×</span></small></div><button class="button" id="speedBtn">倍速</button><button class="button" id="pauseBtn">暂停</button></div>
+      <div class="top-actions"><div class="clock"><strong id="clock">09:42:31</strong><small>仿真时间 · <span id="rate">1×</span></small></div><button class="button" id="speedBtn">倍速</button><button class="button" id="pauseBtn">暂停</button></div>
     </header>
 
     <section class="workspace">
       <aside class="sidebar">
         <p class="section-label">运行控制</p>
         <nav class="nav" aria-label="运行控制">
-          <button class="active" data-page="overview" aria-current="page">综合总览</button><button data-page="dispatch">调度中心</button><button data-page="train">列车中心</button><button data-page="signal">信号与联锁</button><button data-page="power">供电监控</button>
+          <button class="active" data-page="overview" aria-current="page">综合总览</button><button data-page="dispatch">调度中心</button><button data-page="train">列车中心</button><button data-page="signal">信号与联锁</button><button data-page="power">供电监控</button><button data-page="demo">折返演示</button>
         </nav>
         <p class="section-label" style="margin-top:24px">系统工具</p>
         <nav class="nav" aria-label="系统工具"><button data-page="interface">接口与网络</button><button data-page="scene">数据与场景</button><button data-page="replay">回放与评价</button></nav>
@@ -68,6 +68,7 @@
   <script src="/scripts/replay-center.js"></script>
   <script src="/scripts/power-center.js"></script>
   <script src="/scripts/cab-center.js"></script>
+  <script src="/scripts/demo-map.js"></script>
   <script src="/scripts/app.js"></script>
 
 </body>

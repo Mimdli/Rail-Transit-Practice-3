@@ -612,7 +612,7 @@ def pack_signal_screen(
     speed: float,
     acceleration: float,
     speed_limit: float,
-    mode: int = 5,
+    mode: int = 4,
     run_dir: int = 0,
     curr_station: int = 0,
     next_station: int = 0,
