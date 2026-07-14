@@ -131,9 +131,9 @@ def test_web_network_sources_include_live_vision_data():
     assert vision_position is not None
     assert data["edge_id"] == vision_position.edge_id
     assert data["position_mm"] == int(round(vision_position.offset_m * 1000))
-    # 初始下行车位于郭公庄站，新标注应编码为视景边 11、边内 71.81m。
+    # 协议发送车头位置；初始下行车应停在郭公庄站台高里程端。
     assert data["edge_id"] == 11
-    assert data["position_mm"] == 71810
+    assert data["position_mm"] == 130810
 
     # 按真实变长数组计算偏移，确认最终 UDP 字节中的位置和边号没有被改写。
     import struct
@@ -144,7 +144,7 @@ def test_web_network_sources_include_live_vision_data():
         + 1 + len(data["switch_states"])
         + 4 + 2 + 1 + 1
     )
-    assert struct.unpack_from("<i", packet, position_offset)[0] == 71810
+    assert struct.unpack_from("<i", packet, position_offset)[0] == 130810
     assert struct.unpack_from("<h", packet, position_offset + 4)[0] == 11
     assert len(data["signal_states"]) == len(runtime.track.signals)
     assert len(data["switch_states"]) == len(runtime.ats_switches)
@@ -182,6 +182,8 @@ def test_network_stats_expose_all_physical_endpoints():
 
 def test_cab_and_plc_outputs_share_live_simulation_state():
     """页面、两块屏和PLC周期输出应使用同一份实时状态。"""
+    import struct
+
     from src.network.codec import pack_network_screen, pack_signal_screen
     from src.vehicle.enums import RunningMode
 
@@ -203,7 +205,7 @@ def test_cab_and_plc_outputs_share_live_simulation_state():
     assert display["end_station"] != display["curr_station"]
     assert len(display["door_states"]) == 6
     assert display["sig_state"] in (1, 2, 4)
-    assert network_data == display
+    assert network_data == {**display, "speed": 36.0}
     assert signal_data["speed"] == 36.0
     assert signal_data["mode"] == 4
     network_keys = {
@@ -217,8 +219,10 @@ def test_cab_and_plc_outputs_share_live_simulation_state():
         "pull_state", "brake_state", "urgency_stop", "event_id",
         "sig_state", "train_no", "next_station_dist",
     }
-    assert len(pack_network_screen(**{
-        key: network_data[key] for key in network_keys})) == 570
+    network_packet = pack_network_screen(**{
+        key: network_data[key] for key in network_keys})
+    assert len(network_packet) == 570
+    assert struct.unpack_from("<f", network_packet, 40)[0] == 36.0
     signal_packet = pack_signal_screen(**{
         key: signal_data[key] for key in signal_keys})
     assert len(signal_packet) == 68
@@ -226,6 +230,24 @@ def test_cab_and_plc_outputs_share_live_simulation_state():
     assert runtime.plc_output_vehicle_speed == 36
     assert runtime.plc_output_state["indicator_hv_contactor"] is True
     assert runtime.plc_output_state["indicator_door_closed"] is True
+
+
+def test_arrived_train_reports_zero_station_distance():
+    """车头到达实际停车点后，网页和司机台距离都必须归零。"""
+    runtime = SimulationRuntime()
+    train = next(iter(runtime.dispatch.trains.values()))
+    assert runtime.dispatch.depart(train.train_id).ok
+    target = train.auto_drive.target_position
+    runtime.dispatch._place_train_head(train, target)
+
+    runtime.dispatch._check_arrival(train)
+    runtime._update_cab_display_from_simulation()
+    serialized = runtime._serialize_train(train)
+
+    assert train.status.name == "DWELLING"
+    assert runtime.cab_display_state["next_station_dist"] == 0.0
+    assert serialized["targetDistance"] == 0.0
+    assert serialized["targetStation"] == "FSP"
 
 
 def test_plc_manual_override_keeps_bits_but_not_stale_speed():

@@ -34,6 +34,7 @@ class PLCClient:
 
         # 回调
         self._recv_callback: Optional[Callable[[dict], None]] = None
+        self._pending_output: bytes = b''
 
         # 最近收到的PLC数据
         self._last_plc_data: Optional[dict] = None
@@ -84,24 +85,9 @@ class PLCClient:
         self.connected = False
 
     def send_output(self, **kwargs):
-        """发送上位机输出到PLC，kwargs 透传至 pack_plc_output"""
-        data = pack_plc_output(**kwargs)
-        for index, s in enumerate(self._sockets):
-            if s:
-                try:
-                    s.sendall(data)
-                    self.packets_sent += 1
-                    self.last_sent_packet = data
-                    self.last_send_time = time.time()
-                    self.port_packets_sent[index] += 1
-                    self.port_last_send_time[index] = self.last_send_time
-                    self.port_last_sent_packet[index] = data
-                except Exception:
-                    try:
-                        s.close()
-                    except Exception:
-                        pass
-                    self._sockets[index] = None
+        """更新待发送输出，由 PLC 工作线程在下个周期发送。"""
+        # 仿真主循环只更新最新状态，不直接执行可能阻塞的 TCP sendall。
+        self._pending_output = pack_plc_output(**kwargs)
 
     def _run(self):
         # 连接三个端口（port <= 0 的跳过）
@@ -131,6 +117,14 @@ class PLCClient:
                 if s is None:
                     continue
                 try:
+                    if self._pending_output:
+                        s.sendall(self._pending_output)
+                        self.packets_sent += 1
+                        self.last_sent_packet = self._pending_output
+                        self.last_send_time = time.time()
+                        self.port_packets_sent[index] += 1
+                        self.port_last_send_time[index] = self.last_send_time
+                        self.port_last_sent_packet[index] = self._pending_output
                     data = s.recv(PLC_RECV_SIZE)
                     if len(data) >= PLC_RECV_SIZE:
                         parsed = unpack_plc_data(data)

@@ -954,9 +954,10 @@ class MainWindow(QMainWindow):
             head_abs, track_limit, self.track.signals) if hasattr(self, 'track') else track_limit
 
         net_data = {
-            "speed": head_speed,
+            # 两块实体司机台屏均按 km/h 接收速度与限速。
+            "speed": head_speed * 3.6,
             "acceleration": head_accel,
-            "speed_limit": effective_limit,
+            "speed_limit": effective_limit * 3.6,
             "run_mode": self.controller.running_mode.value if self.controller.running_mode else 0,
             "run_dir": self._get_run_dir(),
             "power_pull": 80 if self.controller.throttle > 0 else 0,
@@ -973,7 +974,7 @@ class MainWindow(QMainWindow):
         sig_data = {
             "speed": head_speed * 3.6,
             "acceleration": head_accel,
-            "speed_limit": effective_limit,
+            "speed_limit": effective_limit * 3.6,
             "mode": 5,  # RM mode default
             "run_dir": self._get_run_dir(),
             "curr_station": curr_station,
