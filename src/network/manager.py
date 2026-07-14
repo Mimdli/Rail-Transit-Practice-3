@@ -18,6 +18,17 @@ from .signal_gateway import SignalGateway
 from .tcp_plc import PLCClient
 from .vision_udp import VisionUDPClient
 from .cab_display import CabDisplayClient
+from .constants import (
+    VEHICLE_UDP_LOCAL_ADDR, VEHICLE_UDP_LOCAL_PORT,
+    VEHICLE_UDP_REMOTE_ADDR, VEHICLE_UDP_REMOTE_PORT,
+    VEHICLE_UDP_SEND_SIZE, VEHICLE_UDP_RECV_SIZE,
+    SIGNAL_GATEWAY_ADDR, SIGNAL_GATEWAY_PORT, SIGNAL_LOCAL_PORT,
+    PLC_SERVER_ADDR, PLC_PORT_1, PLC_PORT_2, PLC_PORT_3,
+    PLC_SEND_SIZE, PLC_RECV_SIZE,
+    VISION_LOCAL_ADDR, VISION_LOCAL_PORT, VISION_REMOTE_ADDR, VISION_REMOTE_PORT,
+    CAB_NETWORK_SCREEN_ADDR, CAB_NETWORK_SCREEN_PORT,
+    CAB_SIGNAL_SCREEN_ADDR, CAB_SIGNAL_SCREEN_PORT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +74,7 @@ class NetworkManager:
             "vehicle_udp": self._module_stats(self.vehicle_udp, "车辆UDP", "UDP", 20, True, now),
             "signal_gateway": self._module_stats(self.signal_gateway, "信号网关", "UDP", 250, True, now),
             "plc": self._module_stats(self.plc, "司机台PLC", "TCP", 100, True, now),
-            "vision": self._module_stats(self.vision, "视景系统", "UDP", 100, False, now),
+            "vision": self._module_stats(self.vision, "视景系统", "UDP", 100, True, now),
             "cab_display": self._module_stats(self.cab_display, "司机台显示", "TCP", 100, True, now),
         }
         # cab_display 额外携带两个屏各自的报文
@@ -72,7 +83,84 @@ class NetworkManager:
             getattr(self.cab_display, "last_network_packet", b""))
         cab["last_signal_packet_hex"] = self._hex_str(
             getattr(self.cab_display, "last_signal_packet", b""))
+        result["vehicle_udp"]["endpoints"] = [self._endpoint_stats(
+            self.vehicle_udp, "vehicle_udp", "车辆状态接口", "UDP",
+            f"{VEHICLE_UDP_LOCAL_ADDR}:{VEHICLE_UDP_LOCAL_PORT}",
+            f"{VEHICLE_UDP_REMOTE_ADDR}:{VEHICLE_UDP_REMOTE_PORT}",
+            "双向", f"{VEHICLE_UDP_SEND_SIZE} / {VEHICLE_UDP_RECV_SIZE} B", now)]
+        result["signal_gateway"]["endpoints"] = [self._endpoint_stats(
+            self.signal_gateway, "signal_gateway", "信号系统网关", "UDP",
+            f"0.0.0.0:{SIGNAL_LOCAL_PORT}",
+            f"{SIGNAL_GATEWAY_ADDR}:{SIGNAL_GATEWAY_PORT}",
+            "双向", "变长", now)]
+        result["vision"]["endpoints"] = [self._endpoint_stats(
+            self.vision, "vision", "视景系统", "UDP",
+            f"{VISION_LOCAL_ADDR}:{VISION_LOCAL_PORT}",
+            f"{VISION_REMOTE_ADDR}:{VISION_REMOTE_PORT}",
+            "双向", "154 B（抓包）", now)]
+        result["plc"]["endpoints"] = [
+            self._plc_endpoint(index, port, now)
+            for index, port in enumerate((PLC_PORT_1, PLC_PORT_2, PLC_PORT_3))
+        ]
+        result["cab_display"]["endpoints"] = [
+            self._cab_endpoint("cab_network", "网络屏", CAB_NETWORK_SCREEN_ADDR,
+                               CAB_NETWORK_SCREEN_PORT, "双向", "570 / 570 B", now),
+            self._cab_endpoint("cab_signal", "信号屏", CAB_SIGNAL_SCREEN_ADDR,
+                               CAB_SIGNAL_SCREEN_PORT, "发送", "68 B", now),
+        ]
         return result
+
+    @staticmethod
+    def _age(now: float, timestamp: float):
+        return round((now - timestamp) * 1000) if timestamp > 0 else None
+
+    def _endpoint_stats(self, module, endpoint_id, name, protocol, local,
+                        remote, direction, frame_size, now):
+        return {
+            "id": endpoint_id, "name": name, "protocol": protocol,
+            "local": local, "remote": remote, "direction": direction,
+            "frame_size": frame_size, "connected": module.connected,
+            "packets_sent": getattr(module, "packets_sent", 0),
+            "packets_received": getattr(module, "packets_received", 0),
+            "last_send_ago": self._age(now, getattr(module, "last_send_time", 0.0)),
+            "last_recv_ago": self._age(now, getattr(module, "last_recv_time", 0.0)),
+            "last_sent_packet_hex": self._hex_str(getattr(module, "last_sent_packet", b"")),
+            "last_recv_packet_hex": self._hex_str(getattr(module, "last_recv_packet", b"")),
+        }
+
+    def _plc_endpoint(self, index: int, port: int, now: float) -> dict:
+        plc = self.plc
+        return {
+            "id": f"plc_{port}", "name": f"PLC {port}", "protocol": "TCP",
+            "local": "系统临时端口", "remote": f"{PLC_SERVER_ADDR}:{port}",
+            "direction": "双向", "frame_size": f"{PLC_SEND_SIZE} / {PLC_RECV_SIZE} B",
+            "connected": plc._sockets[index] is not None,
+            "packets_sent": plc.port_packets_sent[index],
+            "packets_received": plc.port_packets_received[index],
+            "last_send_ago": self._age(now, plc.port_last_send_time[index]),
+            "last_recv_ago": self._age(now, plc.port_last_recv_time[index]),
+            "last_sent_packet_hex": self._hex_str(plc.port_last_sent_packet[index]),
+            "last_recv_packet_hex": self._hex_str(plc.port_last_recv_packet[index]),
+        }
+
+    def _cab_endpoint(self, endpoint_id, name, addr, port, direction,
+                      frame_size, now) -> dict:
+        cab = self.cab_display
+        prefix = "network" if endpoint_id == "cab_network" else "signal"
+        sent_packet = cab.last_network_packet if prefix == "network" else cab.last_signal_packet
+        recv_packet = cab.last_network_recv_packet if prefix == "network" else b""
+        return {
+            "id": endpoint_id, "name": name, "protocol": "TCP",
+            "local": "系统临时端口", "remote": f"{addr}:{port}",
+            "direction": direction, "frame_size": frame_size,
+            "connected": getattr(cab, f"{prefix}_connected"),
+            "packets_sent": getattr(cab, f"{prefix}_packets_sent"),
+            "packets_received": getattr(cab, f"{prefix}_packets_received"),
+            "last_send_ago": self._age(now, getattr(cab, f"{prefix}_last_send_time")),
+            "last_recv_ago": self._age(now, getattr(cab, f"{prefix}_last_recv_time")),
+            "last_sent_packet_hex": self._hex_str(sent_packet),
+            "last_recv_packet_hex": self._hex_str(recv_packet),
+        }
 
     @staticmethod
     def _hex_str(data: bytes, max_len: int = 1024) -> str:
@@ -153,8 +241,14 @@ class NetworkManager:
     # ---- 视景系统 ----
 
     def set_vision_data_source(self, source: Callable[[], dict]):
-        """设置视景系统数据源"""
+        """设置视景系统发送数据源。"""
         self.vision.set_data_source(source)
+
+    def set_vision_recv_callback(
+        self, callback: Callable[[bytes, tuple[str, int]], None]
+    ):
+        """设置视景系统原始 UDP 报文回调。"""
+        self.vision.set_recv_callback(callback)
 
     # ---- 司机台显示屏 ----
 

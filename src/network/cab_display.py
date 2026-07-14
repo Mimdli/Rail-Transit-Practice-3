@@ -56,6 +56,19 @@ class CabDisplayClient:
         self.last_sent_packet: bytes = b''
         self.last_recv_packet: bytes = b''
 
+        # 两块屏独立统计，避免 Web 端把网络屏和信号屏误显示为同一链路。
+        self.network_connected = False
+        self.signal_connected = False
+        self.network_packets_sent = 0
+        self.network_packets_received = 0
+        self.signal_packets_sent = 0
+        self.signal_packets_received = 0
+        self.network_last_send_time = 0.0
+        self.network_last_recv_time = 0.0
+        self.signal_last_send_time = 0.0
+        self.signal_last_recv_time = 0.0
+        self.last_network_recv_packet: bytes = b''
+
         # TCP 持久连接（网络屏支持双向）
         self._net_sock: Optional[socket.socket] = None
         self._sig_sock: Optional[socket.socket] = None
@@ -85,6 +98,8 @@ class CabDisplayClient:
     def stop(self):
         self._running = False
         self.connected = False
+        self.network_connected = False
+        self.signal_connected = False
         self._close_sockets()
 
     def _close_sockets(self):
@@ -244,7 +259,7 @@ class CabDisplayClient:
                 has_network = False
                 has_signal = False
 
-                # --- 网络屏 (570 bytes → 192.168.100.122:8888) ---
+                # --- 网络屏 (570 bytes → 192.168.100.121:8888) ---
                 if self._network_data_source:
                     data = self._network_data_source()
                     if data:
@@ -282,10 +297,17 @@ class CabDisplayClient:
                                         self.packets_received += 1
                                         self.last_recv_time = time.time()
                                         self.last_recv_packet = frame
+                                        self.network_packets_received += 1
+                                        self.network_last_recv_time = self.last_recv_time
+                                        self.last_network_recv_packet = frame
                                 has_network = True
+                                self.network_connected = True
                                 self.last_network_packet = packet
+                                self.last_sent_packet = packet
                                 self.packets_sent += 1
                                 self.last_send_time = time.time()
+                                self.network_packets_sent += 1
+                                self.network_last_send_time = self.last_send_time
                                 if sock_ref:
                                     self._net_sock = sock_ref[0]
                             except Exception:
@@ -295,8 +317,11 @@ class CabDisplayClient:
                                     except Exception:
                                         pass
                                 self._net_sock = None
+                                self.network_connected = False
+                        else:
+                            self.network_connected = False
 
-                # --- 信号屏 (字段表闭合为68 bytes → 192.168.100.121:9999) ---
+                # --- 信号屏 (字段表闭合为68 bytes → 192.168.100.122:9999) ---
                 if self._signal_data_source:
                     data = self._signal_data_source()
                     if data:
@@ -325,9 +350,13 @@ class CabDisplayClient:
                             try:
                                 self._send_and_recv(s2, packet, recv=False)
                                 has_signal = True
+                                self.signal_connected = True
                                 self.last_signal_packet = packet
+                                self.last_sent_packet = packet
                                 self.packets_sent += 1
                                 self.last_send_time = time.time()
+                                self.signal_packets_sent += 1
+                                self.signal_last_send_time = self.last_send_time
                                 if sock_ref2:
                                     self._sig_sock = sock_ref2[0]
                             except Exception:
@@ -337,6 +366,9 @@ class CabDisplayClient:
                                     except Exception:
                                         pass
                                 self._sig_sock = None
+                                self.signal_connected = False
+                        else:
+                            self.signal_connected = False
 
                 self.connected = has_network or has_signal
 

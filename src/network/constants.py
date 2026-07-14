@@ -19,7 +19,10 @@ VEHICLE_UDP_CYCLE_MS: Final[int] = VEHICLE["cycle_ms"]
 
 VEHICLE_UDP_TRAIN_COUNT: Final[int] = VEHICLE["train_count"]
 VEHICLE_UDP_FIELDS_PER_TRAIN: Final[int] = 3  # 加速度, 速度, 累计里程
-VEHICLE_UDP_SEND_SIZE: Final[int] = VEHICLE_UDP_TRAIN_COUNT * VEHICLE_UDP_FIELDS_PER_TRAIN * 8
+# 现场抓包比20车数据多一个8字节尾部保留字段，共488字节。
+VEHICLE_UDP_SEND_SIZE: Final[int] = (
+    VEHICLE_UDP_TRAIN_COUNT * VEHICLE_UDP_FIELDS_PER_TRAIN + 1
+) * 8
 VEHICLE_UDP_RECV_SIZE: Final[int] = VEHICLE_UDP_TRAIN_COUNT * 2 * 8
 
 # 指令编码
@@ -52,7 +55,7 @@ PLC_PORT_3: Final[int] = PLC["ports"][2]
 PLC_CYCLE_MS: Final[int] = PLC["cycle_ms"]
 
 PLC_RECV_SIZE: Final[int] = PLC["recv_size"]   # 46 bytes
-PLC_SEND_SIZE: Final[int] = PLC["send_size"]   # 26 bytes
+PLC_SEND_SIZE: Final[int] = PLC["send_size"]   # 28 bytes
 
 # ============================================================
 # ATP DMI 通信（协议 ATP通信协议规范）

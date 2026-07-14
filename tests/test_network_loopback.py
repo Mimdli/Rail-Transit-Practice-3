@@ -7,7 +7,7 @@
   1. codec 编解码正确性
   2. 车辆 UDP 发送/接收
   3. 信号网关 UDP 发送
-  4. 视景 UDP 发送  
+  4. 视景 UDP 接收
   5. 司机台 TCP 发送
   6. PLC TCP 接收
 """
@@ -49,7 +49,8 @@ class TestCodec:
     def test_vehicle_pack_unpack(self):
         trains = [(1.5, 22.3, 1000.0), (-0.5, 15.0, 500.0)]
         data = codec.pack_vehicle_udp(trains)
-        assert len(data) == 480
+        assert len(data) == 488
+        assert data[-8:] == b"\x00" * 8
         out = codec.unpack_vehicle_udp(data)
         assert len(out) == 20
         assert abs(out[0][0] - 1.5) < 0.001
@@ -102,12 +103,12 @@ class TestCodec:
         assert codec.unpack_plc_data(b"\x00" * 30) is None
 
     def test_plc_pack_latest_length(self):
-        data = codec.pack_plc_output(output_bits=0x1234)
-        assert len(data) == 26
+        data = codec.pack_plc_output(output_bits=0x1234, vehicle_speed=88)
+        assert len(data) == 28
         assert data[:4] == b"\x55\xAA\x55\xAA"
-        assert struct.unpack_from("<H", data, 4)[0] == 26
-        assert struct.unpack_from("<H", data, 6)[0] == 2
-        assert data[24:] == b"\x34\x12"
+        assert struct.unpack_from("<H", data, 4)[0] == 28
+        assert struct.unpack_from("<H", data, 6)[0] == 4
+        assert data[24:] == b"\x34\x12\x58\x00"
 
     def test_vision_minimal(self):
         data = codec.pack_vision_tcms2view(
@@ -176,7 +177,7 @@ def test_vehicle_udp_loopback():
         patch("src.network.udp_vehicle.VEHICLE_UDP_LOCAL_PORT", local_port),
         patch("src.network.udp_vehicle.VEHICLE_UDP_REMOTE_PORT", remote_port),
         patch("src.network.udp_vehicle.VEHICLE_UDP_CYCLE_MS", 100),
-        patch("src.network.udp_vehicle.VEHICLE_UDP_SEND_SIZE", 480),
+        patch("src.network.udp_vehicle.VEHICLE_UDP_SEND_SIZE", 488),
         patch("src.network.udp_vehicle.VEHICLE_UDP_RECV_SIZE", 320),
     ]
     for p in patchers:
@@ -199,12 +200,12 @@ def test_vehicle_udp_loopback():
 
         # 验证发送
         try:
-            data, addr = recv_sock.recvfrom(480)
+            data, addr = recv_sock.recvfrom(488)
             received_packets.append(data)
         except socket.timeout:
             pass
         assert len(received_packets) == 1, "未收到车辆 UDP 数据"
-        assert len(received_packets[0]) == 480
+        assert len(received_packets[0]) == 488
         trains = codec.unpack_vehicle_udp(received_packets[0])
         assert abs(trains[0][0] - 2.0) < 0.001
 
@@ -263,11 +264,55 @@ def test_signal_gateway_loopback():
 
 
 def test_vision_udp_loopback():
-    """视景 UDP 发送"""
+    """视景 UDP 接收端应保存并回调完整报文。"""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    probe.bind(("127.0.0.1", 0))
+    local_port = probe.getsockname()[1]
+    probe.close()
+
+    from src.network.vision_udp import VisionUDPClient
+
+    patchers = [
+        patch("src.network.vision_udp.VISION_LOCAL_ADDR", "127.0.0.1"),
+        patch("src.network.vision_udp.VISION_LOCAL_PORT", local_port),
+        patch("src.network.vision_udp.VISION_CYCLE_MS", 100),
+    ]
+    for p in patchers:
+        p.start()
+
+    received = []
+    payload = bytes(range(154))
+    send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    try:
+        client = VisionUDPClient()
+        client.set_recv_callback(lambda data, addr: received.append((data, addr)))
+        client.start()
+        time.sleep(0.1)
+        send_sock.sendto(payload, ("127.0.0.1", local_port))
+        deadline = time.time() + 2.0
+        while not received and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert len(received) == 1, "未收到视景 UDP 数据"
+        assert received[0][0] == payload
+        assert received[0][1][0] == "127.0.0.1"
+        assert client.connected is True
+        assert client.packets_received == 1
+        assert client.last_recv_packet == payload
+    finally:
+        client.stop()
+        for p in patchers:
+            p.stop()
+        send_sock.close()
+
+
+def test_vision_udp_send_loopback():
+    """视景 UDP 应把 Web 仿真数据组包并周期发送到对侧。"""
     recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     recv_sock.bind(("127.0.0.1", 0))
-    remote_port = recv_sock.getsockname()[1]
     recv_sock.settimeout(2.0)
+    remote_port = recv_sock.getsockname()[1]
 
     from src.network.vision_udp import VisionUDPClient
 
@@ -278,32 +323,34 @@ def test_vision_udp_loopback():
         patch("src.network.vision_udp.VISION_REMOTE_PORT", remote_port),
         patch("src.network.vision_udp.VISION_CYCLE_MS", 100),
     ]
-    for p in patchers:
-        p.start()
-
-    received = []
-    def source():
-        return {"signal_states": [0x01], "switch_states": [0x01],
-                "speed_mms": 12000, "accel_pct": 30,
-                "position_mm": 50000, "edge_id": 3, "direction": 1,
-                "run_state": 0x13}
+    for patcher in patchers:
+        patcher.start()
 
     try:
         client = VisionUDPClient()
-        client.set_data_source(source)
+        client.set_data_source(lambda: {
+            "signal_states": [0x01],
+            "switch_states": [0x01],
+            "speed_mms": 12000,
+            "accel_pct": 30,
+            "position_mm": 50000,
+            "edge_id": 3,
+            "direction": 1,
+            "run_state": 0x13,
+        })
         client.start()
-        time.sleep(0.4)
-        try:
-            data, addr = recv_sock.recvfrom(2000)
-            received.append(data)
-        except socket.timeout:
-            pass
-        assert len(received) == 1, "未收到视景 UDP 数据"
-        assert len(received[0]) == 24
+        packet, _ = recv_sock.recvfrom(2000)
+        deadline = time.time() + 1.0
+        while client.packets_sent < 1 and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert len(packet) == 24
+        assert client.packets_sent >= 1
+        assert client.last_sent_packet == packet
     finally:
         client.stop()
-        for p in patchers:
-            p.stop()
+        for patcher in patchers:
+            patcher.stop()
         recv_sock.close()
 
 
@@ -360,7 +407,11 @@ def test_cab_display_tcp_loopback():
         assert len(net_data) == 1, "未收到网络屏 TCP 数据"
         assert net_data[0][1] == 570
         assert len(sig_data) >= 1, "未收到信号屏 TCP 数据"
-        assert sig_data[0][1] == 68
+        # TCP 可能把多个 68B 周期帧合并在一次 recv 中。
+        assert sig_data[0][1] >= 68
+        assert sig_data[0][1] % 68 == 0
+        assert client.network_packets_sent >= 1
+        assert client.signal_packets_sent >= 1
     finally:
         client.stop()
         for p in patchers:

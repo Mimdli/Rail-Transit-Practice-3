@@ -266,12 +266,21 @@
     .signal-station text { fill:#93a4ac; font-size:9px; paint-order:stroke; stroke:#080e12; stroke-width:4px; }
     .signal-station .station-top-label { fill:#b0c0c7; font-size:10px; font-weight:600; letter-spacing:.03em; }
     .switch-route, .switch-buffer { fill:none; stroke:#82959f; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+    .switch-route { transition:stroke .18s ease-out, filter .18s ease-out; }
+    .switch-route.locked { stroke:var(--amber); stroke-width:4; filter:drop-shadow(0 0 5px rgba(233,180,76,.6)); }
     .switch-route-hit { fill:none; stroke:transparent; stroke-width:16; pointer-events:stroke; cursor:pointer; }
     .switch-route-hit:focus { stroke:rgba(57,208,216,.18); outline:none; }
     .switch-marker { fill:#45e0e6; stroke:#d5ffff; stroke-width:1; }
+    .switch-marker.locked { fill:var(--amber); stroke:#fff1bd; filter:drop-shadow(0 0 5px rgba(233,180,76,.7)); }
     .switch-marker:hover, .switch-marker:focus { fill:#12323a; stroke:var(--cyan); outline:none; filter:drop-shadow(0 0 4px rgba(57,208,216,.65)); }
     .switch-route-label { fill:#36c7cf; font-size:8px; paint-order:stroke; stroke:#080e12; stroke-width:4px; }
     .switch-side-label { fill:#72858f; font-size:8px; }
+    .route-control { margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
+    .route-control .field { width:100%; }
+    .route-control-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
+    .route-control-actions .button { min-height:36px; padding-inline:8px; }
+    .route-control > p { margin:10px 0; color:#82949c; font-size:10px; line-height:1.6; }
+    .route-control .command-feedback { margin-top:0; }
     .signal-symbol > line { stroke:#63747d; stroke-width:1; }
     .signal-housing { fill:#11191e; stroke:#9aaab1; stroke-width:1.3; }
     .signal-device { stroke:#d8e2e5; stroke-width:1; transition:filter .15s ease,stroke .15s ease; }
@@ -309,10 +318,22 @@
     .config-layout > section, .config-layout > aside { padding:28px; }
     .config-layout > aside { display:flex; align-items:flex-start; gap:8px; border-left:1px solid var(--line); background:var(--panel); }
     .config-form { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px; }
+    .endpoint-table { min-width:1080px; }
+    .endpoint-table code { color:#9bd8dc; font-size:11px; white-space:nowrap; }
+    .endpoint-name { display:flex; flex-direction:column; gap:3px; }
+    .endpoint-name small { color:var(--muted); }
+    .endpoint-route { line-height:1.5; }
+    .endpoint-route small { display:block; color:var(--muted); }
+    .config-note { margin:4px 0 0; color:var(--muted); font-size:11px; line-height:1.6; }
     .cab-packet-title, .cab-output-title { margin-top:26px; }
     .plc-light-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px 16px; padding:14px; border:1px solid var(--line); background:#0b1318; }
     .plc-light-grid label { color:#a7b6bc; }
     .plc-light-grid input { accent-color:var(--cyan); }
+    .plc-output-mode { display:flex; align-items:center; gap:12px; margin-bottom:10px; padding:10px 12px; border:1px solid var(--line); background:#0b1318; }
+    .plc-output-mode label { color:var(--text); }
+    .plc-output-mode input { accent-color:var(--cyan); }
+    .plc-output-mode small { margin-left:auto; color:var(--muted); }
+    .plc-light-grid label:has(input:disabled) { opacity:.55; cursor:not-allowed; }
     .cab-send { width:100%; margin-top:10px; }
     .hexbox { margin-top:15px; padding:14px; border:1px solid #263740; color:#8ca1aa; background:#070c0f; font:12px/1.8 Consolas,monospace; word-spacing:8px; }
     .power-state { display:grid; grid-template-columns:1fr 1fr; align-items:center; min-height:240px; border-bottom:1px solid var(--line); }

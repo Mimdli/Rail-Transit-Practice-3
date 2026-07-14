@@ -3,7 +3,9 @@
 from fastapi.testclient import TestClient
 
 from src.web.app import app
+from src.web.simulation import SimulationRuntime
 from src.logger.evaluator import Evaluator
+from src.common.track_position import TrackPosition
 
 
 def test_smoothness_uses_jerk_trend_and_actual_frame_time():
@@ -25,6 +27,160 @@ def test_smoothness_uses_jerk_trend_and_actual_frame_time():
     assert steady_basis["jerkP95"] == 0.0
     assert rough_basis["jerkP95"] > 0.0
     assert steady_score > rough_score
+
+
+def test_web_switch_route_locks_and_guides_train_to_reverse_branch():
+    """Web 办理进路后应锁闭真实区段，并让车辆适配器选择反位支线。"""
+    runtime = SimulationRuntime()
+    train_id = "1车"
+
+    result = runtime.request_switch_route(train_id, [4, 5], "SW-0100")
+
+    assert result["ok"] is True
+    train = runtime.dispatch.trains.require(train_id)
+    assert {17, 44}.issubset(train.reserved_segments)
+    assert runtime.dispatch.interlocking.locked_by(17) == train_id
+    assert runtime.dispatch.operator_routes[train_id]["componentIds"] == (4, 5)
+
+    switch_segment = runtime.track._seg_map[14]
+    entered = train.track_adapter.advance_position(
+        TrackPosition(14, switch_segment.length - 1.0), 2.0)
+    assert entered.segment_id == 17
+
+    cancelled = runtime.cancel_switch_route(train_id)
+    assert cancelled["ok"] is True
+    assert runtime.dispatch.operator_routes == {}
+    assert runtime.dispatch.interlocking.locked_by(17) is None
+
+    assert runtime.request_switch_route(train_id, [4, 5], "SW-0100")["ok"]
+    train.controller.reset_states(49, 90.0)
+    runtime.dispatch.step(0.1)
+    assert runtime.dispatch.operator_routes == {}
+    assert runtime.dispatch.interlocking.locked_by(17) is None
+
+
+def test_web_network_sources_include_live_vision_data():
+    """Web 联调应向视景模块提供列车、信号和道岔实时状态。"""
+    runtime = SimulationRuntime()
+    runtime._setup_network_sources()
+
+    source = runtime.network.vision._data_source
+    assert source is not None
+
+    data = source()
+    primary = next(iter(runtime.dispatch.trains.values()))
+    head_state = primary.controller.states[0]
+    assert data["edge_id"] == head_state.position.segment_id
+    assert data["position_mm"] == int(head_state.position.offset * 1000)
+    assert len(data["signal_states"]) == len(runtime.track.signals)
+    assert len(data["switch_states"]) == len(runtime.ats_switches)
+    assert len(data["other_trains"]) == len(runtime.dispatch.trains) - 1
+
+    # 办理反位进路后，对应道岔状态应同步为 0x02。
+    reverse_segment = runtime.ats_switches[0].reverse_seg_id
+    primary.reserved_segments = (reverse_segment,)
+    assert source()["switch_states"][0] == 0x02
+
+
+def test_network_stats_expose_all_physical_endpoints():
+    """Web 状态应拆分 PLC 三端口和司机台两块屏。"""
+    runtime = SimulationRuntime()
+    stats = runtime.network.network_stats
+    endpoints = {
+        endpoint["id"]: endpoint
+        for module in stats.values()
+        for endpoint in module["endpoints"]
+    }
+
+    assert set(endpoints) == {
+        "vehicle_udp", "signal_gateway", "vision",
+        "plc_8001", "plc_8002", "plc_8003",
+        "cab_network", "cab_signal",
+    }
+    assert endpoints["plc_8001"]["remote"] == "192.168.100.123:8001"
+    assert endpoints["cab_network"]["remote"] == "192.168.100.121:8888"
+    assert endpoints["cab_network"]["frame_size"] == "570 / 570 B"
+    assert endpoints["cab_signal"]["remote"] == "192.168.100.122:9999"
+    assert endpoints["cab_signal"]["frame_size"] == "68 B"
+    assert endpoints["vision"]["local"] == "192.168.100.124:8303"
+
+
+def test_cab_and_plc_outputs_share_live_simulation_state():
+    """页面、两块屏和PLC周期输出应使用同一份实时状态。"""
+    from src.network.codec import pack_network_screen, pack_signal_screen
+
+    runtime = SimulationRuntime()
+    runtime._setup_network_sources()
+    primary = next(iter(runtime.dispatch.trains.values()))
+    for state in primary.controller.states:
+        state.velocity = 10.0
+
+    runtime._update_cab_display_from_simulation()
+    runtime._sync_plc_output_from_simulation()
+    display = runtime.cab_display_state
+    network_data = runtime.network.cab_display._network_data_source()
+    signal_data = runtime.network.cab_display._signal_data_source()
+
+    assert display["speed"] == 10.0
+    assert display["speed_limit"] != 80.0
+    assert display["end_station"] != display["curr_station"]
+    assert len(display["door_states"]) == 6
+    assert display["sig_state"] in (1, 2, 4)
+    assert network_data == display
+    assert signal_data["speed"] == 36.0
+    network_keys = {
+        "speed", "acceleration", "speed_limit", "run_mode", "run_dir",
+        "power_pull", "net_pressure", "curr_station", "next_station",
+        "end_station", "power_state", "door_states", "has_power", "train_no",
+    }
+    signal_keys = {
+        "speed", "acceleration", "speed_limit", "mode", "run_dir",
+        "curr_station", "next_station", "end_station", "pull_switch",
+        "pull_state", "brake_state", "urgency_stop", "event_id",
+        "sig_state", "train_no", "next_station_dist",
+    }
+    assert len(pack_network_screen(**{
+        key: network_data[key] for key in network_keys})) == 570
+    assert len(pack_signal_screen(**{
+        key: signal_data[key] for key in signal_keys})) == 68
+    assert runtime.plc_output_vehicle_speed == 36
+    assert runtime.plc_output_state["indicator_hv_contactor"] is True
+    assert runtime.plc_output_state["indicator_door_closed"] is True
+
+
+def test_plc_manual_override_keeps_bits_but_not_stale_speed():
+    """手动覆盖应保持16位开关量，但车辆速度仍自动更新。"""
+    runtime = SimulationRuntime()
+    primary = next(iter(runtime.dispatch.trains.values()))
+
+    result = runtime.set_plc_raw_output(0x8001)
+    assert result["ok"] is True
+    assert result["delivery"] == "saved"
+    assert "已保存并保持" in result["message"]
+    assert runtime.plc_output_manual_override is True
+    assert runtime.plc_output_state["indicator_hv_contactor"] is True
+    assert runtime.plc_output_state["btn_close_right"] is True
+
+    for state in primary.controller.states:
+        state.velocity = 5.0
+    runtime._sync_plc_output_from_simulation()
+    assert runtime.plc_output_vehicle_speed == 18
+    assert runtime.plc_output_state["btn_close_right"] is True
+
+    runtime.set_plc_output({"manual_override": False})
+    assert runtime.plc_output_manual_override is False
+    assert runtime.plc_output_state["btn_close_right"] is True
+
+
+def test_plc_output_api_has_single_handler_per_method():
+    """避免重复路由让ATP请求被较早注册的处理器截获。"""
+    for method in ("GET", "POST"):
+        matches = [
+            route for route in app.routes
+            if getattr(route, "path", None) == "/api/plc/output"
+            and method in getattr(route, "methods", set())
+        ]
+        assert len(matches) == 1
 
 
 def test_snapshot_and_dispatch_command():

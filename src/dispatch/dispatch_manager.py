@@ -68,6 +68,8 @@ class DispatchManager:
         self.interlocking = InterlockingService(track, self.occupancy)
         self.signal_system = signal_system
         self.service_plans: dict[str, ServicePlan] = {}
+        # Web ATS 人工办理的岔道进路；进路通过期间按列车尾部逐段解锁。
+        self._operator_routes: dict[str, dict] = {}
         self.sim_time = 0.0
         self._separation_levels: dict[tuple[str, str], str] = {}
         self._collision_pairs: set[frozenset[str]] = set()
@@ -112,6 +114,7 @@ class DispatchManager:
         if runtime.controller.head_speed > 0.1:
             return DispatchResult(False, "运行中的列车不能删除")
         self.interlocking.cancel_route(train_id)
+        self._operator_routes.pop(train_id, None)
         self.trains.remove_train(train_id)
         self._separation_levels = {
             pair: level for pair, level in self._separation_levels.items()
@@ -182,6 +185,122 @@ class DispatchManager:
         self._record("发车", f"{train_id} 发车", runtime)
         return DispatchResult(True, f"{train_id} 已发车")
 
+    def request_switch_route(self, train_id: str, route_id: str,
+                             label: str, branch_segment_ids,
+                             component_ids=()) -> DispatchResult:
+        """经指定道岔反位区段生成到下一站的安全进路。"""
+        runtime = self.trains.get(train_id)
+        if runtime is None:
+            return DispatchResult(False, f"列车不存在: {train_id}")
+        if runtime.service_plan is None:
+            return DispatchResult(False, "请先为列车设置运营交路")
+        if runtime.emergency:
+            return DispatchResult(False, "紧急停车状态下不能办理进路")
+
+        branch_ids = {
+            int(segment_id) for segment_id in branch_segment_ids
+            if int(segment_id) in self.track._seg_map
+        }
+        if not branch_ids:
+            return DispatchResult(False, "所选岔道没有可用的反位区段")
+        if any(state.position.segment_id in branch_ids
+               for state in runtime.controller.states):
+            return DispatchResult(False, "列车已进入该岔道，禁止转换道岔")
+
+        target_station_id = runtime.target_station_id
+        if target_station_id is None:
+            next_index = runtime.plan_index + runtime.plan_step
+            plan = runtime.service_plan
+            if not 0 <= next_index < len(plan.station_ids):
+                return DispatchResult(False, "交路已到终点，无法办理前方进路")
+            target_station_id = plan.station_ids[next_index]
+        target_station = self.trains.get_station(target_station_id)
+        target_segments = {
+            platform.seg_id for platform in self.track.platforms
+            if platform.station_id == target_station_id
+            and platform.seg_id in self.track._seg_map
+        }
+        start_segment = runtime.controller.states[0].position.segment_id
+        segments = self._find_forced_route(
+            start_segment, target_segments,
+            runtime.controller.direction, branch_ids)
+        if not segments:
+            return DispatchResult(
+                False,
+                f"所选岔道不在 {train_id} 到 {target_station.name} 的可达方向上",
+            )
+
+        target_position = _resolve_target_from_route(
+            self.track, target_station, tuple(segments))
+        if target_position is None:
+            return DispatchResult(False, "无法确定进路终端的站台停车点")
+
+        self.occupancy.update(self.trains.values())
+        request = self.interlocking.request_route(train_id, segments)
+        if not request.granted:
+            return DispatchResult(False, request.reason)
+
+        route = Route(
+            abs(hash((train_id, route_id, tuple(segments)))) % 100000 + 1,
+            f"人工进路 {train_id} · {label}", list(segments))
+        runtime.reserved_segments = tuple(segments)
+        runtime.target_station_id = target_station_id
+        runtime.auto_drive.set_route(route)
+        runtime.track_adapter.set_active_route(route)
+        runtime.auto_drive.set_target(target_position)
+        runtime.controller.set_running_mode(RunningMode.AUTOMATIC)
+        runtime.blocked_reason = ""
+        if runtime.status == TrainStatus.BLOCKED:
+            runtime.status = TrainStatus.RUNNING
+        self._operator_routes[train_id] = {
+            "routeId": route_id,
+            "label": label,
+            "componentIds": tuple(int(item) for item in component_ids),
+            "branchSegmentIds": tuple(sorted(branch_ids)),
+            "segmentIds": tuple(segments),
+            "targetStation": target_station.name,
+        }
+        self._record(
+            "进路办理", f"{train_id} 办理并锁闭 {label}", runtime,
+            entity_id=route_id, source="web-ats")
+        return DispatchResult(
+            True, f"{label} 已为 {train_id} 办理并锁闭，终点 {target_station.name}")
+
+    def cancel_switch_route(self, train_id: str) -> DispatchResult:
+        """列车未进入岔道且停稳时，允许取消人工办理的进路。"""
+        runtime = self.trains.get(train_id)
+        info = self._operator_routes.get(train_id)
+        if runtime is None:
+            return DispatchResult(False, f"列车不存在: {train_id}")
+        if info is None:
+            return DispatchResult(False, f"{train_id} 当前没有人工办理的岔道进路")
+        branch_ids = set(info["branchSegmentIds"])
+        if any(state.position.segment_id in branch_ids
+               for state in runtime.controller.states):
+            return DispatchResult(False, "列车正在通过岔道，禁止取消进路")
+        if not runtime.controller.is_stopped:
+            return DispatchResult(False, "列车未停稳，禁止取消已锁闭进路")
+
+        self.interlocking.cancel_route(train_id)
+        self._operator_routes.pop(train_id, None)
+        runtime.reserved_segments = ()
+        runtime.target_station_id = None
+        runtime.auto_drive.target_position = None
+        runtime.track_adapter.set_active_route(None)
+        runtime.blocked_reason = ""
+        runtime.status = TrainStatus.WAITING
+        runtime.controller.coast()
+        self._record(
+            "进路取消", f"{train_id} 取消 {info['label']}", runtime,
+            entity_id=info["routeId"], source="web-ats")
+        return DispatchResult(True, f"已取消 {train_id} 的 {info['label']}")
+
+    @property
+    def operator_routes(self) -> dict[str, dict]:
+        """返回 Web 快照可安全序列化的人工进路状态。"""
+        return {train_id: dict(info)
+                for train_id, info in self._operator_routes.items()}
+
     def hold(self, train_id: str) -> DispatchResult:
         runtime = self.trains.get(train_id)
         if runtime is None:
@@ -250,6 +369,7 @@ class DispatchManager:
             self._check_arrival(runtime)
 
         self.occupancy.update(runtimes)
+        self._release_cleared_operator_routes(runtimes)
         self._refresh_signals()
         self.sim_time += dt
         return reports
@@ -296,7 +416,7 @@ class DispatchManager:
             return
 
         route_result = self.interlocking.request_route(
-            runtime.train_id, self._route_window(runtime))
+            runtime.train_id, self._route_lock_segments(runtime))
         if not route_result.granted:
             runtime.status = TrainStatus.BLOCKED
             runtime.blocked_reason = route_result.reason
@@ -616,6 +736,7 @@ class DispatchManager:
             if distance < -self.ARRIVAL_TOLERANCE:
                 self._place_train_head(runtime, runtime.auto_drive.target_position)
             self.interlocking.cancel_route(runtime.train_id)
+            self._operator_routes.pop(runtime.train_id, None)
             plan = runtime.service_plan
             if plan is None:
                 return
@@ -856,6 +977,93 @@ class DispatchManager:
             self.track, runtime.controller.states[0].position.segment_id,
             target.station_id, runtime.controller.direction)
         return set(route)
+
+    def _find_forced_route(self, start_segment: int, target_segments: set[int],
+                           direction: int,
+                           branch_segment_ids: set[int]) -> list[int]:
+        """沿运行方向寻路，并确保至少通过一个所选反位区段。"""
+        start_state = (start_segment, start_segment in branch_segment_ids)
+        queue = [(0.0, start_state)]
+        best = {start_state: 0.0}
+        previous: dict[tuple[int, bool], tuple[int, bool]] = {}
+        target_state = None
+
+        while queue:
+            cost, state = heapq.heappop(queue)
+            segment_id, used_branch = state
+            if cost != best.get(state):
+                continue
+            if segment_id in target_segments and used_branch:
+                target_state = state
+                break
+            segment = self.track._seg_map.get(segment_id)
+            if segment is None:
+                continue
+            neighbors = ((segment.end_neighbor, segment.end_lateral)
+                         if direction >= 0
+                         else (segment.start_neighbor, segment.start_lateral))
+            for neighbor in neighbors:
+                if neighbor in (0, 65535) or neighbor not in self.track._seg_map:
+                    continue
+                next_state = (neighbor,
+                              used_branch or neighbor in branch_segment_ids)
+                next_cost = cost + max(1.0, self.track._seg_map[neighbor].length)
+                if next_cost >= best.get(next_state, float("inf")):
+                    continue
+                best[next_state] = next_cost
+                previous[next_state] = state
+                heapq.heappush(queue, (next_cost, next_state))
+
+        if target_state is None:
+            return []
+        path = [target_state[0]]
+        state = target_state
+        while state != start_state:
+            state = previous[state]
+            path.append(state[0])
+        path.reverse()
+        return path
+
+    def _route_lock_segments(self, runtime: TrainRuntime) -> tuple[int, ...]:
+        """人工进路锁至终端，并依据列车尾部位置逐段释放。"""
+        if runtime.train_id not in self._operator_routes:
+            return self._route_window(runtime)
+        route = runtime.reserved_segments
+        indices = [
+            route.index(state.position.segment_id)
+            for state in runtime.controller.states
+            if state.position.segment_id in route
+        ]
+        start = min(indices) if indices else 0
+        return route[start:]
+
+    def _release_cleared_operator_routes(self, runtimes):
+        """列车尾部越过最后一个反位区段后恢复滚动锁闭。"""
+        for runtime in runtimes:
+            info = self._operator_routes.get(runtime.train_id)
+            if info is None or not runtime.reserved_segments:
+                continue
+            route = runtime.reserved_segments
+            branch_indices = [
+                route.index(segment_id)
+                for segment_id in info["branchSegmentIds"]
+                if segment_id in route
+            ]
+            car_indices = [
+                route.index(state.position.segment_id)
+                for state in runtime.controller.states
+                if state.position.segment_id in route
+            ]
+            if not branch_indices or not car_indices:
+                continue
+            if min(car_indices) <= max(branch_indices):
+                continue
+            self._operator_routes.pop(runtime.train_id, None)
+            self.interlocking.request_route(
+                runtime.train_id, self._route_window(runtime))
+            self._record(
+                "进路解锁", f"{runtime.train_id} 已通过 {info['label']}，进路自动解锁",
+                runtime, entity_id=info["routeId"], source="web-ats")
 
     @staticmethod
     def _route_window(runtime: TrainRuntime) -> tuple[int, ...]:

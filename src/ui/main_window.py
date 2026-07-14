@@ -908,8 +908,7 @@ class MainWindow(QMainWindow):
             self.signal_system.get_signal_aspect(s))) for s in self.track.signals]
         self.network.set_signal_send_source(lambda: (switches, signals[:20]))
 
-        # 4. 视景系统：发送 TCMS2VIEW
-        self._feed_vision_data(head_abs, head_speed, head_accel, signals)
+        # 4. 视景系统由后台线程只接收，不随仿真步发送数据。
 
         # 5. 司机台显示屏：发送网络屏 + 信号屏数据
         self._feed_cab_display(head_abs, head_speed, head_accel, curr_station)
@@ -1134,6 +1133,16 @@ class MainWindow(QMainWindow):
             pass
         def on_signal_recv(data: bytes):
             pass
+        def on_vision_recv(data: bytes, addr: tuple[str, int]):
+            """将完整视景 UDP 报文写入桌面版运行日志。"""
+            raw_hex = data.hex(" ").upper()
+            self.recorder.record(
+                "视景报文",
+                f"来源 {addr[0]}:{addr[1]} | {len(data)} 字节 | HEX {raw_hex}",
+                source="vision_udp",
+                entity_id=f"{addr[0]}:{addr[1]}",
+                severity="INFO",
+            )
         def on_plc_recv(data: dict):
             if not self._network_mode:
                 return
@@ -1158,6 +1167,7 @@ class MainWindow(QMainWindow):
                     self.controller.emergency_brake.apply()
         self.network.set_vehicle_recv_callback(on_vehicle_recv)
         self.network.set_signal_recv_callback(on_signal_recv)
+        self.network.set_vision_recv_callback(on_vision_recv)
         self.network.set_plc_recv_callback(on_plc_recv)
 
     # ── 点击导航（调试模式） ──────────────────────────────────

@@ -275,13 +275,21 @@ class TrackDataAdapter(ITrackQuery):
         """从多个候选 segment 中选择正确的 segment。
 
         优先级：
-          1. 活动进路匹配
-          2. 同一线路偏好（同链段）
-          3. 同链间隙桥接（同链上绝对位置最近的段）
-          4. 主线兜底（选绝对位置最接近的候选）
-          5. 第一个候选（兜底）
+          1. 显式岔口设定
+          2. 活动进路匹配
+          3. 同一线路偏好（同链段）
+          4. 同链间隙桥接（同链上绝对位置最近的段）
+          5. 主线兜底（选绝对位置最接近的候选）
+          6. 第一个候选（兜底）
         """
-        # 优先级 1: 活动进路
+        # 显式“走侧线”命令优先于默认主线和既有自动进路。
+        fork_segment_id = self._fork_routes.get(hint_seg_id)
+        if fork_segment_id is not None:
+            for seg in candidates:
+                if seg.seg_id == fork_segment_id:
+                    return seg
+
+        # 优先级 2: 活动进路
         if self._active_route is not None and not self._active_route.is_auto:
             route_set = self._active_route.seg_id_set
             for seg in candidates:
@@ -299,12 +307,12 @@ class TrackDataAdapter(ITrackQuery):
         if hint_seg_id is not None:
             chain_ids = self._td.get_chain_ids(hint_seg_id)
 
-        # 优先级 2: 同链匹配 — 主线候选在同链上
+        # 优先级 3: 同链匹配 — 主线候选在同链上
         for seg in main_candidates:
             if seg.seg_id in chain_ids:
                 return seg
 
-        # 优先级 3: 同链间隙桥接 — 在同链上找绝对位置最接近的段
+        # 优先级 4: 同链间隙桥接 — 在同链上找绝对位置最接近的段
         # （处理源数据中线路有微小间隙的情况，避免跳线到另一条线）
         if chain_ids:
             best_on_chain = None
@@ -321,7 +329,7 @@ class TrackDataAdapter(ITrackQuery):
             if best_on_chain is not None:
                 return best_on_chain
 
-        # 优先级 4: 跨线兜底 — 选绝对位置最接近的候选
+        # 优先级 5: 跨线兜底 — 选绝对位置最接近的候选
         best = min(main_candidates,
                    key=lambda s: abs(abs_pos - (s.abs_start + s.length / 2)))
         return best
